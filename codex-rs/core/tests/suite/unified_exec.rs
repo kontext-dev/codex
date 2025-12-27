@@ -1143,13 +1143,17 @@ async fn unified_exec_emits_one_begin_and_one_end_event() -> Result<()> {
 
     let mut begin_events = Vec::new();
     let mut end_events = Vec::new();
+    let mut task_completed = false;
     loop {
         let event_msg = wait_for_event(&codex, |_| true).await;
         match event_msg {
             EventMsg::ExecCommandBegin(event) => begin_events.push(event),
             EventMsg::ExecCommandEnd(event) => end_events.push(event),
-            EventMsg::TaskComplete(_) => break,
+            EventMsg::TaskComplete(_) => task_completed = true,
             _ => {}
+        }
+        if task_completed && !begin_events.is_empty() && !end_events.is_empty() {
+            break;
         }
     }
 

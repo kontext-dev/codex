@@ -168,7 +168,8 @@ impl ClientHandler for InteractiveClient {
             .unwrap()
             .push(request.clone());
 
-        let accept = self.elicitations_to_accept.contains(&request.message);
+        let accept = self.elicitations_to_accept.is_empty()
+            || self.elicitations_to_accept.contains(&request.message);
         async move {
             if accept {
                 Ok(CreateElicitationResult {
