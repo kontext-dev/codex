@@ -74,6 +74,7 @@ codex-chatgpt = { path = "chatgpt" }
 codex-client = { path = "codex-client" }
 codex-common = { path = "common" }
 codex-core = { path = "core" }
+kontext-dev = "0.1.0"
 codex-exec = { path = "exec" }
 codex-execpolicy = { path = "execpolicy" }
 codex-feedback = { path = "feedback" }
