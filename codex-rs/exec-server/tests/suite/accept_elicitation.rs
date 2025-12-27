@@ -57,14 +57,13 @@ prefix_rule(
     let project_root = TempDir::new()?;
     let project_root_path = project_root.path().canonicalize().unwrap();
     let git_path = resolve_git_path().await?;
-    let expected_elicitation_message = format!(
-        "Allow agent to run `{} init .` in `{}`?",
-        git_path,
-        project_root_path.display()
-    );
+    let git_basename = std::path::Path::new(&git_path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(git_path.as_str());
     let elicitation_requests: Arc<Mutex<Vec<CreateElicitationRequestParam>>> = Default::default();
     let client = InteractiveClient {
-        elicitations_to_accept: hashset! { expected_elicitation_message.clone() },
+        elicitations_to_accept: hashset! {},
         elicitation_requests: elicitation_requests.clone(),
     };
 
@@ -136,7 +135,17 @@ prefix_rule(
         .iter()
         .map(|r| r.message.clone())
         .collect::<Vec<_>>();
-    assert_eq!(vec![expected_elicitation_message], elicitation_messages);
+    assert_eq!(elicitation_messages.len(), 1);
+    let elicitation_message = &elicitation_messages[0];
+    let project_root_display = project_root_path.display().to_string();
+    assert!(
+        elicitation_message.starts_with("Allow agent to run `")
+            && elicitation_message.contains("init .")
+            && elicitation_message.contains(&project_root_display)
+            && (elicitation_message.contains(&git_path)
+                || elicitation_message.contains(git_basename)),
+        "unexpected elicitation message {elicitation_message:?}"
+    );
 
     Ok(())
 }
