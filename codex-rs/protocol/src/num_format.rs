@@ -56,10 +56,8 @@ fn format_si_suffix_with_formatter(n: i64, formatter: &DecimalFormatter) -> Stri
     }
 
     // Above 1000G, keep whole‑G precision.
-    format!(
-        "{}G",
-        format_with_separators(((n as f64) / 1e9).round() as i64)
-    )
+    let rounded = ((n as f64) / 1e9).round() as i64;
+    format!("{}G", formatter.format(&Decimal::from(rounded)))
 }
 
 /// Format token counts to 3 significant figures, using base-10 SI suffixes.

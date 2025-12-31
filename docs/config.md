@@ -477,6 +477,22 @@ env_http_headers = { "HEADER_NAME" = "ENV_VAR" }
 
 Streamable HTTP connections always use the Rust MCP client under the hood. Run `codex mcp login <server-name>` to authenticate for servers supporting OAuth.
 
+#### Kontext-Dev
+
+Codex can attach a single MCP server via Kontext-Dev. Configure it with a top-level `[kontext-dev]` table:
+
+```toml
+[kontext-dev]
+mcp_url = "http://localhost:4000/mcp"
+token_url = "http://localhost:4444/oauth2/token"
+client_id = "<client-id>"
+client_secret = "<client-secret>"
+scope = "mcp:invoke" # optional; default shown
+server_name = "kontext-dev" # optional; default shown
+```
+
+Codex requests a client-credentials access token and appends it as an `access_key` query param. The MCP endpoint is expected to expose `SEARCH_TOOLS` and `EXECUTE_TOOL`.
+
 #### Other configuration options
 
 ```toml

@@ -1,10 +1,12 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fmt::Debug;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 use crate::AuthManager;
 use crate::SandboxState;
@@ -16,6 +18,7 @@ use crate::compact_remote::run_inline_remote_auto_compact_task;
 use crate::exec_policy::ExecPolicyManager;
 use crate::features::Feature;
 use crate::features::Features;
+use crate::kontext_dev;
 use crate::models_manager::manager::ModelsManager;
 use crate::models_manager::model_family::ModelFamily;
 use crate::parse_command::parse_command;
@@ -69,6 +72,7 @@ use tracing::info;
 use tracing::instrument;
 use tracing::trace_span;
 use tracing::warn;
+use uuid::Uuid;
 
 use crate::ModelProviderInfo;
 use crate::WireApi;
@@ -151,6 +155,7 @@ use codex_async_utils::OrCancelExt;
 use codex_otel::otel_manager::OtelManager;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
@@ -207,13 +212,18 @@ fn maybe_push_chat_wire_api_deprecation(
 impl Codex {
     /// Spawn a new [`Codex`] and initialize the session.
     pub async fn spawn(
-        config: Config,
+        mut config: Config,
         auth_manager: Arc<AuthManager>,
         models_manager: Arc<ModelsManager>,
         skills_manager: Arc<SkillsManager>,
         conversation_history: InitialHistory,
         session_source: SessionSource,
     ) -> CodexResult<CodexSpawnOk> {
+        kontext_dev::attach_kontext_dev_mcp_server(&mut config)
+            .await
+            .map_err(|err| {
+                CodexErr::Fatal(format!("failed to attach Kontext-Dev MCP server: {err:#}"))
+            })?;
         let (tx_sub, rx_sub) = async_channel::bounded(SUBMISSION_CHANNEL_CAPACITY);
         let (tx_event, rx_event) = async_channel::unbounded();
 
@@ -1462,6 +1472,88 @@ impl Session {
             .await;
     }
 
+    async fn prefetch_mcp_tool_discovery(
+        self: &Arc<Self>,
+        turn_context: &TurnContext,
+        cancellation_token: CancellationToken,
+    ) {
+        let mcp_connection_manager = Arc::clone(&self.services.mcp_connection_manager);
+        let tools = match tokio::time::timeout(Duration::from_secs_f64(5.0), async {
+            mcp_connection_manager
+                .read()
+                .await
+                .list_all_tools()
+                .or_cancel(&cancellation_token)
+                .await
+        })
+        .await
+        {
+            Ok(Ok(tools)) => tools,
+            Ok(Err(codex_async_utils::CancelErr::Cancelled)) => return,
+            Err(_) => {
+                warn!("auto SEARCH_TOOLS prefetch: list_all_tools timed out");
+                return;
+            }
+        };
+
+        let search_tool_servers: HashSet<String> = tools
+            .values()
+            .filter(|tool| tool.tool_name == "SEARCH_TOOLS")
+            .map(|tool| tool.server_name.clone())
+            .collect();
+
+        for server in search_tool_servers {
+            let call_id = format!("{server}__SEARCH_TOOLS__{}", Uuid::new_v4().as_simple());
+            let call_arguments = serde_json::json!({
+                "limit": 200,
+            });
+            let call_arguments_str =
+                serde_json::to_string(&call_arguments).unwrap_or_else(|_| "{}".to_string());
+            let call_tool_result =
+                match tokio::time::timeout(Duration::from_secs_f64(15.0), async {
+                    mcp_connection_manager
+                        .read()
+                        .await
+                        .call_tool(&server, "SEARCH_TOOLS", Some(call_arguments.clone()))
+                        .or_cancel(&cancellation_token)
+                        .await
+                })
+                .await
+                {
+                    Ok(Ok(result)) => result,
+                    Ok(Err(codex_async_utils::CancelErr::Cancelled)) => return,
+                    Err(_) => {
+                        warn!("auto SEARCH_TOOLS prefetch for {server} timed out");
+                        continue;
+                    }
+                };
+
+            let call_tool_result = match call_tool_result {
+                Ok(result) => result,
+                Err(error) => {
+                    warn!("auto SEARCH_TOOLS prefetch for {server} failed: {error:#}");
+                    continue;
+                }
+            };
+
+            let call_item = ResponseItem::FunctionCall {
+                id: None,
+                name: format!("mcp__{server}__SEARCH_TOOLS"),
+                arguments: call_arguments_str,
+                call_id: call_id.clone(),
+            };
+            let output_item = ResponseItem::FunctionCallOutput {
+                call_id,
+                output: FunctionCallOutputPayload::from(&call_tool_result),
+            };
+
+            self.record_response_item_and_emit_turn_item(turn_context, call_item)
+                .await;
+            self.record_response_item_and_emit_turn_item(turn_context, output_item)
+                .await;
+        }
+    }
+
     /// Returns the input if there was no task running to inject into
     pub async fn inject_input(&self, input: Vec<UserInput>) -> Result<(), Vec<UserInput>> {
         let mut active = self.active_turn.lock().await;
@@ -2253,6 +2345,8 @@ pub(crate) async fn run_task(
     }
 
     sess.maybe_start_ghost_snapshot(Arc::clone(&turn_context), cancellation_token.child_token())
+        .await;
+    sess.prefetch_mcp_tool_discovery(turn_context.as_ref(), cancellation_token.child_token())
         .await;
     let mut last_agent_message: Option<String> = None;
     // Although from the perspective of codex.rs, TurnDiffTracker has the lifecycle of a Task which contains

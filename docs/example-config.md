@@ -250,6 +250,15 @@ experimental_use_freeform_apply_patch = false
 # tool_timeout_sec = 60.0                      # optional
 # enabled_tools = ["list_issues"]             # optional allow-list
 
+# --- Kontext-Dev (SEARCH_TOOLS/EXECUTE_TOOL only) ---
+# [kontext-dev]
+# mcp_url = "http://localhost:4000/mcp"
+# token_url = "http://localhost:4444/oauth2/token"
+# client_id = "<client-id>"
+# client_secret = "<client-secret>"
+# scope = "mcp:invoke" # optional; default shown
+# server_name = "kontext-dev" # optional; default shown
+
 ################################################################################
 # Model Providers (extend/override built-ins)
 ################################################################################
