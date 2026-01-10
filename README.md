@@ -33,6 +33,13 @@ server_name = "kontext-dev"
 
 Do not commit secrets.
 
+### Running locally
+
+```bash
+cd codex-rs
+cargo run --bin codex
+```
+
 Default branch: `kontext-dev`. `main` mirrors `openai/codex`, and `kontext-dev`
 is rebased onto `main` to stay current.
 
