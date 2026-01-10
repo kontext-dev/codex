@@ -1307,6 +1307,7 @@ dependencies = [
  "include_dir",
  "indexmap 2.12.0",
  "keyring",
+ "kontext-dev",
  "landlock",
  "libc",
  "maplit",
@@ -3976,6 +3977,28 @@ dependencies = [
  "windows-sys 0.60.2",
  "zbus",
  "zeroize",
+]
+
+[[package]]
+name = "kontext-dev"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "67551342cfce4c1ff339f10eef2bfa279dcd1d595fc03c0a122c23a8748ee832"
+dependencies = [
+ "kontext-dev-core",
+ "reqwest",
+ "thiserror 2.0.17",
+]
+
+[[package]]
+name = "kontext-dev-core"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f09fd44d59a7d10b1b1733daec5e35684e02d43639371e6005c310905bad6a5f"
+dependencies = [
+ "serde",
+ "thiserror 2.0.17",
+ "url",
 ]
 
 [[package]]

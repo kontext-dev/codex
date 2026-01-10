@@ -64,6 +64,8 @@ use tracing::warn;
 use crate::codex::INITIAL_SUBMIT_ID;
 use crate::config::types::McpServerConfig;
 use crate::config::types::McpServerTransportConfig;
+use crate::kontext_dev::kontext_dev_server_name;
+use crate::kontext_dev::kontext_dev_token_expired;
 
 /// Delimiter used to separate the server name from the tool name in a fully
 /// qualified tool name.
@@ -592,6 +594,15 @@ impl McpConnectionManager {
         tool: &str,
         arguments: Option<serde_json::Value>,
     ) -> Result<mcp_types::CallToolResult> {
+        if let Some(server_name) = kontext_dev_server_name()
+            && server == server_name
+            && kontext_dev_token_expired()
+        {
+            return Err(anyhow!(
+                "Kontext-Dev token expired. Please restart the session."
+            ));
+        }
+
         let client = self.client_by_name(server).await?;
         if !client.tool_filter.allows(tool) {
             return Err(anyhow!(

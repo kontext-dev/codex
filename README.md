@@ -9,6 +9,40 @@ If you want Codex in your code editor (VS Code, Cursor, Windsurf), <a href="http
 
 ---
 
+## Kontext-Dev fork
+
+This fork wires Codex CLI to the Kontext-Dev MCP server using the `kontext-dev`
+Rust SDK. It uses a single MCP server and refreshes SEARCH/EXECUTE tools before
+each user turn. The diff stays minimal so upstream updates are easy to rebase.
+
+### Configuration (local)
+
+Create agents at https://app.kontext.dev/ to get client credentials and
+visibility into your agents (like this Codex client). Then copy the credentials
+into `~/.codex/config.toml`:
+
+```toml
+[kontext-dev]
+mcp_url = "http://localhost:4000/mcp"
+token_url = "http://127.0.0.1:4444/oauth2/token"
+client_id = "<client_id>"
+client_secret = "<client_secret>"
+scope = "mcp:invoke"
+server_name = "kontext-dev"
+```
+
+Do not commit secrets.
+
+### Running locally
+
+```bash
+cd codex-rs
+cargo run --bin codex
+```
+
+Default branch: `kontext-dev`. `main` mirrors `openai/codex`, and `kontext-dev`
+is rebased onto `main` to stay current.
+
 ## Quickstart
 
 ### Installing and running Codex CLI
