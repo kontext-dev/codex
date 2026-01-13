@@ -1,0 +1,54 @@
+{
+  "builder_name": "parquet",
+  "citation": "",
+  "config_name": "default",
+  "dataset_name": "mcp-atlas",
+  "dataset_size": 50444297,
+  "description": "",
+  "download_checksums": {
+    "hf://datasets/ScaleAI/MCP-Atlas@b5bcde2236c0b8772020e13dea4e481241e78677/MCP-Atlas.parquet": {
+      "num_bytes": 15638757,
+      "checksum": null
+    }
+  },
+  "download_size": 15638757,
+  "features": {
+    "TASK": {
+      "dtype": "string",
+      "_type": "Value"
+    },
+    "ENABLED_TOOLS": {
+      "dtype": "string",
+      "_type": "Value"
+    },
+    "PROMPT": {
+      "dtype": "string",
+      "_type": "Value"
+    },
+    "GTFA_CLAIMS": {
+      "dtype": "string",
+      "_type": "Value"
+    },
+    "TRAJECTORY": {
+      "dtype": "string",
+      "_type": "Value"
+    }
+  },
+  "homepage": "",
+  "license": "",
+  "size_in_bytes": 66083054,
+  "splits": {
+    "train": {
+      "name": "train",
+      "num_bytes": 50444297,
+      "num_examples": 500,
+      "dataset_name": "mcp-atlas"
+    }
+  },
+  "version": {
+    "version_str": "0.0.0",
+    "major": 0,
+    "minor": 0,
+    "patch": 0
+  }
+}

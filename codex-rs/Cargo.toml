@@ -236,6 +236,10 @@ wildmatch = "2.6.1"
 wiremock = "0.6"
 zeroize = "1.8.2"
 
+# MCP-Atlas evaluation dependencies
+arrow = { version = "54", default-features = false, features = ["ipc"] }
+async-openai = "0.28"
+
 [workspace.lints]
 rust = {}
 

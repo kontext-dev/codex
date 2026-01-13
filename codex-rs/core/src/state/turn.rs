@@ -35,6 +35,8 @@ pub(crate) enum TaskKind {
     Regular,
     Review,
     Compact,
+    /// RLM (Retrieval-augmented Language Model) task for bounded decomposition.
+    Rlm,
 }
 
 #[derive(Clone)]

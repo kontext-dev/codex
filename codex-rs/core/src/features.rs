@@ -94,6 +94,8 @@ pub enum Feature {
     Skills,
     /// Enforce UTF8 output in Powershell.
     PowershellUtf8,
+    /// Enable RLM (Retrieval-augmented Language Model) mode for long prompts.
+    RlmMode,
 }
 
 impl Feature {
@@ -400,5 +402,11 @@ pub const FEATURES: &[FeatureSpec] = &[
         key: "tui2",
         stage: Stage::Experimental,
         default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::RlmMode,
+        key: "rlm_mode",
+        stage: Stage::Experimental,
+        default_enabled: true,
     },
 ];

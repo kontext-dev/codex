@@ -6,3 +6,8 @@
 
 # Value of CARGO_TARGET_DIR when using .devcontainer/devcontainer.json.
 /target-arm64/
+
+# Environment files (contain secrets)
+.env
+.env.local
+.env.*.local
