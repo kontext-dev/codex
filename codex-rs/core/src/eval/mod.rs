@@ -1,11 +1,12 @@
 //! MCP-Atlas Evaluation Module
 //!
 //! This module provides evaluation capabilities for benchmarking LLM agent
-//! performance using the MCP-Atlas dataset. It supports three execution modes:
+//! performance using the MCP-Atlas dataset. It supports multiple execution modes:
 //!
 //! - **Baseline**: Direct EXECUTE_TOOL calls with full results in context
 //! - **CodeMode**: EXECUTE_CODE with summarized results
 //! - **BaselineRlm**: EXECUTE_TOOL with RLM routing for large results
+//! - **CodexAgent**: Real Codex agent with full system prompts
 //!
 //! ## Scoring
 //!
@@ -16,10 +17,12 @@
 //!
 //! Task passes if Coverage >= 0.75
 
+pub mod codex_runner;
 pub mod dataset;
 pub mod judge;
 pub mod runner;
 
+pub use codex_runner::CodexTaskRunner;
 pub use dataset::load_dataset;
 pub use dataset::McpAtlasTask;
 pub use dataset::TrajectoryStep;
@@ -30,6 +33,7 @@ pub use runner::ExecutionMode;
 pub use runner::GatewayTool;
 pub use runner::TaskResult;
 pub use runner::TaskRunner;
+pub use runner::ToolCallRecord;
 
 /// Default pass threshold for MCP-Atlas evaluation
 pub const PASS_THRESHOLD: f64 = 0.75;

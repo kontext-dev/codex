@@ -48,6 +48,8 @@ pub enum ExecutionMode {
     BaselineRlm,
     /// EXECUTE_CODE with RLM routing for large results (hybrid mode)
     CodeModeRlm,
+    /// Use the real Codex agent with full system prompts via ConversationManager
+    CodexAgent,
 }
 
 impl std::fmt::Display for ExecutionMode {
@@ -57,6 +59,7 @@ impl std::fmt::Display for ExecutionMode {
             ExecutionMode::CodeMode => write!(f, "CodeMode"),
             ExecutionMode::BaselineRlm => write!(f, "Baseline+RLM"),
             ExecutionMode::CodeModeRlm => write!(f, "CodeMode+RLM"),
+            ExecutionMode::CodexAgent => write!(f, "CodexAgent"),
         }
     }
 }
@@ -672,6 +675,10 @@ Note: Tool calls are executed via a Gateway. Use the exact tool names shown abov
                 // but handle it here for completeness (same RLM routing behavior)
                 self.execute_with_rlm(&tool_id, &args, task_id, &call.id)
                     .await
+            }
+            ExecutionMode::CodexAgent => {
+                // CodexAgent is handled by CodexTaskRunner, not TaskRunner
+                panic!("CodexAgent mode should not be handled by TaskRunner::execute_tool_call")
             }
         }
     }
@@ -1625,6 +1632,7 @@ mod tests {
         assert_eq!(format!("{}", ExecutionMode::CodeMode), "CodeMode");
         assert_eq!(format!("{}", ExecutionMode::BaselineRlm), "Baseline+RLM");
         assert_eq!(format!("{}", ExecutionMode::CodeModeRlm), "CodeMode+RLM");
+        assert_eq!(format!("{}", ExecutionMode::CodexAgent), "CodexAgent");
     }
 
     #[test]
