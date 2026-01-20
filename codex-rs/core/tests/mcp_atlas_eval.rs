@@ -987,6 +987,9 @@ async fn run_mcp_atlas_three_way_evaluation() {
                 "    Coverage: {:.2}, Status: {}, Tokens: {}, Latency: {:.1}s",
                 verification.coverage, status, task_result.context_tokens, latency_secs
             );
+            if let Some(ref err) = task_result.error {
+                println!("    ERROR: {}", err);
+            }
 
             results.push(EvalResult {
                 task_id: task.task_id.clone(),

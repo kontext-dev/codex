@@ -72,14 +72,23 @@ impl CodexTaskRunner {
 
     /// Build the MCP server configuration for Kontext Gateway
     fn build_gateway_mcp_config(&self) -> McpServerConfig {
-        // Build the URL with token
+        use std::collections::HashMap;
+
+        // Pass token as query param in URL and also as header for compatibility
         let url = format!("{}?token={}", self.gateway_url, self.access_token);
+
+        // Also pass as Authorization header
+        let mut headers = HashMap::new();
+        headers.insert(
+            "Authorization".to_string(),
+            format!("Bearer {}", self.access_token),
+        );
 
         McpServerConfig {
             transport: McpServerTransportConfig::StreamableHttp {
                 url,
                 bearer_token_env_var: None,
-                http_headers: None,
+                http_headers: Some(headers),
                 env_http_headers: None,
             },
             startup_timeout_sec: Some(Duration::from_secs(30)),
@@ -117,6 +126,14 @@ impl CodexTaskRunner {
         // Set approval policy to never ask (for automated eval)
         config.approval_policy = Constrained::allow_any(AskForApproval::Never);
         config.sandbox_policy = Constrained::allow_any(SandboxPolicy::DangerFullAccess);
+
+        // Add instructions for sandbox-compatible code execution
+        config.user_instructions = Some(
+            "IMPORTANT: When using code_exec or any code execution tools, write synchronous code only. \
+             Do NOT use setTimeout, setInterval, setImmediate, or any async timer functions as they \
+             are not available in the sandbox environment. Use synchronous patterns instead."
+                .to_string(),
+        );
 
         Ok(config)
     }
@@ -216,10 +233,13 @@ impl CodexTaskRunner {
         }
 
         // Event loop - process events until TaskComplete or error
-        let mut turns = 0;
+        let mut event_count = 0;
+        let max_events = 500; // Safety limit on total events
+        eprintln!("[CODEX AGENT] Starting event loop for task: {}", task.task_id);
         loop {
-            if turns >= self.max_turns {
-                error = Some(format!("Max turns ({}) reached", self.max_turns));
+            event_count += 1;
+            if event_count >= max_events {
+                error = Some(format!("Max events ({}) reached", max_events));
                 break;
             }
 
@@ -227,9 +247,20 @@ impl CodexTaskRunner {
                 Ok(e) => e,
                 Err(e) => {
                     error = Some(format!("Event error: {}", e));
+                    eprintln!("[CODEX AGENT] Event error: {}", e);
                     break;
                 }
             };
+
+            // Only log important events
+            match &event.msg {
+                EventMsg::McpToolCallBegin(_) | EventMsg::McpToolCallEnd(_) |
+                EventMsg::AgentMessage(_) | EventMsg::TaskComplete(_) |
+                EventMsg::Error(_) | EventMsg::TokenCount(_) => {
+                    eprintln!("[CODEX AGENT] Event #{}: {:?}", event_count, std::mem::discriminant(&event.msg));
+                }
+                _ => {}
+            }
 
             match event.msg {
                 EventMsg::McpToolCallBegin(begin) => {
@@ -305,8 +336,6 @@ impl CodexTaskRunner {
                     // Ignore other events
                 }
             }
-
-            turns += 1;
         }
 
         TaskResult {
