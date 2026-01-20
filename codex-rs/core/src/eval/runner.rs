@@ -37,9 +37,9 @@ use crate::rlm::ProcessedResult;
 use crate::rlm::RlmConfig;
 use crate::rlm::RlmCorpus;
 
-/// Execution mode for task running
+/// Execution mode for tool-calling client
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ExecutionMode {
+pub enum ToolCallingMode {
     /// Direct EXECUTE_TOOL calls with full results in context
     Baseline,
     /// EXECUTE_CODE with summarized results
@@ -48,18 +48,15 @@ pub enum ExecutionMode {
     BaselineRlm,
     /// EXECUTE_CODE with RLM routing for large results (hybrid mode)
     CodeModeRlm,
-    /// Use the real Codex agent with full system prompts via ConversationManager
-    CodexAgent,
 }
 
-impl std::fmt::Display for ExecutionMode {
+impl std::fmt::Display for ToolCallingMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ExecutionMode::Baseline => write!(f, "Baseline"),
-            ExecutionMode::CodeMode => write!(f, "CodeMode"),
-            ExecutionMode::BaselineRlm => write!(f, "Baseline+RLM"),
-            ExecutionMode::CodeModeRlm => write!(f, "CodeMode+RLM"),
-            ExecutionMode::CodexAgent => write!(f, "CodexAgent"),
+            ToolCallingMode::Baseline => write!(f, "Baseline"),
+            ToolCallingMode::CodeMode => write!(f, "CodeMode"),
+            ToolCallingMode::BaselineRlm => write!(f, "Baseline+RLM"),
+            ToolCallingMode::CodeModeRlm => write!(f, "CodeMode+RLM"),
         }
     }
 }
@@ -73,8 +70,8 @@ pub struct TaskResult {
     pub final_answer: String,
     /// Tool calls made during execution
     pub tool_calls: Vec<ToolCallRecord>,
-    /// Execution mode used
-    pub mode: ExecutionMode,
+    /// Execution mode name (e.g., "Baseline", "CodeMode", "Codex")
+    pub mode_name: String,
     /// Total context tokens used
     pub context_tokens: i64,
     /// Execution latency in milliseconds
@@ -113,8 +110,8 @@ pub struct GatewayTool {
     pub input_schema: serde_json::Value,
 }
 
-/// Task runner that supports three execution modes
-pub struct TaskRunner {
+/// Tool-calling client runner that supports multiple execution modes
+pub struct ToolCallingRunner {
     /// MCP client for Gateway calls
     mcp_client: Arc<RmcpClient>,
     /// OpenAI client for agent LLM
@@ -131,7 +128,7 @@ pub struct TaskRunner {
     tool_lookup: HashMap<String, GatewayTool>,
 }
 
-impl TaskRunner {
+impl ToolCallingRunner {
     /// Create a new task runner and discover available tools from Gateway
     pub async fn new(
         mcp_client: Arc<RmcpClient>,
@@ -181,11 +178,11 @@ impl TaskRunner {
     }
 
     /// Execute a task in the specified mode
-    pub async fn run_task(&self, task: &McpAtlasTask, mode: ExecutionMode) -> TaskResult {
+    pub async fn run_task(&self, task: &McpAtlasTask, mode: ToolCallingMode) -> TaskResult {
         // Dispatch to mode-specific runners
         match mode {
-            ExecutionMode::CodeMode => return self.run_task_codemode(task).await,
-            ExecutionMode::CodeModeRlm => return self.run_task_codemode_rlm(task).await,
+            ToolCallingMode::CodeMode => return self.run_task_codemode(task).await,
+            ToolCallingMode::CodeModeRlm => return self.run_task_codemode_rlm(task).await,
             _ => {} // Baseline and BaselineRlm continue below
         }
 
@@ -195,7 +192,7 @@ impl TaskRunner {
         let mut total_context_tokens: i64 = 0;
 
         // Build tool definitions - include RLM tools for BaselineRlm mode
-        let tools = if mode == ExecutionMode::BaselineRlm {
+        let tools = if mode == ToolCallingMode::BaselineRlm {
             self.build_tool_definitions_for_rlm()
         } else {
             self.build_tool_definitions_from_gateway()
@@ -210,7 +207,7 @@ impl TaskRunner {
             .join("\n");
 
         // System prompt for the agent with discovered tools
-        let system_prompt = if mode == ExecutionMode::BaselineRlm {
+        let system_prompt = if mode == ToolCallingMode::BaselineRlm {
             format!(
                 r#"You are an AI assistant executing tasks using available tools.
 Complete the task by making appropriate tool calls. When you have gathered
@@ -304,7 +301,7 @@ Note: Tool calls are executed via a Gateway. Use the exact tool names shown abov
                         task_id: task.task_id.clone(),
                         final_answer: String::new(),
                         tool_calls,
-                        mode,
+                        mode_name: mode.to_string(),
                         context_tokens: total_context_tokens,
                         latency_ms: start.elapsed().as_millis() as u64,
                         error: Some(format!("Failed to build request: {}", e)),
@@ -320,7 +317,7 @@ Note: Tool calls are executed via a Gateway. Use the exact tool names shown abov
                         task_id: task.task_id.clone(),
                         final_answer: String::new(),
                         tool_calls,
-                        mode,
+                        mode_name: mode.to_string(),
                         context_tokens: total_context_tokens,
                         latency_ms: start.elapsed().as_millis() as u64,
                         error: Some(format!("Agent LLM call failed: {}", e)),
@@ -340,7 +337,7 @@ Note: Tool calls are executed via a Gateway. Use the exact tool names shown abov
                         task_id: task.task_id.clone(),
                         final_answer: String::new(),
                         tool_calls,
-                        mode,
+                        mode_name: mode.to_string(),
                         context_tokens: total_context_tokens,
                         latency_ms: start.elapsed().as_millis() as u64,
                         error: Some("No response from agent".to_string()),
@@ -411,7 +408,7 @@ Note: Tool calls are executed via a Gateway. Use the exact tool names shown abov
                 task_id: task.task_id.clone(),
                 final_answer,
                 tool_calls,
-                mode,
+                mode_name: mode.to_string(),
                 context_tokens: total_context_tokens,
                 latency_ms: start.elapsed().as_millis() as u64,
                 error: None,
@@ -423,7 +420,7 @@ Note: Tool calls are executed via a Gateway. Use the exact tool names shown abov
             task_id: task.task_id.clone(),
             final_answer: format!("Max turns ({}) reached without final answer", self.max_turns),
             tool_calls,
-            mode,
+            mode_name: mode.to_string(),
             context_tokens: total_context_tokens,
             latency_ms: start.elapsed().as_millis() as u64,
             error: Some("Max turns reached".to_string()),
@@ -644,7 +641,7 @@ Note: Tool calls are executed via a Gateway. Use the exact tool names shown abov
     async fn execute_tool_call(
         &self,
         call: &ChatCompletionMessageToolCall,
-        mode: ExecutionMode,
+        mode: ToolCallingMode,
         task_id: &str,
     ) -> ToolCallResult {
         let tool_name = &call.function.name;
@@ -652,7 +649,7 @@ Note: Tool calls are executed via a Gateway. Use the exact tool names shown abov
             serde_json::from_str(&call.function.arguments).unwrap_or(json!({}));
 
         // Handle RLM-specific tools in BaselineRlm mode
-        if mode == ExecutionMode::BaselineRlm {
+        if mode == ToolCallingMode::BaselineRlm {
             match tool_name.as_str() {
                 "rlm_search" => return self.execute_rlm_search(&args).await,
                 "rlm_get_chunk" => return self.execute_rlm_get_chunk(&args).await,
@@ -668,17 +665,13 @@ Note: Tool calls are executed via a Gateway. Use the exact tool names shown abov
             .unwrap_or_else(|| tool_name.clone());
 
         match mode {
-            ExecutionMode::Baseline => self.execute_baseline(&tool_id, &args).await,
-            ExecutionMode::CodeMode => self.execute_codemode(&tool_id, &args).await,
-            ExecutionMode::BaselineRlm | ExecutionMode::CodeModeRlm => {
+            ToolCallingMode::Baseline => self.execute_baseline(&tool_id, &args).await,
+            ToolCallingMode::CodeMode => self.execute_codemode(&tool_id, &args).await,
+            ToolCallingMode::BaselineRlm | ToolCallingMode::CodeModeRlm => {
                 // CodeModeRlm is dispatched to run_task_codemode_rlm() directly,
                 // but handle it here for completeness (same RLM routing behavior)
                 self.execute_with_rlm(&tool_id, &args, task_id, &call.id)
                     .await
-            }
-            ExecutionMode::CodexAgent => {
-                // CodexAgent is handled by CodexTaskRunner, not TaskRunner
-                panic!("CodexAgent mode should not be handled by TaskRunner::execute_tool_call")
             }
         }
     }
@@ -1088,7 +1081,7 @@ CRITICAL: Your FINAL response must be plain text that directly answers the task 
                         task_id: task.task_id.clone(),
                         final_answer: String::new(),
                         tool_calls,
-                        mode: ExecutionMode::CodeMode,
+                        mode_name: "CodeMode".to_string(),
                         context_tokens: total_context_tokens,
                         latency_ms: start.elapsed().as_millis() as u64,
                         error: Some(format!("Failed to build request: {}", e)),
@@ -1104,7 +1097,7 @@ CRITICAL: Your FINAL response must be plain text that directly answers the task 
                         task_id: task.task_id.clone(),
                         final_answer: String::new(),
                         tool_calls,
-                        mode: ExecutionMode::CodeMode,
+                        mode_name: "CodeMode".to_string(),
                         context_tokens: total_context_tokens,
                         latency_ms: start.elapsed().as_millis() as u64,
                         error: Some(format!("Agent LLM call failed: {}", e)),
@@ -1124,7 +1117,7 @@ CRITICAL: Your FINAL response must be plain text that directly answers the task 
                         task_id: task.task_id.clone(),
                         final_answer: String::new(),
                         tool_calls,
-                        mode: ExecutionMode::CodeMode,
+                        mode_name: "CodeMode".to_string(),
                         context_tokens: total_context_tokens,
                         latency_ms: start.elapsed().as_millis() as u64,
                         error: Some("No response from agent".to_string()),
@@ -1176,7 +1169,7 @@ CRITICAL: Your FINAL response must be plain text that directly answers the task 
                 task_id: task.task_id.clone(),
                 final_answer: content,
                 tool_calls,
-                mode: ExecutionMode::CodeMode,
+                mode_name: "CodeMode".to_string(),
                 context_tokens: total_context_tokens,
                 latency_ms: start.elapsed().as_millis() as u64,
                 error: None,
@@ -1188,7 +1181,7 @@ CRITICAL: Your FINAL response must be plain text that directly answers the task 
             task_id: task.task_id.clone(),
             final_answer: format!("Max turns ({}) reached without final answer", self.max_turns),
             tool_calls,
-            mode: ExecutionMode::CodeMode,
+            mode_name: "CodeMode".to_string(),
             context_tokens: total_context_tokens,
             latency_ms: start.elapsed().as_millis() as u64,
             error: Some("Max turns reached".to_string()),
@@ -1242,7 +1235,7 @@ CRITICAL: Your FINAL response must be plain text that directly answers the task 
                         task_id: task.task_id.clone(),
                         final_answer: String::new(),
                         tool_calls,
-                        mode: ExecutionMode::CodeModeRlm,
+                        mode_name: "CodeMode+RLM".to_string(),
                         context_tokens: total_context_tokens,
                         latency_ms: start.elapsed().as_millis() as u64,
                         error: Some(format!("Failed to build request: {}", e)),
@@ -1258,7 +1251,7 @@ CRITICAL: Your FINAL response must be plain text that directly answers the task 
                         task_id: task.task_id.clone(),
                         final_answer: String::new(),
                         tool_calls,
-                        mode: ExecutionMode::CodeModeRlm,
+                        mode_name: "CodeMode+RLM".to_string(),
                         context_tokens: total_context_tokens,
                         latency_ms: start.elapsed().as_millis() as u64,
                         error: Some(format!("Agent LLM call failed: {}", e)),
@@ -1278,7 +1271,7 @@ CRITICAL: Your FINAL response must be plain text that directly answers the task 
                         task_id: task.task_id.clone(),
                         final_answer: String::new(),
                         tool_calls,
-                        mode: ExecutionMode::CodeModeRlm,
+                        mode_name: "CodeMode+RLM".to_string(),
                         context_tokens: total_context_tokens,
                         latency_ms: start.elapsed().as_millis() as u64,
                         error: Some("No response from agent".to_string()),
@@ -1407,7 +1400,7 @@ CRITICAL: Your FINAL response must be plain text that directly answers the task 
                 task_id: task.task_id.clone(),
                 final_answer: content,
                 tool_calls,
-                mode: ExecutionMode::CodeModeRlm,
+                mode_name: "CodeMode+RLM".to_string(),
                 context_tokens: total_context_tokens,
                 latency_ms: start.elapsed().as_millis() as u64,
                 error: None,
@@ -1419,7 +1412,7 @@ CRITICAL: Your FINAL response must be plain text that directly answers the task 
             task_id: task.task_id.clone(),
             final_answer: format!("Max turns ({}) reached without final answer", self.max_turns),
             tool_calls,
-            mode: ExecutionMode::CodeModeRlm,
+            mode_name: "CodeMode+RLM".to_string(),
             context_tokens: total_context_tokens,
             latency_ms: start.elapsed().as_millis() as u64,
             error: Some("Max turns reached".to_string()),
@@ -1627,12 +1620,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_execution_mode_display() {
-        assert_eq!(format!("{}", ExecutionMode::Baseline), "Baseline");
-        assert_eq!(format!("{}", ExecutionMode::CodeMode), "CodeMode");
-        assert_eq!(format!("{}", ExecutionMode::BaselineRlm), "Baseline+RLM");
-        assert_eq!(format!("{}", ExecutionMode::CodeModeRlm), "CodeMode+RLM");
-        assert_eq!(format!("{}", ExecutionMode::CodexAgent), "CodexAgent");
+    fn test_tool_calling_mode_display() {
+        assert_eq!(format!("{}", ToolCallingMode::Baseline), "Baseline");
+        assert_eq!(format!("{}", ToolCallingMode::CodeMode), "CodeMode");
+        assert_eq!(format!("{}", ToolCallingMode::BaselineRlm), "Baseline+RLM");
+        assert_eq!(format!("{}", ToolCallingMode::CodeModeRlm), "CodeMode+RLM");
     }
 
     #[test]

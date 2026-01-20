@@ -1,12 +1,19 @@
 //! MCP-Atlas Evaluation Module
 //!
 //! This module provides evaluation capabilities for benchmarking LLM agent
-//! performance using the MCP-Atlas dataset. It supports multiple execution modes:
+//! performance using the MCP-Atlas dataset. It supports two client architectures:
 //!
+//! ## Tool-Calling Client (ToolCallingRunner)
+//!
+//! Uses OpenAI function calling with modes:
 //! - **Baseline**: Direct EXECUTE_TOOL calls with full results in context
 //! - **CodeMode**: EXECUTE_CODE with summarized results
 //! - **BaselineRlm**: EXECUTE_TOOL with RLM routing for large results
-//! - **CodexAgent**: Real Codex agent with full system prompts
+//! - **CodeModeRlm**: EXECUTE_CODE with RLM routing for large results
+//!
+//! ## Codex Client (CodexRunner)
+//!
+//! Uses the real Codex agent with full system prompts via ConversationManager.
 //!
 //! ## Scoring
 //!
@@ -22,18 +29,18 @@ pub mod dataset;
 pub mod judge;
 pub mod runner;
 
-pub use codex_runner::CodexTaskRunner;
+pub use codex_runner::CodexRunner;
 pub use dataset::load_dataset;
 pub use dataset::McpAtlasTask;
 pub use dataset::TrajectoryStep;
 pub use judge::ClaimJudge;
 pub use judge::ClaimScore;
 pub use judge::ClaimVerificationResult;
-pub use runner::ExecutionMode;
 pub use runner::GatewayTool;
 pub use runner::TaskResult;
-pub use runner::TaskRunner;
 pub use runner::ToolCallRecord;
+pub use runner::ToolCallingMode;
+pub use runner::ToolCallingRunner;
 
 /// Default pass threshold for MCP-Atlas evaluation
 pub const PASS_THRESHOLD: f64 = 0.75;

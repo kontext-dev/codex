@@ -27,13 +27,12 @@ use crate::protocol::SessionSource;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::user_input::UserInput;
 
-use super::ExecutionMode;
 use super::McpAtlasTask;
 use super::TaskResult;
 use super::ToolCallRecord;
 
 /// Task runner that uses the real Codex agent via ConversationManager
-pub struct CodexTaskRunner {
+pub struct CodexRunner {
     /// Gateway URL for MCP server
     gateway_url: String,
     /// Access token for authentication
@@ -48,7 +47,7 @@ pub struct CodexTaskRunner {
     codex_home: PathBuf,
 }
 
-impl CodexTaskRunner {
+impl CodexRunner {
     /// Create a new Codex task runner
     pub async fn new(gateway_url: &str, access_token: &str, model: &str) -> Result<Self> {
         let temp_home = TempDir::new().context("Failed to create temp Codex home")?;
@@ -154,7 +153,7 @@ impl CodexTaskRunner {
                     task_id: task.task_id.clone(),
                     final_answer: String::new(),
                     tool_calls,
-                    mode: ExecutionMode::CodexAgent,
+                    mode_name: "Codex".to_string(),
                     context_tokens: 0,
                     latency_ms: start.elapsed().as_millis() as u64,
                     error: Some(format!("Failed to create temp dir: {}", e)),
@@ -170,7 +169,7 @@ impl CodexTaskRunner {
                     task_id: task.task_id.clone(),
                     final_answer: String::new(),
                     tool_calls,
-                    mode: ExecutionMode::CodexAgent,
+                    mode_name: "Codex".to_string(),
                     context_tokens: 0,
                     latency_ms: start.elapsed().as_millis() as u64,
                     error: Some(format!("Failed to build config: {}", e)),
@@ -194,7 +193,7 @@ impl CodexTaskRunner {
                     task_id: task.task_id.clone(),
                     final_answer: String::new(),
                     tool_calls,
-                    mode: ExecutionMode::CodexAgent,
+                    mode_name: "Codex".to_string(),
                     context_tokens: 0,
                     latency_ms: start.elapsed().as_millis() as u64,
                     error: Some(format!("Failed to start conversation: {}", e)),
@@ -225,7 +224,7 @@ impl CodexTaskRunner {
                 task_id: task.task_id.clone(),
                 final_answer: String::new(),
                 tool_calls,
-                mode: ExecutionMode::CodexAgent,
+                mode_name: "Codex".to_string(),
                 context_tokens: 0,
                 latency_ms: start.elapsed().as_millis() as u64,
                 error: Some(format!("Failed to submit prompt: {}", e)),
@@ -342,7 +341,7 @@ impl CodexTaskRunner {
             task_id: task.task_id.clone(),
             final_answer,
             tool_calls,
-            mode: ExecutionMode::CodexAgent,
+            mode_name: "Codex".to_string(),
             context_tokens: total_context_tokens,
             latency_ms: start.elapsed().as_millis() as u64,
             error,
@@ -356,7 +355,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_build_gateway_mcp_config() {
-        let runner = CodexTaskRunner::new(
+        let runner = CodexRunner::new(
             "https://gateway.example.com/mcp",
             "test-token",
             "gpt-4o",

@@ -1,11 +1,16 @@
 //! MCP-Atlas Evaluation Script
 //!
-//! Benchmarks LLM agent performance on the MCP-Atlas dataset across multiple execution modes:
+//! Benchmarks LLM agent performance on the MCP-Atlas dataset using two client architectures:
+//!
+//! ## Tool-Calling Client (ToolCallingRunner)
+//! Uses OpenAI function calling with modes:
 //! - Baseline: Direct EXECUTE_TOOL calls with full results in context
 //! - CodeMode: EXECUTE_CODE with summarized results
 //! - Baseline+RLM: EXECUTE_TOOL with RLM routing for large results
 //! - CodeMode+RLM: EXECUTE_CODE with RLM routing for large results
-//! - CodexAgent: Real Codex agent with full system prompts via ConversationManager
+//!
+//! ## Codex Client (CodexRunner)
+//! Uses the real Codex agent with full system prompts via ConversationManager.
 //!
 //! ## Prerequisites
 //!
@@ -40,10 +45,10 @@ use std::time::Instant;
 use codex_core::eval::ClaimJudge;
 use codex_core::eval::ClaimScore;
 use codex_core::eval::ClaimVerificationResult;
-use codex_core::eval::CodexTaskRunner;
-use codex_core::eval::ExecutionMode;
+use codex_core::eval::CodexRunner;
 use codex_core::eval::TaskResult;
-use codex_core::eval::TaskRunner;
+use codex_core::eval::ToolCallingMode;
+use codex_core::eval::ToolCallingRunner;
 use codex_core::eval::PASS_THRESHOLD;
 use codex_core::rlm::EvidenceStore;
 use codex_core::rlm::GatewayResultRouter;
@@ -652,20 +657,32 @@ async fn run_mcp_atlas_three_way_evaluation() {
         println!("  KONTEXT_GATEWAY_URL=https://gateway.kontext.dev");
         println!("  OPENAI_API_KEY=<your-api-key>");
         println!();
-        println!("Optional filter variables:");
-        println!("  EVAL_LIMIT=5              # Run only N tasks");
-        println!("  EVAL_TASK_PREFIX=task_linear  # Filter by task ID prefix");
-        println!("  EVAL_MODES=all            # Run specific modes (baseline,codemode,rlm,codemoderlm,codex,all)");
-        println!("  EVAL_MODEL=gpt-4.1-2025-04-14  # Model to use (default: gpt-4o)");
+        println!("Optional configuration:");
+        println!("  EVAL_LIMIT=5                   # Run only N tasks");
+        println!("  EVAL_TASK_PREFIX=task_linear   # Filter by task ID prefix");
+        println!("  EVAL_MODEL=gpt-4o              # Model for tool-calling client");
         println!("  EVAL_DATASET_PATH=/path/to/dataset.csv  # Custom dataset path");
+        println!();
+        println!("Tool-calling client modes:");
+        println!("  EVAL_TOOL_MODES=baseline,codemode  # Comma-separated (baseline,codemode,rlm,codemoderlm,all)");
+        println!();
+        println!("Codex client:");
+        println!("  EVAL_USE_CODEX=true            # Enable Codex client");
+        println!("  EVAL_CODEX_MODEL=gpt-4-turbo   # Independent model for Codex (defaults to EVAL_MODEL)");
         println!();
         println!("Run with:");
         println!("  source .env");
         println!("  cargo test -p codex-core --test mcp_atlas_eval run_mcp_atlas_three_way_evaluation -- --nocapture");
         println!();
         println!("Examples:");
-        println!("  # Run all modes with gpt-5.2 on custom dataset:");
-        println!("  EVAL_MODES=all EVAL_MODEL=gpt-5.2 EVAL_DATASET_PATH=/path/to/tasks.csv cargo test ...");
+        println!("  # Run only tool-calling modes:");
+        println!("  EVAL_TOOL_MODES=baseline,codemode cargo test ...");
+        println!();
+        println!("  # Run only Codex client:");
+        println!("  EVAL_TOOL_MODES= EVAL_USE_CODEX=true cargo test ...");
+        println!();
+        println!("  # Run both with different models:");
+        println!("  EVAL_TOOL_MODES=baseline EVAL_USE_CODEX=true EVAL_MODEL=gpt-4o EVAL_CODEX_MODEL=gpt-4-turbo cargo test ...");
         println!();
         return;
     }
@@ -756,7 +773,7 @@ async fn run_mcp_atlas_three_way_evaluation() {
     // Step 5: Create runner and discover tools
     println!("Discovering available Gateway tools...");
     let agent_model = std::env::var("EVAL_MODEL").unwrap_or_else(|_| "gpt-4o".to_string());
-    let runner = match TaskRunner::new(client.clone(), rlm_router.clone()).await {
+    let runner = match ToolCallingRunner::new(client.clone(), rlm_router.clone()).await {
         Ok(r) => r.with_model(&agent_model),
         Err(e) => {
             println!("Failed to create runner: {}", e);
@@ -883,51 +900,60 @@ async fn run_mcp_atlas_three_way_evaluation() {
     }
     println!();
 
-    // Step 7: Run evaluation with selected modes
-    // EVAL_MODES: comma-separated modes (baseline, codemode, rlm, codex). Default: all
-    let mode_filter = std::env::var("EVAL_MODES").ok();
-    let modes: Vec<ExecutionMode> = if let Some(ref filter) = mode_filter {
-        let filter_lower = filter.to_lowercase();
-        let mut selected = Vec::new();
-        // Parse comma-separated modes explicitly
-        for part in filter_lower.split(',') {
-            let part = part.trim();
-            match part {
-                "baseline" => selected.push(ExecutionMode::Baseline),
-                "codemode" | "code" => selected.push(ExecutionMode::CodeMode),
-                "rlm" | "baselinerlm" => selected.push(ExecutionMode::BaselineRlm),
-                "codemoderlm" | "code+rlm" | "coderlm" => selected.push(ExecutionMode::CodeModeRlm),
-                "codex" | "codexagent" => selected.push(ExecutionMode::CodexAgent),
-                "all" => {
-                    selected.push(ExecutionMode::Baseline);
-                    selected.push(ExecutionMode::CodeMode);
-                    selected.push(ExecutionMode::BaselineRlm);
-                    selected.push(ExecutionMode::CodeModeRlm);
-                    selected.push(ExecutionMode::CodexAgent);
-                }
-                _ => {}
-            }
-        }
-        if selected.is_empty() {
-            println!("Warning: No valid modes in EVAL_MODES='{}'. Running all modes.", filter);
-            vec![ExecutionMode::Baseline, ExecutionMode::CodeMode, ExecutionMode::BaselineRlm, ExecutionMode::CodeModeRlm]
-        } else {
-            println!("Running modes: {:?}\n", selected.iter().map(|m| m.to_string()).collect::<Vec<_>>());
-            selected
-        }
+    // Step 7: Parse tool-calling modes from EVAL_TOOL_MODES (comma-separated)
+    // Options: baseline, codemode, rlm, codemoderlm. Default: baseline,codemode
+    let tool_modes: Vec<ToolCallingMode> = env::var("EVAL_TOOL_MODES")
+        .unwrap_or_else(|_| "baseline,codemode".to_string())
+        .split(',')
+        .filter_map(|s| match s.trim().to_lowercase().as_str() {
+            "baseline" => Some(ToolCallingMode::Baseline),
+            "codemode" | "code" => Some(ToolCallingMode::CodeMode),
+            "rlm" | "baselinerlm" => Some(ToolCallingMode::BaselineRlm),
+            "codemoderlm" | "code+rlm" | "coderlm" => Some(ToolCallingMode::CodeModeRlm),
+            "all" => None, // Handle "all" separately
+            _ => None,
+        })
+        .collect();
+
+    // Check if "all" was specified
+    let tool_modes: Vec<ToolCallingMode> = if env::var("EVAL_TOOL_MODES")
+        .map(|s| s.to_lowercase().contains("all"))
+        .unwrap_or(false)
+    {
+        vec![
+            ToolCallingMode::Baseline,
+            ToolCallingMode::CodeMode,
+            ToolCallingMode::BaselineRlm,
+            ToolCallingMode::CodeModeRlm,
+        ]
     } else {
-        vec![ExecutionMode::Baseline, ExecutionMode::CodeMode, ExecutionMode::BaselineRlm, ExecutionMode::CodeModeRlm]
+        tool_modes
     };
 
-    // Step 7b: Setup CodexTaskRunner if CodexAgent mode is selected
-    let codex_runner = if modes.contains(&ExecutionMode::CodexAgent) {
-        match CodexTaskRunner::new(&config.mcp_url, &token.access_token, &agent_model).await {
+    // Step 7b: Parse codex flag from EVAL_USE_CODEX (boolean)
+    let use_codex = env::var("EVAL_USE_CODEX")
+        .map(|s| s.eq_ignore_ascii_case("true") || s == "1")
+        .unwrap_or(false);
+
+    // Parse independent codex model (defaults to EVAL_MODEL)
+    let codex_model = env::var("EVAL_CODEX_MODEL").unwrap_or_else(|_| agent_model.clone());
+
+    println!("Running tool-calling modes: {:?}", tool_modes.iter().map(|m| m.to_string()).collect::<Vec<_>>());
+    println!("Use Codex client: {}", use_codex);
+    if use_codex {
+        println!("Codex model: {}", codex_model);
+    }
+    println!();
+
+    // Step 7c: Setup CodexRunner if codex flag is set
+    let codex_runner = if use_codex {
+        match CodexRunner::new(&config.mcp_url, &token.access_token, &codex_model).await {
             Ok(r) => {
-                println!("CodexTaskRunner initialized for CodexAgent mode\n");
+                println!("CodexRunner initialized for Codex client\n");
                 Some(r)
             }
             Err(e) => {
-                println!("Warning: Failed to create CodexTaskRunner: {}. CodexAgent mode will be skipped.", e);
+                println!("Warning: Failed to create CodexRunner: {}. Codex client will be skipped.", e);
                 None
             }
         }
@@ -935,28 +961,21 @@ async fn run_mcp_atlas_three_way_evaluation() {
         None
     };
 
-    let mut all_results: HashMap<ExecutionMode, Vec<EvalResult>> = HashMap::new();
+    // Use mode_name strings as keys for results
+    let mut all_results: HashMap<String, Vec<EvalResult>> = HashMap::new();
 
-    for mode in &modes {
-        // Skip CodexAgent mode if runner wasn't created
-        if *mode == ExecutionMode::CodexAgent && codex_runner.is_none() {
-            println!("\n═══ Skipping {} mode (runner not available) ═══\n", mode);
-            continue;
-        }
-
-        println!("\n═══ Running {} mode ═══\n", mode);
+    // Run tool-calling modes
+    for mode in &tool_modes {
+        let mode_name = mode.to_string();
+        println!("\n═══ Running {} mode (ToolCalling) ═══\n", mode_name);
 
         let mut results = Vec::new();
 
         for (i, task) in eval_tasks.iter().enumerate() {
             println!("  Task {}/{}: {}...", i + 1, eval_tasks.len(), &task.task_id[..task.task_id.len().min(20)]);
 
-            // Execute task - use CodexTaskRunner for CodexAgent mode
-            let task_result = if *mode == ExecutionMode::CodexAgent {
-                codex_runner.as_ref().unwrap().run_task(task).await
-            } else {
-                runner.run_task(task, *mode).await
-            };
+            // Execute task using tool-calling runner
+            let task_result = runner.run_task(task, *mode).await;
 
             // Print tool calls made
             if !task_result.tool_calls.is_empty() {
@@ -998,24 +1017,82 @@ async fn run_mcp_atlas_three_way_evaluation() {
             });
         }
 
-        all_results.insert(*mode, results);
+        all_results.insert(mode_name, results);
+    }
+
+    // Run Codex client (if enabled)
+    if let Some(ref codex) = codex_runner {
+        println!("\n═══ Running Codex client ═══\n");
+
+        let mut results = Vec::new();
+
+        for (i, task) in eval_tasks.iter().enumerate() {
+            println!("  Task {}/{}: {}...", i + 1, eval_tasks.len(), &task.task_id[..task.task_id.len().min(20)]);
+
+            // Execute task using Codex runner
+            let task_result = codex.run_task(task).await;
+
+            // Print tool calls made
+            if !task_result.tool_calls.is_empty() {
+                let tool_names: Vec<_> = task_result.tool_calls.iter().map(|t| t.name.as_str()).collect();
+                println!("    Tools used: {}", tool_names.join(", "));
+            }
+
+            // Judge the answer
+            let verification = match judge
+                .verify_claims(&task.prompt, &task_result.final_answer, &task.claims)
+                .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    println!("    Verification failed: {}", e);
+                    ClaimVerificationResult {
+                        scores: vec![],
+                        coverage: 0.0,
+                        passed: false,
+                        raw_response: e.to_string(),
+                    }
+                }
+            };
+
+            let status = if verification.passed { "PASS" } else { "FAIL" };
+            let latency_secs = task_result.latency_ms as f64 / 1000.0;
+            println!(
+                "    Coverage: {:.2}, Status: {}, Tokens: {}, Latency: {:.1}s",
+                verification.coverage, status, task_result.context_tokens, latency_secs
+            );
+            if let Some(ref err) = task_result.error {
+                println!("    ERROR: {}", err);
+            }
+
+            results.push(EvalResult {
+                task_id: task.task_id.clone(),
+                task_result,
+                verification,
+            });
+        }
+
+        all_results.insert("Codex".to_string(), results);
     }
 
     // Step 8: Print results
-    print_three_way_comparison(&all_results);
+    print_comparison(&all_results);
 }
 
-/// Print comparative results
-fn print_three_way_comparison(results: &HashMap<ExecutionMode, Vec<EvalResult>>) {
+/// Print comparative results (uses mode_name strings as keys)
+fn print_comparison(results: &HashMap<String, Vec<EvalResult>>) {
     println!("\n");
     println!("═══════════════════════════════════════════════════════════════════════════════");
     println!("                    MCP-Atlas Evaluation Results");
     println!("═══════════════════════════════════════════════════════════════════════════════");
     println!();
 
+    // Define the order of modes for display
+    let mode_order = ["Baseline", "CodeMode", "Baseline+RLM", "CodeMode+RLM", "Codex"];
+
     // Per-mode summary
-    for mode in &[ExecutionMode::Baseline, ExecutionMode::CodeMode, ExecutionMode::BaselineRlm, ExecutionMode::CodeModeRlm, ExecutionMode::CodexAgent] {
-        if let Some(mode_results) = results.get(mode) {
+    for mode_name in &mode_order {
+        if let Some(mode_results) = results.get(*mode_name) {
             let pass_count = mode_results
                 .iter()
                 .filter(|r| r.verification.passed)
@@ -1037,7 +1114,7 @@ fn print_three_way_comparison(results: &HashMap<ExecutionMode, Vec<EvalResult>>)
                 / mode_results.len().max(1) as u64;
             let avg_latency_secs = avg_latency_ms as f64 / 1000.0;
 
-            println!("## {} Mode", mode);
+            println!("## {} Mode", mode_name);
             println!();
             println!("| Metric | Value |");
             println!("|--------|-------|");
@@ -1060,14 +1137,14 @@ fn print_three_way_comparison(results: &HashMap<ExecutionMode, Vec<EvalResult>>)
     println!("|------|-----------|--------------|------------|-----------------|-------------|");
 
     let baseline_tokens = results
-        .get(&ExecutionMode::Baseline)
+        .get("Baseline")
         .map(|r| {
             r.iter().map(|e| e.task_result.context_tokens).sum::<i64>() / r.len().max(1) as i64
         })
         .unwrap_or(1);
 
-    for mode in &[ExecutionMode::Baseline, ExecutionMode::CodeMode, ExecutionMode::BaselineRlm, ExecutionMode::CodeModeRlm, ExecutionMode::CodexAgent] {
-        if let Some(mode_results) = results.get(mode) {
+    for mode_name in &mode_order {
+        if let Some(mode_results) = results.get(*mode_name) {
             let pass_count = mode_results
                 .iter()
                 .filter(|r| r.verification.passed)
@@ -1095,7 +1172,7 @@ fn print_three_way_comparison(results: &HashMap<ExecutionMode, Vec<EvalResult>>)
                 0.0
             };
 
-            let reduction_str = if *mode == ExecutionMode::Baseline {
+            let reduction_str = if *mode_name == "Baseline" {
                 "-".to_string()
             } else {
                 format!("-{:.0}%", reduction)
@@ -1103,7 +1180,7 @@ fn print_three_way_comparison(results: &HashMap<ExecutionMode, Vec<EvalResult>>)
 
             println!(
                 "| {} | {:.1}% | {:.3} | {} | {} | {:.1}s |",
-                mode, pass_rate, avg_coverage, avg_tokens, reduction_str, avg_latency_ms as f64 / 1000.0
+                mode_name, pass_rate, avg_coverage, avg_tokens, reduction_str, avg_latency_ms as f64 / 1000.0
             );
         }
     }
@@ -1112,21 +1189,21 @@ fn print_three_way_comparison(results: &HashMap<ExecutionMode, Vec<EvalResult>>)
 
     // Per-task comparison
     println!("## Per-Task Comparison\n");
-    println!("| Task | Baseline | CodeMode | Baseline+RLM | CodeMode+RLM | CodexAgent | Winner |");
-    println!("|------|----------|----------|--------------|--------------|------------|--------|");
+    println!("| Task | Baseline | CodeMode | Baseline+RLM | CodeMode+RLM | Codex | Winner |");
+    println!("|------|----------|----------|--------------|--------------|-------|--------|");
 
-    let baseline_results = results.get(&ExecutionMode::Baseline);
-    let codemode_results = results.get(&ExecutionMode::CodeMode);
-    let rlm_results = results.get(&ExecutionMode::BaselineRlm);
-    let codemode_rlm_results = results.get(&ExecutionMode::CodeModeRlm);
-    let codex_agent_results = results.get(&ExecutionMode::CodexAgent);
+    let baseline_results = results.get("Baseline");
+    let codemode_results = results.get("CodeMode");
+    let rlm_results = results.get("Baseline+RLM");
+    let codemode_rlm_results = results.get("CodeMode+RLM");
+    let codex_results = results.get("Codex");
 
     // Get any available results for iteration
     let any_results = baseline_results
         .or(codemode_results)
         .or(rlm_results)
         .or(codemode_rlm_results)
-        .or(codex_agent_results);
+        .or(codex_results);
 
     if let Some(first_results) = any_results {
         for (i, result) in first_results.iter().enumerate() {
@@ -1146,7 +1223,7 @@ fn print_three_way_comparison(results: &HashMap<ExecutionMode, Vec<EvalResult>>)
                 .and_then(|r| r.get(i))
                 .map(|r| r.verification.coverage)
                 .unwrap_or(0.0);
-            let ca_cov = codex_agent_results
+            let codex_cov = codex_results
                 .and_then(|r| r.get(i))
                 .map(|r| r.verification.coverage)
                 .unwrap_or(0.0);
@@ -1155,16 +1232,16 @@ fn print_three_way_comparison(results: &HashMap<ExecutionMode, Vec<EvalResult>>)
             let c_status = if c_cov >= PASS_THRESHOLD { "✓" } else { "✗" };
             let r_status = if r_cov >= PASS_THRESHOLD { "✓" } else { "✗" };
             let cr_status = if cr_cov >= PASS_THRESHOLD { "✓" } else { "✗" };
-            let ca_status = if ca_cov >= PASS_THRESHOLD { "✓" } else { "✗" };
+            let codex_status = if codex_cov >= PASS_THRESHOLD { "✓" } else { "✗" };
 
             // Determine winner based on highest coverage
-            let max_cov = b_cov.max(c_cov).max(r_cov).max(cr_cov).max(ca_cov);
+            let max_cov = b_cov.max(c_cov).max(r_cov).max(cr_cov).max(codex_cov);
             let winner = if max_cov == 0.0 {
                 "all fail"
-            } else if ca_cov == max_cov && b_cov == max_cov && c_cov == max_cov && r_cov == max_cov && cr_cov == max_cov {
+            } else if codex_cov == max_cov && b_cov == max_cov && c_cov == max_cov && r_cov == max_cov && cr_cov == max_cov {
                 "tie (all)"
-            } else if ca_cov == max_cov {
-                "CodexAgent"
+            } else if codex_cov == max_cov {
+                "Codex"
             } else if b_cov == max_cov {
                 "Baseline"
             } else if r_cov == max_cov {
@@ -1182,7 +1259,7 @@ fn print_three_way_comparison(results: &HashMap<ExecutionMode, Vec<EvalResult>>)
                 c_cov, c_status,
                 r_cov, r_status,
                 cr_cov, cr_status,
-                ca_cov, ca_status,
+                codex_cov, codex_status,
                 winner
             );
         }
@@ -1192,7 +1269,7 @@ fn print_three_way_comparison(results: &HashMap<ExecutionMode, Vec<EvalResult>>)
     println!("## Key Insight\n");
     println!("RLM modes aim to achieve significant token reduction while maintaining quality.");
     println!("CodeMode+RLM combines code generation with RLM routing for best of both worlds.");
-    println!("CodexAgent uses the full Codex system prompts and agent loop.");
+    println!("Codex client uses the full Codex system prompts and agent loop.");
 }
 
 /// Full evaluation on all 500 tasks (ignored by default - run with --ignored)
@@ -1282,7 +1359,7 @@ async fn analyze_solvable_tasks() {
     }
 
     // Create runner to discover tools
-    let runner = match TaskRunner::new(client.clone(), None).await {
+    let runner = match ToolCallingRunner::new(client.clone(), None).await {
         Ok(r) => r,
         Err(e) => {
             println!("Failed to create runner: {}", e);
@@ -1574,7 +1651,7 @@ async fn run_verbose_debug_evaluation() {
 
     // Step 5: Discover tools
     println!("[STEP 5] Discovering Gateway tools...");
-    let runner = match TaskRunner::new(client.clone(), rlm_router.clone()).await {
+    let runner = match ToolCallingRunner::new(client.clone(), rlm_router.clone()).await {
         Ok(r) => r,
         Err(e) => {
             println!("  ✗ Failed to create runner: {}\n", e);
@@ -1656,7 +1733,7 @@ async fn run_verbose_debug_evaluation() {
         println!();
 
         // Run in RLM mode only (the mode that had best results)
-        let mode = ExecutionMode::BaselineRlm;
+        let mode = ToolCallingMode::BaselineRlm;
 
         println!("┌─ EXECUTION ({}) ────────────────────────────────────────────────────────────┐", mode);
         println!("│");

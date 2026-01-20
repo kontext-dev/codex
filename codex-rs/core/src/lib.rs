@@ -128,5 +128,6 @@ pub use codex_protocol::models::ResponseItem;
 pub use compact::content_items_to_text;
 pub use event_mapping::parse_turn_item;
 pub mod compact;
+#[cfg(any(test, feature = "test-support"))]
 pub mod eval;
 pub mod otel_init;
