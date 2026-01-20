@@ -63,9 +63,10 @@ use serde_json::json;
 use tempfile::TempDir;
 use tokio::sync::RwLock;
 
-/// Dataset path relative to core directory (CARGO_MANIFEST_DIR)
+/// Default dataset path relative to core directory (CARGO_MANIFEST_DIR)
 /// Use the v2 dataset focused on Linear, DeepWiki, Context7 tools (no CLI security issues)
-const DATASET_PATH: &str = "../mcp-atlas/services/mcp_eval/gateway_tasks_v2.csv";
+/// Can be overridden with EVAL_DATASET_PATH environment variable
+const DEFAULT_DATASET_PATH: &str = "../mcp-atlas/services/mcp_eval/gateway_tasks_v2.csv";
 
 /// Original Arrow dataset path (for reference)
 #[allow(dead_code)]
@@ -158,10 +159,13 @@ fn create_elicitation_handler() -> codex_rmcp_client::SendElicitation {
     })
 }
 
-/// Get dataset path
+/// Get dataset path (can be overridden with EVAL_DATASET_PATH)
 fn get_dataset_path() -> PathBuf {
+    if let Ok(custom_path) = env::var("EVAL_DATASET_PATH") {
+        return PathBuf::from(custom_path);
+    }
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(manifest_dir).join(DATASET_PATH)
+    PathBuf::from(manifest_dir).join(DEFAULT_DATASET_PATH)
 }
 
 /// Create an RLM router for evaluation
@@ -648,16 +652,17 @@ async fn run_mcp_atlas_three_way_evaluation() {
         println!("Optional filter variables:");
         println!("  EVAL_LIMIT=5              # Run only N tasks");
         println!("  EVAL_TASK_PREFIX=task_linear  # Filter by task ID prefix");
-        println!("  EVAL_MODES=codemode       # Run specific modes (baseline,codemode,rlm)");
+        println!("  EVAL_MODES=all            # Run specific modes (baseline,codemode,rlm,codemoderlm,all)");
         println!("  EVAL_MODEL=gpt-4.1-2025-04-14  # Model to use (default: gpt-4o)");
+        println!("  EVAL_DATASET_PATH=/path/to/dataset.csv  # Custom dataset path");
         println!();
         println!("Run with:");
         println!("  source .env");
         println!("  cargo test -p codex-core --test mcp_atlas_eval run_mcp_atlas_three_way_evaluation -- --nocapture");
         println!();
         println!("Examples:");
-        println!("  # Run 5 Linear tasks in RLM mode with gpt-4.1:");
-        println!("  EVAL_LIMIT=5 EVAL_MODES=rlm EVAL_MODEL=gpt-4.1-2025-04-14 cargo test ...");
+        println!("  # Run all modes with gpt-5.2 on custom dataset:");
+        println!("  EVAL_MODES=all EVAL_MODEL=gpt-5.2 EVAL_DATASET_PATH=/path/to/tasks.csv cargo test ...");
         println!();
         return;
     }
@@ -842,13 +847,15 @@ async fn run_mcp_atlas_three_way_evaluation() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(usize::MAX);
 
-    let task_prefix = std::env::var("EVAL_TASK_PREFIX").ok();
+    let task_prefixes: Option<Vec<String>> = std::env::var("EVAL_TASK_PREFIX")
+        .ok()
+        .map(|s| s.split(',').map(|p| p.trim().to_string()).collect());
 
     let eval_tasks: Vec<_> = eval_tasks
         .into_iter()
         .filter(|task| {
-            if let Some(ref prefix) = task_prefix {
-                task.task_id.starts_with(prefix)
+            if let Some(ref prefixes) = task_prefixes {
+                prefixes.iter().any(|prefix| task.task_id.starts_with(prefix))
             } else {
                 true
             }
@@ -858,15 +865,15 @@ async fn run_mcp_atlas_three_way_evaluation() {
 
     if eval_tasks.is_empty() {
         println!("No tasks match the filter criteria.");
-        if let Some(ref prefix) = task_prefix {
-            println!("  EVAL_TASK_PREFIX={}", prefix);
+        if let Some(ref prefixes) = task_prefixes {
+            println!("  EVAL_TASK_PREFIX={}", prefixes.join(","));
         }
         return;
     }
 
     println!("Running evaluation on {} tasks", eval_tasks.len());
-    if let Some(ref prefix) = task_prefix {
-        println!("  (filtered by prefix: {})", prefix);
+    if let Some(ref prefixes) = task_prefixes {
+        println!("  (filtered by prefixes: {})", prefixes.join(", "));
     }
     if limit < usize::MAX {
         println!("  (limited to {} tasks)", limit);
@@ -886,18 +893,25 @@ async fn run_mcp_atlas_three_way_evaluation() {
                 "baseline" => selected.push(ExecutionMode::Baseline),
                 "codemode" | "code" => selected.push(ExecutionMode::CodeMode),
                 "rlm" | "baselinerlm" => selected.push(ExecutionMode::BaselineRlm),
+                "codemoderlm" | "code+rlm" | "coderlm" => selected.push(ExecutionMode::CodeModeRlm),
+                "all" => {
+                    selected.push(ExecutionMode::Baseline);
+                    selected.push(ExecutionMode::CodeMode);
+                    selected.push(ExecutionMode::BaselineRlm);
+                    selected.push(ExecutionMode::CodeModeRlm);
+                }
                 _ => {}
             }
         }
         if selected.is_empty() {
             println!("Warning: No valid modes in EVAL_MODES='{}'. Running all modes.", filter);
-            vec![ExecutionMode::Baseline, ExecutionMode::CodeMode, ExecutionMode::BaselineRlm]
+            vec![ExecutionMode::Baseline, ExecutionMode::CodeMode, ExecutionMode::BaselineRlm, ExecutionMode::CodeModeRlm]
         } else {
             println!("Running modes: {:?}\n", selected.iter().map(|m| m.to_string()).collect::<Vec<_>>());
             selected
         }
     } else {
-        vec![ExecutionMode::Baseline, ExecutionMode::CodeMode, ExecutionMode::BaselineRlm]
+        vec![ExecutionMode::Baseline, ExecutionMode::CodeMode, ExecutionMode::BaselineRlm, ExecutionMode::CodeModeRlm]
     };
 
     let mut all_results: HashMap<ExecutionMode, Vec<EvalResult>> = HashMap::new();
@@ -966,7 +980,7 @@ fn print_three_way_comparison(results: &HashMap<ExecutionMode, Vec<EvalResult>>)
     println!();
 
     // Per-mode summary
-    for mode in &[ExecutionMode::Baseline, ExecutionMode::CodeMode, ExecutionMode::BaselineRlm] {
+    for mode in &[ExecutionMode::Baseline, ExecutionMode::CodeMode, ExecutionMode::BaselineRlm, ExecutionMode::CodeModeRlm] {
         if let Some(mode_results) = results.get(mode) {
             let pass_count = mode_results
                 .iter()
@@ -1008,8 +1022,8 @@ fn print_three_way_comparison(results: &HashMap<ExecutionMode, Vec<EvalResult>>)
 
     // Comparative table
     println!("## Comparison\n");
-    println!("| Mode | Pass Rate | Avg Coverage | Avg Tokens | Token Reduction |");
-    println!("|------|-----------|--------------|------------|-----------------|");
+    println!("| Mode | Pass Rate | Avg Coverage | Avg Tokens | Token Reduction | Avg Latency |");
+    println!("|------|-----------|--------------|------------|-----------------|-------------|");
 
     let baseline_tokens = results
         .get(&ExecutionMode::Baseline)
@@ -1018,7 +1032,7 @@ fn print_three_way_comparison(results: &HashMap<ExecutionMode, Vec<EvalResult>>)
         })
         .unwrap_or(1);
 
-    for mode in &[ExecutionMode::Baseline, ExecutionMode::CodeMode, ExecutionMode::BaselineRlm] {
+    for mode in &[ExecutionMode::Baseline, ExecutionMode::CodeMode, ExecutionMode::BaselineRlm, ExecutionMode::CodeModeRlm] {
         if let Some(mode_results) = results.get(mode) {
             let pass_count = mode_results
                 .iter()
@@ -1035,6 +1049,11 @@ fn print_three_way_comparison(results: &HashMap<ExecutionMode, Vec<EvalResult>>)
                 .map(|r| r.task_result.context_tokens)
                 .sum::<i64>()
                 / mode_results.len().max(1) as i64;
+            let avg_latency_ms: u64 = mode_results
+                .iter()
+                .map(|r| r.task_result.latency_ms)
+                .sum::<u64>()
+                / mode_results.len().max(1) as u64;
 
             let reduction = if baseline_tokens > 0 {
                 100.0 - (avg_tokens as f64 / baseline_tokens as f64 * 100.0)
@@ -1049,8 +1068,8 @@ fn print_three_way_comparison(results: &HashMap<ExecutionMode, Vec<EvalResult>>)
             };
 
             println!(
-                "| {} | {:.1}% | {:.3} | {} | {} |",
-                mode, pass_rate, avg_coverage, avg_tokens, reduction_str
+                "| {} | {:.1}% | {:.3} | {} | {} | {:.1}s |",
+                mode, pass_rate, avg_coverage, avg_tokens, reduction_str, avg_latency_ms as f64 / 1000.0
             );
         }
     }
@@ -1059,16 +1078,26 @@ fn print_three_way_comparison(results: &HashMap<ExecutionMode, Vec<EvalResult>>)
 
     // Per-task comparison
     println!("## Per-Task Comparison\n");
-    println!("| Task | Baseline | CodeMode | RLM | Winner |");
-    println!("|------|----------|----------|-----|--------|");
+    println!("| Task | Baseline | CodeMode | Baseline+RLM | CodeMode+RLM | Winner |");
+    println!("|------|----------|----------|--------------|--------------|--------|");
 
     let baseline_results = results.get(&ExecutionMode::Baseline);
     let codemode_results = results.get(&ExecutionMode::CodeMode);
     let rlm_results = results.get(&ExecutionMode::BaselineRlm);
+    let codemode_rlm_results = results.get(&ExecutionMode::CodeModeRlm);
 
-    if let Some(baseline) = baseline_results {
-        for (i, b_result) in baseline.iter().enumerate() {
-            let b_cov = b_result.verification.coverage;
+    // Get any available results for iteration
+    let any_results = baseline_results
+        .or(codemode_results)
+        .or(rlm_results)
+        .or(codemode_rlm_results);
+
+    if let Some(first_results) = any_results {
+        for (i, result) in first_results.iter().enumerate() {
+            let b_cov = baseline_results
+                .and_then(|r| r.get(i))
+                .map(|r| r.verification.coverage)
+                .unwrap_or(0.0);
             let c_cov = codemode_results
                 .and_then(|r| r.get(i))
                 .map(|r| r.verification.coverage)
@@ -1077,34 +1106,39 @@ fn print_three_way_comparison(results: &HashMap<ExecutionMode, Vec<EvalResult>>)
                 .and_then(|r| r.get(i))
                 .map(|r| r.verification.coverage)
                 .unwrap_or(0.0);
+            let cr_cov = codemode_rlm_results
+                .and_then(|r| r.get(i))
+                .map(|r| r.verification.coverage)
+                .unwrap_or(0.0);
 
-            let b_status = if b_cov >= PASS_THRESHOLD { "PASS" } else { "FAIL" };
-            let c_status = if c_cov >= PASS_THRESHOLD { "PASS" } else { "FAIL" };
-            let r_status = if r_cov >= PASS_THRESHOLD { "PASS" } else { "FAIL" };
+            let b_status = if b_cov >= PASS_THRESHOLD { "✓" } else { "✗" };
+            let c_status = if c_cov >= PASS_THRESHOLD { "✓" } else { "✗" };
+            let r_status = if r_cov >= PASS_THRESHOLD { "✓" } else { "✗" };
+            let cr_status = if cr_cov >= PASS_THRESHOLD { "✓" } else { "✗" };
 
-            let winner = if b_cov >= c_cov && b_cov >= r_cov && b_cov > 0.0 {
-                if b_cov == r_cov {
-                    "Baseline/RLM"
-                } else {
-                    "Baseline"
-                }
-            } else if r_cov >= b_cov && r_cov >= c_cov && r_cov > 0.0 {
-                "RLM"
-            } else if c_cov > 0.0 {
-                "CodeMode"
+            // Determine winner based on highest coverage
+            let max_cov = b_cov.max(c_cov).max(r_cov).max(cr_cov);
+            let winner = if max_cov == 0.0 {
+                "all fail"
+            } else if b_cov == max_cov && c_cov == max_cov && r_cov == max_cov && cr_cov == max_cov {
+                "tie (all)"
+            } else if b_cov == max_cov {
+                "Baseline"
+            } else if r_cov == max_cov {
+                "Baseline+RLM"
+            } else if cr_cov == max_cov {
+                "CodeMode+RLM"
             } else {
-                "tie (all fail)"
+                "CodeMode"
             };
 
             println!(
-                "| {} | {:.2} {} | {:.2} {} | {:.2} {} | {} |",
-                &b_result.task_id[..b_result.task_id.len().min(15)],
-                b_cov,
-                b_status,
-                c_cov,
-                c_status,
-                r_cov,
-                r_status,
+                "| {} | {:.2} {} | {:.2} {} | {:.2} {} | {:.2} {} | {} |",
+                &result.task_id[..result.task_id.len().min(15)],
+                b_cov, b_status,
+                c_cov, c_status,
+                r_cov, r_status,
+                cr_cov, cr_status,
                 winner
             );
         }
@@ -1112,8 +1146,8 @@ fn print_three_way_comparison(results: &HashMap<ExecutionMode, Vec<EvalResult>>)
 
     println!();
     println!("## Key Insight\n");
-    println!("RLM aims to achieve significant token reduction while maintaining baseline quality.");
-    println!("(vs CodeMode which may lose quality for token reduction)");
+    println!("RLM modes aim to achieve significant token reduction while maintaining quality.");
+    println!("CodeMode+RLM combines code generation with RLM routing for best of both worlds.");
 }
 
 /// Full evaluation on all 500 tasks (ignored by default - run with --ignored)

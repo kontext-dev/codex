@@ -46,6 +46,8 @@ pub enum ExecutionMode {
     CodeMode,
     /// EXECUTE_TOOL with RLM routing for large results
     BaselineRlm,
+    /// EXECUTE_CODE with RLM routing for large results (hybrid mode)
+    CodeModeRlm,
 }
 
 impl std::fmt::Display for ExecutionMode {
@@ -54,6 +56,7 @@ impl std::fmt::Display for ExecutionMode {
             ExecutionMode::Baseline => write!(f, "Baseline"),
             ExecutionMode::CodeMode => write!(f, "CodeMode"),
             ExecutionMode::BaselineRlm => write!(f, "Baseline+RLM"),
+            ExecutionMode::CodeModeRlm => write!(f, "CodeMode+RLM"),
         }
     }
 }
@@ -176,9 +179,11 @@ impl TaskRunner {
 
     /// Execute a task in the specified mode
     pub async fn run_task(&self, task: &McpAtlasTask, mode: ExecutionMode) -> TaskResult {
-        // Dispatch to mode-specific runner for CodeMode
-        if mode == ExecutionMode::CodeMode {
-            return self.run_task_codemode(task).await;
+        // Dispatch to mode-specific runners
+        match mode {
+            ExecutionMode::CodeMode => return self.run_task_codemode(task).await,
+            ExecutionMode::CodeModeRlm => return self.run_task_codemode_rlm(task).await,
+            _ => {} // Baseline and BaselineRlm continue below
         }
 
         // Baseline and BaselineRlm use the standard tool-call approach
@@ -269,8 +274,16 @@ Note: Tool calls are executed via a Gateway. Use the exact tool names shown abov
         ];
 
         // Estimate initial context
-        total_context_tokens += estimate_tokens(&system_prompt);
-        total_context_tokens += estimate_tokens(&task.prompt);
+        let system_tokens = estimate_tokens(&system_prompt);
+        let prompt_tokens = estimate_tokens(&task.prompt);
+        let tool_def_tokens = estimate_tokens(&serde_json::to_string(&tools).unwrap_or_default());
+        total_context_tokens += system_tokens;
+        total_context_tokens += prompt_tokens;
+
+        eprintln!(
+            "[TOKEN DEBUG] Task: {}, Mode: {:?}, System: {}, Prompt: {}, ToolDefs: {}",
+            task.task_id, mode, system_tokens, prompt_tokens, tool_def_tokens
+        );
 
         // Agent loop
         for _turn in 0..self.max_turns {
@@ -357,6 +370,11 @@ Note: Tool calls are executed via a Gateway. Use the exact tool names shown abov
                             total_context_tokens += result.tokens;
                         }
 
+                        eprintln!(
+                            "[TOKEN DEBUG] Tool: {}, ResultTokens: {}, StoredInCorpus: {}, TotalNow: {}",
+                            call.function.name, result.tokens, result.stored_in_corpus, total_context_tokens
+                        );
+
                         tool_results.push((call.id.clone(), result.content));
                     }
 
@@ -430,9 +448,17 @@ Note: Tool calls are executed via a Gateway. Use the exact tool names shown abov
             .collect()
     }
 
-    /// Build tool definitions for RLM mode (includes corpus access tools)
+    /// Build tool definitions for RLM mode (includes Gateway tools + corpus access tools)
     fn build_tool_definitions_for_rlm(&self) -> Vec<ChatCompletionTool> {
         let mut tools = self.build_tool_definitions_from_gateway();
+        tools.extend(self.build_rlm_tool_definitions());
+        tools
+    }
+
+    /// Build only the RLM corpus access tool definitions (without Gateway tools)
+    /// Used by CodeModeRlm where Gateway tools are accessed via code, not function calls
+    fn build_rlm_tool_definitions(&self) -> Vec<ChatCompletionTool> {
+        let mut tools = Vec::new();
 
         // Add rlm_search tool
         tools.push(
@@ -641,7 +667,9 @@ Note: Tool calls are executed via a Gateway. Use the exact tool names shown abov
         match mode {
             ExecutionMode::Baseline => self.execute_baseline(&tool_id, &args).await,
             ExecutionMode::CodeMode => self.execute_codemode(&tool_id, &args).await,
-            ExecutionMode::BaselineRlm => {
+            ExecutionMode::BaselineRlm | ExecutionMode::CodeModeRlm => {
+                // CodeModeRlm is dispatched to run_task_codemode_rlm() directly,
+                // but handle it here for completeness (same RLM routing behavior)
                 self.execute_with_rlm(&tool_id, &args, task_id, &call.id)
                     .await
             }
@@ -852,6 +880,73 @@ CRITICAL: After code execution, your FINAL response must be plain text that dire
         )
     }
 
+    /// Build system prompt for CodeModeRlm - combines CodeMode code generation with RLM corpus access
+    fn build_codemode_rlm_system_prompt(&self) -> String {
+        // Build tool list with actual tool IDs for accurate code generation
+        let tool_list = self
+            .gateway_tools
+            .iter()
+            .map(|t| format!("- tool_id: \"{}\" - {} ({})", t.id, t.description, t.server))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        // Get a sample tool ID for the example
+        let sample_tool_id = self
+            .gateway_tools
+            .iter()
+            .find(|t| t.name == "list_projects" || t.name.contains("list"))
+            .map(|t| t.id.clone())
+            .unwrap_or_else(|| "Linear:list_projects".to_string());
+
+        // Build the example code block with actual tool ID substituted
+        let example_code = format!(
+            r#"const result = await tools.EXECUTE_TOOL({{
+    tool_id: "{}",
+    tool_arguments: {{}}
+}});
+console.log(JSON.stringify(result, null, 2));
+return result;"#,
+            sample_tool_id
+        );
+
+        format!(
+            r#"You are an AI assistant. Complete tasks using TypeScript code.
+
+# Available Gateway Tools (call via code)
+
+{tool_list}
+
+# How to Call Gateway Tools
+
+Write code in a ```typescript code block:
+
+```typescript
+{example_code}
+```
+
+# Corpus Access (for large results)
+
+When tool results are too large (>2000 tokens), they are automatically stored in a corpus and you'll receive a summary instead.
+
+To access stored data, use these function calls (NOT code blocks):
+- rlm_search(query): Search stored results by semantic query
+- rlm_get_chunk(chunk_id): Retrieve a specific chunk by ID
+- rlm_list_chunks(): List all stored chunks with summaries
+
+These corpus tools are called via standard function calling, not TypeScript code.
+
+# Workflow
+
+1. Write TypeScript code to fetch data from Gateway tools
+2. If result is large, you'll see "[Tool result stored: N chunks]" - use rlm_search/rlm_get_chunk to access specific data
+3. After gathering all information, provide a PLAIN TEXT answer
+
+CRITICAL: Your FINAL response must be plain text that directly answers the task question."#,
+            tool_list = tool_list,
+            example_code = example_code
+        )
+    }
+
     /// Execute code via EXECUTE_CODE tool and return full results
     async fn execute_code(&self, code: &str) -> String {
         match self
@@ -868,6 +963,80 @@ CRITICAL: After code execution, your FINAL response must be plain text that dire
                 serde_json::to_string_pretty(&result).unwrap_or_default()
             }
             Err(e) => format!("Code execution failed: {}", e),
+        }
+    }
+
+    /// Execute code via EXECUTE_CODE and route result through RLM
+    async fn execute_code_with_rlm(
+        &self,
+        code: &str,
+        task_id: &str,
+        call_index: usize,
+    ) -> ToolCallResult {
+        // Execute code via EXECUTE_CODE
+        let result = match self
+            .mcp_client
+            .call_tool(
+                "EXECUTE_CODE".to_string(),
+                Some(json!({ "code": code })),
+                Some(Duration::from_secs(120)),
+            )
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                return ToolCallResult {
+                    content: format!("Code execution failed: {}", e),
+                    tokens: 10,
+                    stored_in_corpus: false,
+                };
+            }
+        };
+
+        let content = serde_json::to_string_pretty(&result).unwrap_or_default();
+
+        // Route through RLM if available
+        if let Some(ref router) = self.rlm_router {
+            let evidence_id = format!("{}_code_{}", task_id, call_index);
+            match router
+                .process_result(&evidence_id, "kontext-dev", "EXECUTE_CODE", &content)
+                .await
+            {
+                Ok(ProcessedResult::StoredInCorpus { summary, .. }) => {
+                    // Large result stored - return summary
+                    ToolCallResult {
+                        content: summary,
+                        tokens: 100, // Summary is small
+                        stored_in_corpus: true,
+                    }
+                }
+                Ok(ProcessedResult::PassThrough { content }) => {
+                    // Small result passed through
+                    let tokens = estimate_tokens(&content);
+                    ToolCallResult {
+                        content,
+                        tokens,
+                        stored_in_corpus: false,
+                    }
+                }
+                Err(_) => {
+                    // RLM error - fall back to full content
+                    let tokens = estimate_tokens(&content);
+                    ToolCallResult {
+                        content,
+                        tokens,
+                        stored_in_corpus: false,
+                    }
+                }
+            }
+        } else {
+            // No RLM - return full content
+            let tokens = estimate_tokens(&content);
+            ToolCallResult {
+                content,
+                tokens,
+                stored_in_corpus: false,
+            }
         }
     }
 
@@ -1013,6 +1182,237 @@ CRITICAL: After code execution, your FINAL response must be plain text that dire
             final_answer: format!("Max turns ({}) reached without final answer", self.max_turns),
             tool_calls,
             mode: ExecutionMode::CodeMode,
+            context_tokens: total_context_tokens,
+            latency_ms: start.elapsed().as_millis() as u64,
+            error: Some("Max turns reached".to_string()),
+        }
+    }
+
+    /// Execute a task in CodeModeRlm - hybrid mode with code generation and RLM routing
+    /// LLM generates TypeScript code for Gateway tools, RLM tools via function calling
+    pub async fn run_task_codemode_rlm(&self, task: &McpAtlasTask) -> TaskResult {
+        let start = Instant::now();
+        let system_prompt = self.build_codemode_rlm_system_prompt();
+        let mut total_context_tokens: i64 = 0;
+        let mut tool_calls = Vec::new();
+        let mut code_call_index: usize = 0;
+
+        // Build RLM tool definitions only (Gateway tools accessed via code)
+        let rlm_tools = self.build_rlm_tool_definitions();
+
+        // Build initial messages
+        let mut messages: Vec<ChatCompletionRequestMessage> = vec![
+            ChatCompletionRequestMessage::System(
+                ChatCompletionRequestSystemMessageArgs::default()
+                    .content(system_prompt.clone())
+                    .build()
+                    .unwrap(),
+            ),
+            ChatCompletionRequestMessage::User(
+                ChatCompletionRequestUserMessageArgs::default()
+                    .content(task.prompt.clone())
+                    .build()
+                    .unwrap(),
+            ),
+        ];
+
+        total_context_tokens += estimate_tokens(&system_prompt);
+        total_context_tokens += estimate_tokens(&task.prompt);
+
+        // Agent loop
+        for _turn in 0..self.max_turns {
+            // Build request WITH RLM tools only
+            let request_result = CreateChatCompletionRequestArgs::default()
+                .model(&self.agent_model)
+                .messages(messages.clone())
+                .tools(rlm_tools.clone())
+                .build();
+
+            let request = match request_result {
+                Ok(r) => r,
+                Err(e) => {
+                    return TaskResult {
+                        task_id: task.task_id.clone(),
+                        final_answer: String::new(),
+                        tool_calls,
+                        mode: ExecutionMode::CodeModeRlm,
+                        context_tokens: total_context_tokens,
+                        latency_ms: start.elapsed().as_millis() as u64,
+                        error: Some(format!("Failed to build request: {}", e)),
+                    };
+                }
+            };
+
+            // Call the agent LLM
+            let response = match self.openai_client.chat().create(request).await {
+                Ok(r) => r,
+                Err(e) => {
+                    return TaskResult {
+                        task_id: task.task_id.clone(),
+                        final_answer: String::new(),
+                        tool_calls,
+                        mode: ExecutionMode::CodeModeRlm,
+                        context_tokens: total_context_tokens,
+                        latency_ms: start.elapsed().as_millis() as u64,
+                        error: Some(format!("Agent LLM call failed: {}", e)),
+                    };
+                }
+            };
+
+            // Track token usage
+            if let Some(usage) = &response.usage {
+                total_context_tokens = usage.total_tokens as i64;
+            }
+
+            let choice = match response.choices.first() {
+                Some(c) => c,
+                None => {
+                    return TaskResult {
+                        task_id: task.task_id.clone(),
+                        final_answer: String::new(),
+                        tool_calls,
+                        mode: ExecutionMode::CodeModeRlm,
+                        context_tokens: total_context_tokens,
+                        latency_ms: start.elapsed().as_millis() as u64,
+                        error: Some("No response from agent".to_string()),
+                    };
+                }
+            };
+
+            let content = choice.message.content.clone().unwrap_or_default();
+
+            // Check for RLM tool calls first
+            if let Some(ref calls) = choice.message.tool_calls {
+                if !calls.is_empty() {
+                    // Process each RLM tool call
+                    let mut tool_results = Vec::new();
+
+                    for call in calls {
+                        let tool_name = &call.function.name;
+                        let args: serde_json::Value =
+                            serde_json::from_str(&call.function.arguments).unwrap_or(json!({}));
+
+                        // Execute RLM tool
+                        let result = match tool_name.as_str() {
+                            "rlm_search" => self.execute_rlm_search(&args).await,
+                            "rlm_get_chunk" => self.execute_rlm_get_chunk(&args).await,
+                            "rlm_list_chunks" => self.execute_rlm_list_chunks().await,
+                            _ => ToolCallResult {
+                                content: format!("Unknown RLM tool: {}", tool_name),
+                                tokens: 10,
+                                stored_in_corpus: false,
+                            },
+                        };
+
+                        // Track the call
+                        let record = ToolCallRecord {
+                            name: call.function.name.clone(),
+                            arguments: args,
+                            result: result.content.clone(),
+                            result_tokens: result.tokens,
+                            stored_in_corpus: result.stored_in_corpus,
+                        };
+                        tool_calls.push(record);
+
+                        // Add tokens (RLM tool results are small, always add)
+                        total_context_tokens += result.tokens;
+
+                        tool_results.push((call.id.clone(), result.content));
+                    }
+
+                    // Add assistant message with tool calls
+                    messages.push(ChatCompletionRequestMessage::Assistant(
+                        ChatCompletionRequestAssistantMessageArgs::default()
+                            .tool_calls(calls.clone())
+                            .build()
+                            .unwrap(),
+                    ));
+
+                    // Add tool result messages
+                    for (tool_call_id, result_content) in tool_results {
+                        messages.push(ChatCompletionRequestMessage::Tool(
+                            ChatCompletionRequestToolMessageArgs::default()
+                                .tool_call_id(tool_call_id)
+                                .content(result_content)
+                                .build()
+                                .unwrap(),
+                        ));
+                    }
+
+                    continue;
+                }
+            }
+
+            // Check if response contains code block
+            if let Some(code) = extract_code_block(&content) {
+                // Execute the code via EXECUTE_CODE with RLM routing
+                let exec_result = self
+                    .execute_code_with_rlm(&code, &task.task_id, code_call_index)
+                    .await;
+                code_call_index += 1;
+
+                tool_calls.push(ToolCallRecord {
+                    name: "EXECUTE_CODE".to_string(),
+                    arguments: json!({ "code": code }),
+                    result: exec_result.content.clone(),
+                    result_tokens: exec_result.tokens,
+                    stored_in_corpus: exec_result.stored_in_corpus,
+                });
+
+                // Only add tokens if not stored in corpus
+                if !exec_result.stored_in_corpus {
+                    total_context_tokens += exec_result.tokens;
+                }
+
+                // Add assistant message
+                messages.push(ChatCompletionRequestMessage::Assistant(
+                    ChatCompletionRequestAssistantMessageArgs::default()
+                        .content(content.clone())
+                        .build()
+                        .unwrap(),
+                ));
+
+                // Add execution result as user message
+                let result_message = if exec_result.stored_in_corpus {
+                    format!(
+                        "Code execution result (large result stored in corpus):\n{}\n\nUse rlm_search or rlm_get_chunk to access specific data from the stored result.",
+                        exec_result.content
+                    )
+                } else {
+                    format!(
+                        "Code execution result:\n```json\n{}\n```\n\nBased on this result, provide your final answer to the original task.",
+                        exec_result.content
+                    )
+                };
+
+                messages.push(ChatCompletionRequestMessage::User(
+                    ChatCompletionRequestUserMessageArgs::default()
+                        .content(result_message)
+                        .build()
+                        .unwrap(),
+                ));
+
+                continue;
+            }
+
+            // No code block or tool calls - this is the final answer
+            return TaskResult {
+                task_id: task.task_id.clone(),
+                final_answer: content,
+                tool_calls,
+                mode: ExecutionMode::CodeModeRlm,
+                context_tokens: total_context_tokens,
+                latency_ms: start.elapsed().as_millis() as u64,
+                error: None,
+            };
+        }
+
+        // Max turns reached
+        TaskResult {
+            task_id: task.task_id.clone(),
+            final_answer: format!("Max turns ({}) reached without final answer", self.max_turns),
+            tool_calls,
+            mode: ExecutionMode::CodeModeRlm,
             context_tokens: total_context_tokens,
             latency_ms: start.elapsed().as_millis() as u64,
             error: Some("Max turns reached".to_string()),
@@ -1224,6 +1624,7 @@ mod tests {
         assert_eq!(format!("{}", ExecutionMode::Baseline), "Baseline");
         assert_eq!(format!("{}", ExecutionMode::CodeMode), "CodeMode");
         assert_eq!(format!("{}", ExecutionMode::BaselineRlm), "Baseline+RLM");
+        assert_eq!(format!("{}", ExecutionMode::CodeModeRlm), "CodeMode+RLM");
     }
 
     #[test]
