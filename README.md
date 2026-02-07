@@ -1,7 +1,7 @@
 <p align="center"><code>npm i -g @openai/codex</code><br />or <code>brew install --cask codex</code></p>
 <p align="center"><strong>Codex CLI</strong> is a coding agent from OpenAI that runs locally on your computer.
 <p align="center">
-  <img src="./.github/codex-cli-splash.png" alt="Codex CLI splash" width="80%" />
+  <img src="https://github.com/openai/codex/blob/main/.github/codex-cli-splash.png" alt="Codex CLI splash" width="80%" />
 </p>
 </br>
 If you want Codex in your code editor (VS Code, Cursor, Windsurf), <a href="https://developers.openai.com/codex/ide">install in your IDE.</a>
@@ -12,23 +12,28 @@ If you want Codex in your code editor (VS Code, Cursor, Windsurf), <a href="http
 ## Kontext-Dev fork
 
 This fork wires Codex CLI to the Kontext-Dev MCP server using the `kontext-dev`
-Rust SDK. It uses a single MCP server and refreshes SEARCH/EXECUTE tools before
-each user turn. The diff stays minimal so upstream updates are easy to rebase.
+Rust SDK. It authenticates with PKCE, exchanges tokens for `mcp-gateway`, and
+attaches a single MCP server automatically.
 
 ### Configuration (local)
 
-Create agents at https://app.kontext.dev/ to get client credentials and
-visibility into your agents (like this Codex client). Then copy the credentials
-into `~/.codex/config.toml`:
+Create an application at https://app.kontext.dev/ and copy the client
+credentials into `~/.codex/config.toml`:
 
 ```toml
 [kontext-dev]
-mcp_url = "http://localhost:4000/mcp"
-token_url = "http://127.0.0.1:4444/oauth2/token"
-client_id = "<client_id>"
-client_secret = "<client_secret>"
-scope = "mcp:invoke"
+server = "https://api.kontext.dev"
+client_id = "<application_client_id>"
+# client_secret = "<application_client_secret>" # optional (confidential clients)
+
+# optional values (defaults shown)
+scope = "openid offline"
+resource = "mcp-gateway"
 server_name = "kontext-dev"
+auth_timeout_seconds = 300
+open_connect_page_on_login = true
+integration_ui_url = "https://app.kontext.dev"
+# token_cache_path = "/Users/<you>/.codex/kontext-dev-token.json"
 ```
 
 Do not commit secrets.

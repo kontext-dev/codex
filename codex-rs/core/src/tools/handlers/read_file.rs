@@ -1,3 +1,4 @@
+use codex_protocol::models::FunctionCallOutputBody;
 use std::collections::VecDeque;
 use std::path::PathBuf;
 
@@ -40,9 +41,10 @@ struct ReadFileArgs {
     indentation: Option<IndentationArgs>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 enum ReadMode {
+    #[default]
     Slice,
     Indentation,
 }
@@ -145,8 +147,7 @@ impl ToolHandler for ReadFileHandler {
             }
         };
         Ok(ToolOutput::Function {
-            content: collected.join("\n"),
-            content_items: None,
+            body: FunctionCallOutputBody::Text(collected.join("\n")),
             success: Some(true),
         })
     }
@@ -458,12 +459,6 @@ mod defaults {
                 include_header: include_header(),
                 max_lines: None,
             }
-        }
-    }
-
-    impl Default for ReadMode {
-        fn default() -> Self {
-            Self::Slice
         }
     }
 

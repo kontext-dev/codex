@@ -1,21 +1,16 @@
-use std::sync::OnceLock;
+use std::collections::HashMap;
 use std::time::Duration;
-use std::time::Instant;
 
+use anyhow::anyhow;
 use anyhow::Result;
 use tracing::debug;
 use tracing::info;
+use tracing::warn;
 
 use crate::config::Config;
 use crate::config::types::McpServerConfig;
 use crate::config::types::McpServerTransportConfig;
-use kontext_dev::build_mcp_url;
-use kontext_dev::request_access_token;
-
-const DEFAULT_TOKEN_TTL_SECONDS: i64 = 3600;
-
-static KONTEXT_DEV_TOKEN_EXPIRES_AT: OnceLock<Instant> = OnceLock::new();
-static KONTEXT_DEV_SERVER_NAME: OnceLock<String> = OnceLock::new();
+use kontext_dev::KontextDevClient;
 
 pub(crate) async fn attach_kontext_dev_mcp_server(config: &mut Config) -> Result<()> {
     let Some(settings) = config.kontext_dev.clone() else {
@@ -23,47 +18,58 @@ pub(crate) async fn attach_kontext_dev_mcp_server(config: &mut Config) -> Result
         return Ok(());
     };
 
-    let token = request_access_token(&settings).await?;
-    let url = build_mcp_url(&settings, token.access_token.as_str())?;
+    let client = KontextDevClient::new(settings.clone());
+    let session = client.authenticate_mcp().await?;
+    let url = client.mcp_url()?;
     let server_name = settings.server_name.clone();
+
+    let mut http_headers = HashMap::new();
+    http_headers.insert(
+        "Authorization".to_string(),
+        format!("Bearer {}", session.gateway_token.access_token),
+    );
 
     let transport = McpServerTransportConfig::StreamableHttp {
         url,
         bearer_token_env_var: None,
-        http_headers: None,
+        http_headers: Some(http_headers),
         env_http_headers: None,
     };
 
     let server_config = McpServerConfig {
         transport,
+        enabled: true,
+        required: false,
+        disabled_reason: None,
         startup_timeout_sec: Some(Duration::from_secs_f64(30.0)),
         tool_timeout_sec: None,
-        enabled: true,
         enabled_tools: None,
         disabled_tools: None,
+        scopes: None,
     };
 
+    let mut mcp_servers = (*config.mcp_servers).clone();
+    mcp_servers.insert(server_name.clone(), server_config);
     config
         .mcp_servers
-        .insert(server_name.clone(), server_config);
-
-    let expires_in = token.expires_in.unwrap_or(DEFAULT_TOKEN_TTL_SECONDS);
-    let expires_in = expires_in.max(0);
-    let expires_at = Instant::now() + Duration::from_secs_f64(expires_in as f64);
-    let _ = KONTEXT_DEV_TOKEN_EXPIRES_AT.set(expires_at);
-    let _ = KONTEXT_DEV_SERVER_NAME.set(server_name.clone());
+        .set(mcp_servers)
+        .map_err(|err| anyhow!("failed to set Kontext-Dev MCP server config: {err}"))?;
 
     info!("Attached Kontext-Dev MCP server '{server_name}'.");
+
+    if settings.open_connect_page_on_login && session.browser_auth_performed {
+        match client
+            .open_integration_connect_page(&session.gateway_token.access_token)
+            .await
+        {
+            Ok(connect_url) => {
+                info!("Opened Kontext integration connect page: {connect_url}");
+            }
+            Err(err) => {
+                warn!("Failed to open Kontext integration connect page: {err:#}");
+            }
+        }
+    }
+
     Ok(())
-}
-
-pub(crate) fn kontext_dev_server_name() -> Option<&'static str> {
-    KONTEXT_DEV_SERVER_NAME.get().map(String::as_str)
-}
-
-pub(crate) fn kontext_dev_token_expired() -> bool {
-    KONTEXT_DEV_TOKEN_EXPIRES_AT
-        .get()
-        .map(|expires_at| Instant::now() >= *expires_at)
-        .unwrap_or(false)
 }

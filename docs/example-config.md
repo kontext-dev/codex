@@ -250,14 +250,18 @@ experimental_use_freeform_apply_patch = false
 # tool_timeout_sec = 60.0                      # optional
 # enabled_tools = ["list_issues"]             # optional allow-list
 
-# --- Kontext-Dev (SEARCH_TOOLS/EXECUTE_TOOL only) ---
+# --- Kontext-Dev (PKCE + token exchange) ---
 # [kontext-dev]
-# mcp_url = "http://localhost:4000/mcp"
-# token_url = "http://localhost:4444/oauth2/token"
-# client_id = "<client-id>"
-# client_secret = "<client-secret>"
-# scope = "mcp:invoke" # optional; default shown
+# server = "https://api.kontext.dev"
+# client_id = "<application-client-id>"
+# # client_secret = "<application-client-secret>" # optional (confidential clients)
+# scope = "openid offline" # optional; default shown
+# resource = "mcp-gateway" # optional; default shown
 # server_name = "kontext-dev" # optional; default shown
+# auth_timeout_seconds = 300 # optional; default shown
+# open_connect_page_on_login = true # optional; default shown
+# integration_ui_url = "https://app.kontext.dev" # optional
+# token_cache_path = "/Users/<you>/.codex/kontext-dev-token.json" # optional
 
 ################################################################################
 # Model Providers (extend/override built-ins)
