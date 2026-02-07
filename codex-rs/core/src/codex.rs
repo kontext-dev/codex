@@ -23,6 +23,7 @@ use crate::exec_policy::ExecPolicyManager;
 use crate::features::FEATURES;
 use crate::features::Feature;
 use crate::features::Features;
+use crate::kontext_dev;
 use crate::features::maybe_push_unstable_features_warning;
 use crate::hooks::HookEvent;
 use crate::hooks::HookEventAfterAgent;
@@ -270,6 +271,12 @@ impl Codex {
         agent_control: AgentControl,
         dynamic_tools: Vec<DynamicToolSpec>,
     ) -> CodexResult<CodexSpawnOk> {
+        kontext_dev::attach_kontext_dev_mcp_server(&mut config)
+            .await
+            .map_err(|err| {
+                CodexErr::Fatal(format!("failed to attach Kontext-Dev MCP server: {err:#}"))
+            })?;
+
         let (tx_sub, rx_sub) = async_channel::bounded(SUBMISSION_CHANNEL_CAPACITY);
         let (tx_event, rx_event) = async_channel::unbounded();
 
