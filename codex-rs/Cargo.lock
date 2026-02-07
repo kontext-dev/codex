@@ -4740,9 +4740,9 @@ dependencies = [
 
 [[package]]
 name = "kontext-dev"
-version = "0.2.1"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "648ab5d67e8883660a8dd1b0e65e183651eb6ea6a76de6d5763c4e3d3593775c"
+checksum = "a2d927ea601a0b1cf776a4fd8d32d7e1ad68f1e6e45b3917aeaee8bd8fa29050"
 dependencies = [
  "base64 0.22.1",
  "dirs",
@@ -4761,9 +4761,9 @@ dependencies = [
 
 [[package]]
 name = "kontext-dev-core"
-version = "0.2.1"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f083ddd1fe883acc8a7df63fda2ee07b4065ad97a8a85b617cfb654586068381"
+checksum = "e01d88acde5306bc98f10d343782f5e07c91b258ffddddd842815d2d9ada5d1d"
 dependencies = [
  "serde",
  "thiserror 2.0.18",
