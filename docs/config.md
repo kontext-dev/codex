@@ -12,6 +12,28 @@ Codex can connect to MCP servers configured in `~/.codex/config.toml`. See the c
 
 - https://developers.openai.com/codex/config-reference
 
+### Kontext-Dev fork configuration
+
+This fork also supports a top-level `[kontext-dev]` table. It authenticates with PKCE, exchanges an identity token for an `mcp-gateway` token, and injects a streamable HTTP MCP server automatically.
+
+```toml
+[kontext-dev]
+server = "https://api.kontext.dev"
+client_id = "<application-client-id>"
+# optional for confidential clients
+# client_secret = "<application-client-secret>"
+
+# optional; defaults shown
+scope = "openid offline"
+resource = "mcp-gateway"
+server_name = "kontext-dev"
+auth_timeout_seconds = 300
+open_connect_page_on_login = true
+integration_ui_url = "https://app.kontext.dev"
+# integration_return_to = "https://app.kontext.dev/oauth/complete"
+# token_cache_path = "/Users/<you>/.codex/kontext-dev-token.json"
+```
+
 ## Apps (Connectors)
 
 Use `$` in the composer to insert a ChatGPT connector; the popover lists accessible
