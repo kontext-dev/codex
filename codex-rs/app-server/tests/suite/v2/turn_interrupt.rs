@@ -73,6 +73,7 @@ async fn turn_interrupt_aborts_running_turn() -> Result<()> {
             thread_id: thread.id.clone(),
             input: vec![V2UserInput::Text {
                 text: "run sleep".to_string(),
+                text_elements: Vec::new(),
             }],
             cwd: Some(working_directory.clone()),
             ..Default::default()
@@ -128,7 +129,7 @@ fn create_config_toml(codex_home: &std::path::Path, server_uri: &str) -> std::io
             r#"
 model = "mock-model"
 approval_policy = "never"
-sandbox_mode = "workspace-write"
+sandbox_mode = "danger-full-access"
 
 model_provider = "mock_provider"
 

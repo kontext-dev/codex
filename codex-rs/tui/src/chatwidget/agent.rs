@@ -30,15 +30,14 @@ pub(crate) fn spawn_agent(
             ..
         } = match server.start_thread(config).await {
             Ok(v) => v,
-            #[allow(clippy::print_stderr)]
             Err(err) => {
-                let message = err.to_string();
-                eprintln!("{message}");
+                let message = format!("Failed to initialize codex: {err}");
+                tracing::error!("{message}");
                 app_event_tx_clone.send(AppEvent::CodexEvent(Event {
                     id: "".to_string(),
                     msg: EventMsg::Error(err.to_error_event(None)),
                 }));
-                app_event_tx_clone.send(AppEvent::ExitRequest);
+                app_event_tx_clone.send(AppEvent::FatalExitRequest(message));
                 tracing::error!("failed to initialize codex: {err}");
                 return;
             }
@@ -63,7 +62,13 @@ pub(crate) fn spawn_agent(
         });
 
         while let Ok(event) = thread.next_event().await {
+            let is_shutdown_complete = matches!(event.msg, EventMsg::ShutdownComplete);
             app_event_tx_clone.send(AppEvent::CodexEvent(event));
+            if is_shutdown_complete {
+                // ShutdownComplete is terminal for a thread; drop this receiver task so
+                // the Arc<CodexThread> can be released and thread resources can clean up.
+                break;
+            }
         }
     });
 
@@ -100,7 +105,28 @@ pub(crate) fn spawn_agent_from_existing(
         });
 
         while let Ok(event) = thread.next_event().await {
+            let is_shutdown_complete = matches!(event.msg, EventMsg::ShutdownComplete);
             app_event_tx_clone.send(AppEvent::CodexEvent(event));
+            if is_shutdown_complete {
+                // ShutdownComplete is terminal for a thread; drop this receiver task so
+                // the Arc<CodexThread> can be released and thread resources can clean up.
+                break;
+            }
+        }
+    });
+
+    codex_op_tx
+}
+
+/// Spawn an op-forwarding loop for an existing thread without subscribing to events.
+pub(crate) fn spawn_op_forwarder(thread: std::sync::Arc<CodexThread>) -> UnboundedSender<Op> {
+    let (codex_op_tx, mut codex_op_rx) = unbounded_channel::<Op>();
+
+    tokio::spawn(async move {
+        while let Some(op) = codex_op_rx.recv().await {
+            if let Err(e) = thread.submit(op).await {
+                tracing::error!("failed to submit op: {e}");
+            }
         }
     });
 

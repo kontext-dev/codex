@@ -10,21 +10,9 @@ use anyhow::Result;
 use anyhow::anyhow;
 use futures::FutureExt;
 use futures::future::BoxFuture;
-use mcp_types::CallToolRequestParams;
-use mcp_types::CallToolResult;
-use mcp_types::InitializeRequestParams;
-use mcp_types::InitializeResult;
-use mcp_types::ListResourceTemplatesRequestParams;
-use mcp_types::ListResourceTemplatesResult;
-use mcp_types::ListResourcesRequestParams;
-use mcp_types::ListResourcesResult;
-use mcp_types::ListToolsRequestParams;
-use mcp_types::ListToolsResult;
-use mcp_types::ReadResourceRequestParams;
-use mcp_types::ReadResourceResult;
-use mcp_types::RequestId;
 use reqwest::header::HeaderMap;
 use rmcp::model::CallToolRequestParam;
+use rmcp::model::CallToolResult;
 use rmcp::model::ClientNotification;
 use rmcp::model::ClientRequest;
 use rmcp::model::CreateElicitationRequestParam;
@@ -33,9 +21,16 @@ use rmcp::model::CustomNotification;
 use rmcp::model::CustomRequest;
 use rmcp::model::Extensions;
 use rmcp::model::InitializeRequestParam;
+use rmcp::model::InitializeResult;
+use rmcp::model::ListResourceTemplatesResult;
+use rmcp::model::ListResourcesResult;
+use rmcp::model::ListToolsResult;
 use rmcp::model::PaginatedRequestParam;
 use rmcp::model::ReadResourceRequestParam;
+use rmcp::model::ReadResourceResult;
+use rmcp::model::RequestId;
 use rmcp::model::ServerResult;
+use rmcp::model::Tool;
 use rmcp::service::RoleClient;
 use rmcp::service::RunningService;
 use rmcp::service::{self};
@@ -44,6 +39,7 @@ use rmcp::transport::auth::AuthClient;
 use rmcp::transport::auth::OAuthState;
 use rmcp::transport::child_process::TokioChildProcess;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
+use serde_json::Value;
 use tokio::io::AsyncBufReadExt;
 use tokio::io::BufReader;
 use tokio::process::Command;
@@ -60,14 +56,14 @@ use crate::oauth::StoredOAuthTokens;
 use crate::program_resolver;
 use crate::utils::apply_default_headers;
 use crate::utils::build_default_headers;
-use crate::utils::convert_call_tool_result;
-use crate::utils::convert_to_mcp;
-use crate::utils::convert_to_rmcp;
 use crate::utils::create_env_for_mcp_server;
 use crate::utils::run_with_timeout;
 
 enum PendingTransport {
-    ChildProcess(TokioChildProcess),
+    ChildProcess {
+        transport: TokioChildProcess,
+        process_group_guard: Option<ProcessGroupGuard>,
+    },
     StreamableHttp {
         transport: StreamableHttpClientTransport<reqwest::Client>,
     },
@@ -82,9 +78,69 @@ enum ClientState {
         transport: Option<PendingTransport>,
     },
     Ready {
+        _process_group_guard: Option<ProcessGroupGuard>,
         service: Arc<RunningService<RoleClient, LoggingClientHandler>>,
         oauth: Option<OAuthPersistor>,
     },
+}
+
+#[cfg(unix)]
+const PROCESS_GROUP_TERM_GRACE_PERIOD: Duration = Duration::from_secs(2);
+
+#[cfg(unix)]
+struct ProcessGroupGuard {
+    process_group_id: u32,
+}
+
+#[cfg(not(unix))]
+struct ProcessGroupGuard;
+
+impl ProcessGroupGuard {
+    fn new(process_group_id: u32) -> Self {
+        #[cfg(unix)]
+        {
+            Self { process_group_id }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = process_group_id;
+            Self
+        }
+    }
+
+    #[cfg(unix)]
+    fn maybe_terminate_process_group(&self) {
+        let process_group_id = self.process_group_id;
+        let should_escalate =
+            match codex_utils_pty::process_group::terminate_process_group(process_group_id) {
+                Ok(exists) => exists,
+                Err(error) => {
+                    warn!("Failed to terminate MCP process group {process_group_id}: {error}");
+                    false
+                }
+            };
+        if should_escalate {
+            std::thread::spawn(move || {
+                std::thread::sleep(PROCESS_GROUP_TERM_GRACE_PERIOD);
+                if let Err(error) =
+                    codex_utils_pty::process_group::kill_process_group(process_group_id)
+                {
+                    warn!("Failed to kill MCP process group {process_group_id}: {error}");
+                }
+            });
+        }
+    }
+
+    #[cfg(not(unix))]
+    fn maybe_terminate_process_group(&self) {}
+}
+
+impl Drop for ProcessGroupGuard {
+    fn drop(&mut self) {
+        if cfg!(unix) {
+            self.maybe_terminate_process_group();
+        }
+    }
 }
 
 pub type Elicitation = CreateElicitationRequestParam;
@@ -94,6 +150,17 @@ pub type ElicitationResponse = CreateElicitationResult;
 pub type SendElicitation = Box<
     dyn Fn(RequestId, Elicitation) -> BoxFuture<'static, Result<ElicitationResponse>> + Send + Sync,
 >;
+
+pub struct ToolWithConnectorId {
+    pub tool: Tool,
+    pub connector_id: Option<String>,
+    pub connector_name: Option<String>,
+}
+
+pub struct ListToolsWithConnectorIdResult {
+    pub next_cursor: Option<String>,
+    pub tools: Vec<ToolWithConnectorId>,
+}
 
 /// MCP client implemented on top of the official `rmcp` SDK.
 /// https://github.com/modelcontextprotocol/rust-sdk
@@ -125,6 +192,8 @@ impl RmcpClient {
             .env_clear()
             .envs(envs)
             .args(&args);
+        #[cfg(unix)]
+        command.process_group(0);
         if let Some(cwd) = cwd {
             command.current_dir(cwd);
         }
@@ -132,6 +201,7 @@ impl RmcpClient {
         let (transport, stderr) = TokioChildProcess::builder(command)
             .stderr(Stdio::piped())
             .spawn()?;
+        let process_group_guard = transport.id().map(ProcessGroupGuard::new);
 
         if let Some(stderr) = stderr {
             tokio::spawn(async move {
@@ -153,7 +223,10 @@ impl RmcpClient {
 
         Ok(Self {
             state: Mutex::new(ClientState::Connecting {
-                transport: Some(PendingTransport::ChildProcess(transport)),
+                transport: Some(PendingTransport::ChildProcess {
+                    transport,
+                    process_group_guard,
+                }),
             }),
         })
     }
@@ -216,23 +289,27 @@ impl RmcpClient {
     /// https://modelcontextprotocol.io/specification/2025-06-18/basic/lifecycle#initialization
     pub async fn initialize(
         &self,
-        params: InitializeRequestParams,
+        params: InitializeRequestParam,
         timeout: Option<Duration>,
         send_elicitation: SendElicitation,
     ) -> Result<InitializeResult> {
-        let rmcp_params: InitializeRequestParam = convert_to_rmcp(params.clone())?;
-        let client_handler = LoggingClientHandler::new(rmcp_params, send_elicitation);
+        let client_handler = LoggingClientHandler::new(params.clone(), send_elicitation);
 
-        let (transport, oauth_persistor) = {
+        let (transport, oauth_persistor, process_group_guard) = {
             let mut guard = self.state.lock().await;
             match &mut *guard {
                 ClientState::Connecting { transport } => match transport.take() {
-                    Some(PendingTransport::ChildProcess(transport)) => (
+                    Some(PendingTransport::ChildProcess {
+                        transport,
+                        process_group_guard,
+                    }) => (
                         service::serve_client(client_handler.clone(), transport).boxed(),
                         None,
+                        process_group_guard,
                     ),
                     Some(PendingTransport::StreamableHttp { transport }) => (
                         service::serve_client(client_handler.clone(), transport).boxed(),
+                        None,
                         None,
                     ),
                     Some(PendingTransport::StreamableHttpWithOAuth {
@@ -241,6 +318,7 @@ impl RmcpClient {
                     }) => (
                         service::serve_client(client_handler.clone(), transport).boxed(),
                         Some(oauth_persistor),
+                        None,
                     ),
                     None => return Err(anyhow!("client already initializing")),
                 },
@@ -262,11 +340,12 @@ impl RmcpClient {
             .peer()
             .peer_info()
             .ok_or_else(|| anyhow!("handshake succeeded but server info was missing"))?;
-        let initialize_result = convert_to_mcp(initialize_result_rmcp)?;
+        let initialize_result = initialize_result_rmcp.clone();
 
         {
             let mut guard = self.state.lock().await;
             *guard = ClientState::Ready {
+                _process_group_guard: process_group_guard,
                 service: Arc::new(service),
                 oauth: oauth_persistor.clone(),
             };
@@ -283,71 +362,96 @@ impl RmcpClient {
 
     pub async fn list_tools(
         &self,
-        params: Option<ListToolsRequestParams>,
+        params: Option<PaginatedRequestParam>,
         timeout: Option<Duration>,
     ) -> Result<ListToolsResult> {
         self.refresh_oauth_if_needed().await;
         let service = self.service().await?;
-        let rmcp_params = params
-            .map(convert_to_rmcp::<_, PaginatedRequestParam>)
-            .transpose()?;
-
-        let fut = service.list_tools(rmcp_params);
+        let fut = service.list_tools(params);
         let result = run_with_timeout(fut, timeout, "tools/list").await?;
-        let converted = convert_to_mcp(result)?;
         self.persist_oauth_tokens().await;
-        Ok(converted)
+        Ok(result)
+    }
+
+    pub async fn list_tools_with_connector_ids(
+        &self,
+        params: Option<PaginatedRequestParam>,
+        timeout: Option<Duration>,
+    ) -> Result<ListToolsWithConnectorIdResult> {
+        self.refresh_oauth_if_needed().await;
+        let service = self.service().await?;
+
+        let fut = service.list_tools(params);
+        let result = run_with_timeout(fut, timeout, "tools/list").await?;
+        let tools = result
+            .tools
+            .into_iter()
+            .map(|tool| {
+                let meta = tool.meta.as_ref();
+                let connector_id = Self::meta_string(meta, "connector_id");
+                let connector_name = Self::meta_string(meta, "connector_name")
+                    .or_else(|| Self::meta_string(meta, "connector_display_name"));
+                Ok(ToolWithConnectorId {
+                    tool,
+                    connector_id,
+                    connector_name,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        self.persist_oauth_tokens().await;
+        Ok(ListToolsWithConnectorIdResult {
+            next_cursor: result.next_cursor,
+            tools,
+        })
+    }
+
+    fn meta_string(meta: Option<&rmcp::model::Meta>, key: &str) -> Option<String> {
+        meta.and_then(|meta| meta.get(key))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
     }
 
     pub async fn list_resources(
         &self,
-        params: Option<ListResourcesRequestParams>,
+        params: Option<PaginatedRequestParam>,
         timeout: Option<Duration>,
     ) -> Result<ListResourcesResult> {
         self.refresh_oauth_if_needed().await;
         let service = self.service().await?;
-        let rmcp_params = params
-            .map(convert_to_rmcp::<_, PaginatedRequestParam>)
-            .transpose()?;
 
-        let fut = service.list_resources(rmcp_params);
+        let fut = service.list_resources(params);
         let result = run_with_timeout(fut, timeout, "resources/list").await?;
-        let converted = convert_to_mcp(result)?;
         self.persist_oauth_tokens().await;
-        Ok(converted)
+        Ok(result)
     }
 
     pub async fn list_resource_templates(
         &self,
-        params: Option<ListResourceTemplatesRequestParams>,
+        params: Option<PaginatedRequestParam>,
         timeout: Option<Duration>,
     ) -> Result<ListResourceTemplatesResult> {
         self.refresh_oauth_if_needed().await;
         let service = self.service().await?;
-        let rmcp_params = params
-            .map(convert_to_rmcp::<_, PaginatedRequestParam>)
-            .transpose()?;
 
-        let fut = service.list_resource_templates(rmcp_params);
+        let fut = service.list_resource_templates(params);
         let result = run_with_timeout(fut, timeout, "resources/templates/list").await?;
-        let converted = convert_to_mcp(result)?;
         self.persist_oauth_tokens().await;
-        Ok(converted)
+        Ok(result)
     }
 
     pub async fn read_resource(
         &self,
-        params: ReadResourceRequestParams,
+        params: ReadResourceRequestParam,
         timeout: Option<Duration>,
     ) -> Result<ReadResourceResult> {
         self.refresh_oauth_if_needed().await;
         let service = self.service().await?;
-        let rmcp_params: ReadResourceRequestParam = convert_to_rmcp(params)?;
-        let fut = service.read_resource(rmcp_params);
+        let fut = service.read_resource(params);
         let result = run_with_timeout(fut, timeout, "resources/read").await?;
-        let converted = convert_to_mcp(result)?;
         self.persist_oauth_tokens().await;
-        Ok(converted)
+        Ok(result)
     }
 
     pub async fn call_tool(
@@ -358,13 +462,23 @@ impl RmcpClient {
     ) -> Result<CallToolResult> {
         self.refresh_oauth_if_needed().await;
         let service = self.service().await?;
-        let params = CallToolRequestParams { arguments, name };
-        let rmcp_params: CallToolRequestParam = convert_to_rmcp(params)?;
+        let arguments = match arguments {
+            Some(Value::Object(map)) => Some(map),
+            Some(other) => {
+                return Err(anyhow!(
+                    "MCP tool arguments must be a JSON object, got {other}"
+                ));
+            }
+            None => None,
+        };
+        let rmcp_params = CallToolRequestParam {
+            name: name.into(),
+            arguments,
+        };
         let fut = service.call_tool(rmcp_params);
-        let rmcp_result = run_with_timeout(fut, timeout, "tools/call").await?;
-        let converted = convert_call_tool_result(rmcp_result)?;
+        let result = run_with_timeout(fut, timeout, "tools/call").await?;
         self.persist_oauth_tokens().await;
-        Ok(converted)
+        Ok(result)
     }
 
     pub async fn send_custom_notification(
@@ -410,7 +524,7 @@ impl RmcpClient {
         match &*guard {
             ClientState::Ready {
                 oauth: Some(runtime),
-                service: _,
+                ..
             } => Some(runtime.clone()),
             _ => None,
         }
