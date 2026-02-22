@@ -6,7 +6,6 @@ use codex_rmcp_client::ElicitationResponse;
 use codex_rmcp_client::SendElicitation;
 use futures::FutureExt;
 use kontext_dev::AccessToken;
-use kontext_dev::DEFAULT_SCOPE;
 use kontext_dev::DEFAULT_SERVER_NAME;
 use kontext_dev::KontextDevConfig;
 use kontext_dev::request_access_token;
@@ -49,7 +48,7 @@ pub fn build_kontext_config() -> Option<KontextDevConfig> {
         client_secret: Some(client_secret),
         mcp_url: Some(mcp_url),
         token_url: Some(token_url),
-        scope: DEFAULT_SCOPE.to_string(),
+        scope: "mcp:invoke".to_string(),
         server_name: DEFAULT_SERVER_NAME.to_string(),
         server: None,
         resource: kontext_dev::DEFAULT_RESOURCE.to_string(),
