@@ -14,6 +14,7 @@ use std::path::PathBuf;
 
 pub mod apps_test_server;
 pub mod context_snapshot;
+pub mod gateway_auth;
 pub mod process;
 pub mod responses;
 pub mod streaming_sse;

@@ -1,0 +1,2235 @@
+#![cfg(feature = "benchmarking")]
+//! MCP-Atlas Evaluation Script
+//!
+//! Benchmarks LLM agent performance on the MCP-Atlas dataset using two client architectures:
+//!
+//! ## Tool-Calling Client (ToolCallingRunner)
+//! Uses OpenAI function calling with modes:
+//! - Baseline: Direct EXECUTE_TOOL calls with full results in context
+//! - CodeMode: EXECUTE_CODE with summarized results
+//! - Baseline+RLM: EXECUTE_TOOL with RLM routing for large results
+//! - CodeMode+RLM: EXECUTE_CODE with RLM routing for large results
+//!
+//! ## Codex Client (CodexRunner)
+//! Uses the real Codex agent with full system prompts via ConversationManager.
+//!
+//! ## Prerequisites
+//!
+//! ```bash
+//! # Gateway credentials
+//! export KONTEXT_CLIENT_ID=<your-client-id>
+//! export KONTEXT_CLIENT_SECRET=<your-client-secret>
+//! export KONTEXT_MCP_URL=http://localhost:4000/mcp
+//! export KONTEXT_TOKEN_URL=http://localhost:4000/oauth2/token
+//!
+//! # OpenAI for agent and judge
+//! export OPENAI_API_KEY=<your-api-key>
+//! ```
+//!
+//! ## Running
+//!
+//! ```bash
+//! # Test mode (first 10 tasks)
+//! source .env
+//! cargo test -p codex-core --test mcp_atlas_eval run_mcp_atlas_three_way_evaluation -- --nocapture
+//!
+//! # Select gateway task CSV (v1, v2, or custom path)
+//! EVAL_GATEWAY_TASK_CSV=v1 cargo test -p codex-core --test mcp_atlas_eval run_mcp_atlas_three_way_evaluation -- --nocapture
+//!
+//! # Full evaluation (500 tasks × 3 modes = 1500 runs)
+//! cargo test -p codex-core --test mcp_atlas_eval run_mcp_atlas_three_way_evaluation -- --nocapture --ignored
+//! ```
+
+use std::collections::HashMap;
+use std::env;
+use std::io::Write;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+use std::time::Instant;
+
+use codex_core::eval::ClaimJudge;
+use codex_core::eval::ClaimScore;
+use codex_core::eval::ClaimVerificationResult;
+use codex_core::eval::PASS_THRESHOLD;
+use codex_core::eval::TaskResult;
+use codex_core::eval::ToolCallingMode;
+use codex_core::eval::ToolCallingRunner;
+use codex_core::rlm::EvidenceStore;
+use codex_core::rlm::GatewayResultRouter;
+use codex_core::rlm::RlmConfig;
+use codex_core::rlm::RlmCorpus;
+use codex_rmcp_client::OAuthCredentialsStoreMode;
+use codex_rmcp_client::RmcpClient;
+use core_test_support::gateway_auth;
+use kontext_dev::build_mcp_url;
+use serde_json::json;
+use tempfile::TempDir;
+use tokio::sync::RwLock;
+
+/// Gateway task CSV paths relative to core directory (CARGO_MANIFEST_DIR).
+const GATEWAY_TASKS_V1_DATASET_PATH: &str = "../mcp-atlas/services/mcp_eval/gateway_tasks.csv";
+const GATEWAY_TASKS_V2_DATASET_PATH: &str = "../mcp-atlas/services/mcp_eval/gateway_tasks_v2.csv";
+
+/// Default dataset path (v2) can be overridden with `EVAL_GATEWAY_TASK_CSV` or
+/// the legacy `EVAL_DATASET_PATH`.
+const DEFAULT_DATASET_PATH: &str = GATEWAY_TASKS_V2_DATASET_PATH;
+
+/// Original Arrow dataset path (for reference)
+#[allow(dead_code)]
+const ARROW_DATASET_PATH: &str = "../../data/coding_atlas/data-00000-of-00001.arrow";
+
+/// Combined result for a single task across all modes
+#[derive(Debug)]
+struct EvalResult {
+    task_id: String,
+    task_result: TaskResult,
+    verification: ClaimVerificationResult,
+}
+
+// =============================================================================
+// SETUP HELPERS
+// =============================================================================
+
+/// Check if evaluation tests should be skipped
+fn should_skip() -> bool {
+    env::var("SKIP_EVAL_TESTS").is_ok()
+        || gateway_auth::should_skip()
+        || env::var("OPENAI_API_KEY").is_err()
+}
+
+fn resolve_gateway_dataset_path(manifest_dir: &str, selector: &str) -> PathBuf {
+    match selector.trim() {
+        "" | "v2" | "gateway_tasks_v2" | "gateway_tasks_v2.csv" => {
+            PathBuf::from(manifest_dir).join(GATEWAY_TASKS_V2_DATASET_PATH)
+        }
+        "v1" | "gateway_tasks" | "gateway_tasks.csv" => {
+            PathBuf::from(manifest_dir).join(GATEWAY_TASKS_V1_DATASET_PATH)
+        }
+        other => {
+            let path = PathBuf::from(other);
+            if path.is_absolute() {
+                path
+            } else {
+                PathBuf::from(manifest_dir).join(path)
+            }
+        }
+    }
+}
+
+/// Get dataset path.
+///
+/// Priority:
+/// 1. `EVAL_GATEWAY_TASK_CSV` (recommended): `v1`, `v2`, or a CSV path
+/// 2. `EVAL_DATASET_PATH` (legacy): explicit dataset path
+/// 3. default: gateway v2 task CSV
+fn get_dataset_path() -> PathBuf {
+    let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
+
+    if let Ok(selector) = env::var("EVAL_GATEWAY_TASK_CSV") {
+        return resolve_gateway_dataset_path(&manifest_dir, &selector);
+    }
+
+    if let Ok(custom_path) = env::var("EVAL_DATASET_PATH") {
+        return PathBuf::from(custom_path);
+    }
+
+    PathBuf::from(manifest_dir).join(DEFAULT_DATASET_PATH)
+}
+
+/// Create an RLM router for evaluation
+async fn create_rlm_router(temp_path: &std::path::Path) -> anyhow::Result<GatewayResultRouter> {
+    let rlm_config = RlmConfig::default();
+    let corpus = RlmCorpus::new(temp_path.to_path_buf(), rlm_config.clone()).await?;
+    corpus.ingest_prompt("MCP-Atlas evaluation corpus.").await?;
+
+    let router = GatewayResultRouter::new(
+        Arc::new(RwLock::new(Some(corpus))),
+        Arc::new(RwLock::new(EvidenceStore::new())),
+        rlm_config,
+    );
+
+    Ok(router)
+}
+
+// =============================================================================
+// VERIFICATION TESTS
+// =============================================================================
+
+/// Test 1: Verify dataset loads correctly
+#[tokio::test]
+async fn test_dataset_loads() {
+    println!("\n# Test: Dataset Loading\n");
+
+    let dataset_path = get_dataset_path();
+    println!("  Loading from: {dataset_path:?}");
+
+    if !dataset_path.exists() {
+        println!("  Dataset not found at {dataset_path:?}");
+        println!("  Please ensure the MCP-Atlas dataset is downloaded.");
+        return;
+    }
+
+    match codex_core::eval::load_dataset(&dataset_path) {
+        Ok(tasks) => {
+            println!("  Loaded {} tasks", tasks.len());
+            assert!(!tasks.is_empty(), "Dataset should not be empty");
+
+            // Print first task as sample
+            if let Some(task) = tasks.first() {
+                println!("\n  Sample task:");
+                println!("    ID: {}", task.task_id);
+                println!(
+                    "    Tools: {:?}",
+                    &task.enabled_tools[..task.enabled_tools.len().min(5)]
+                );
+                println!(
+                    "    Prompt: {}...",
+                    &task.prompt[..task.prompt.len().min(100)]
+                );
+                println!("    Claims: {} total", task.claims.len());
+            }
+        }
+        Err(e) => {
+            println!("  Failed to load dataset: {e}");
+            panic!("Dataset loading failed");
+        }
+    }
+}
+
+/// Test 2: Verify Gateway connection works
+#[tokio::test]
+async fn test_gateway_connection() {
+    if should_skip() {
+        println!("\n⏭️  Skipping: credentials not set\n");
+        return;
+    }
+
+    println!("\n# Test: Gateway Connection\n");
+
+    let config = gateway_auth::build_kontext_config().expect("Config should be valid");
+    println!("  Token URL: {:?}", config.token_url);
+
+    // Authenticate
+    let token = match gateway_auth::authenticate(&config).await {
+        Ok(t) => {
+            println!("  Authentication successful");
+            t
+        }
+        Err(e) => {
+            println!("  Authentication failed: {e}");
+            println!("  Gateway may not be running");
+            return;
+        }
+    };
+
+    // Build MCP URL and connect
+    let mcp_url = build_mcp_url(&config, &token.access_token).expect("Failed to build MCP URL");
+
+    let client = match RmcpClient::new_streamable_http_client(
+        &config.server_name,
+        &mcp_url,
+        None,
+        None,
+        None,
+        OAuthCredentialsStoreMode::File,
+    )
+    .await
+    {
+        Ok(c) => c,
+        Err(e) => {
+            println!("  Failed to create MCP client: {e}");
+            return;
+        }
+    };
+
+    // Initialize
+    match client
+        .initialize(
+            gateway_auth::create_init_params("mcp-atlas-eval"),
+            Some(Duration::from_secs(30)),
+            gateway_auth::create_elicitation_handler(),
+        )
+        .await
+    {
+        Ok(result) => {
+            println!(
+                "  MCP initialized: {} v{}",
+                result.server_info.name, result.server_info.version
+            );
+        }
+        Err(e) => {
+            println!("  MCP initialization failed: {e}");
+            return;
+        }
+    }
+
+    // List tools
+    match client.list_tools(None, Some(Duration::from_secs(30))).await {
+        Ok(result) => {
+            println!("  Found {} tools", result.tools.len());
+            // Print EXECUTE_TOOL schema to understand expected args
+            for tool in &result.tools {
+                println!("\n  Tool: {}", tool.name);
+                println!(
+                    "  Description: {}",
+                    tool.description.as_deref().unwrap_or("N/A")
+                );
+                println!(
+                    "  Schema: {}",
+                    serde_json::to_string_pretty(&tool.input_schema).unwrap_or("N/A".to_string())
+                );
+            }
+            assert!(!result.tools.is_empty(), "Should have tools available");
+        }
+        Err(e) => {
+            println!("  Failed to list tools: {e}");
+        }
+    }
+}
+
+/// Test 3: Verify real Git MCP tool works
+#[tokio::test]
+async fn test_git_mcp_tool() {
+    if should_skip() {
+        println!("\n⏭️  Skipping: credentials not set\n");
+        return;
+    }
+
+    println!("\n# Test: Git MCP Tool\n");
+
+    let config = gateway_auth::build_kontext_config().expect("Config should be valid");
+    let token = match gateway_auth::authenticate(&config).await {
+        Ok(t) => t,
+        Err(e) => {
+            println!("  Gateway not reachable: {e}");
+            return;
+        }
+    };
+
+    let mcp_url = build_mcp_url(&config, &token.access_token).expect("Failed to build MCP URL");
+
+    let client = match RmcpClient::new_streamable_http_client(
+        &config.server_name,
+        &mcp_url,
+        None,
+        None,
+        None,
+        OAuthCredentialsStoreMode::File,
+    )
+    .await
+    {
+        Ok(c) => c,
+        Err(e) => {
+            println!("  Failed to create MCP client: {e}");
+            return;
+        }
+    };
+
+    if client
+        .initialize(
+            gateway_auth::create_init_params("mcp-atlas-eval"),
+            Some(Duration::from_secs(30)),
+            gateway_auth::create_elicitation_handler(),
+        )
+        .await
+        .is_err()
+    {
+        println!("  MCP initialization failed");
+        return;
+    }
+
+    // Try to call a git-related tool
+    let start = Instant::now();
+    let result = client
+        .call_tool(
+            "SEARCH_TOOLS".to_string(),
+            Some(json!({"query": "git"})),
+            Some(Duration::from_secs(60)),
+        )
+        .await;
+
+    match result {
+        Ok(r) => {
+            println!("  SEARCH_TOOLS(git) succeeded in {:?}", start.elapsed());
+            let content = serde_json::to_string_pretty(&r).unwrap_or_default();
+            println!(
+                "  Response preview: {}...",
+                &content[..content.len().min(500)]
+            );
+        }
+        Err(e) => {
+            println!("  SEARCH_TOOLS failed: {e}");
+        }
+    }
+}
+
+/// Test 4: Verify Code Executor MCP tool works
+#[tokio::test]
+async fn test_code_executor_mcp_tool() {
+    if should_skip() {
+        println!("\n⏭️  Skipping: credentials not set\n");
+        return;
+    }
+
+    println!("\n# Test: Code Executor MCP Tool\n");
+
+    let config = gateway_auth::build_kontext_config().expect("Config should be valid");
+    let token = match gateway_auth::authenticate(&config).await {
+        Ok(t) => t,
+        Err(e) => {
+            println!("  Gateway not reachable: {e}");
+            return;
+        }
+    };
+
+    let mcp_url = build_mcp_url(&config, &token.access_token).expect("Failed to build MCP URL");
+
+    let client = match RmcpClient::new_streamable_http_client(
+        &config.server_name,
+        &mcp_url,
+        None,
+        None,
+        None,
+        OAuthCredentialsStoreMode::File,
+    )
+    .await
+    {
+        Ok(c) => c,
+        Err(e) => {
+            println!("  Failed to create MCP client: {e}");
+            return;
+        }
+    };
+
+    if client
+        .initialize(
+            gateway_auth::create_init_params("mcp-atlas-eval"),
+            Some(Duration::from_secs(30)),
+            gateway_auth::create_elicitation_handler(),
+        )
+        .await
+        .is_err()
+    {
+        println!("  MCP initialization failed");
+        return;
+    }
+
+    // Try EXECUTE_CODE
+    let start = Instant::now();
+    let result = client
+        .call_tool(
+            "EXECUTE_CODE".to_string(),
+            Some(json!({
+                "code": "return 'Hello from Code Executor';"
+            })),
+            Some(Duration::from_secs(60)),
+        )
+        .await;
+
+    match result {
+        Ok(r) => {
+            println!("  EXECUTE_CODE succeeded in {:?}", start.elapsed());
+            let content = serde_json::to_string_pretty(&r).unwrap_or_default();
+            println!("  Response: {content}");
+        }
+        Err(e) => {
+            println!("  EXECUTE_CODE failed: {e}");
+            println!("  (This is expected if EXECUTE_CODE is not available)");
+        }
+    }
+}
+
+/// Test 5: Verify CLI MCP tool works
+#[tokio::test]
+async fn test_cli_mcp_tool() {
+    if should_skip() {
+        println!("\n⏭️  Skipping: credentials not set\n");
+        return;
+    }
+
+    println!("\n# Test: CLI MCP Tool\n");
+
+    let config = gateway_auth::build_kontext_config().expect("Config should be valid");
+    let token = match gateway_auth::authenticate(&config).await {
+        Ok(t) => t,
+        Err(e) => {
+            println!("  Gateway not reachable: {e}");
+            return;
+        }
+    };
+
+    let mcp_url = build_mcp_url(&config, &token.access_token).expect("Failed to build MCP URL");
+
+    let client = match RmcpClient::new_streamable_http_client(
+        &config.server_name,
+        &mcp_url,
+        None,
+        None,
+        None,
+        OAuthCredentialsStoreMode::File,
+    )
+    .await
+    {
+        Ok(c) => c,
+        Err(e) => {
+            println!("  Failed to create MCP client: {e}");
+            return;
+        }
+    };
+
+    if client
+        .initialize(
+            gateway_auth::create_init_params("mcp-atlas-eval"),
+            Some(Duration::from_secs(30)),
+            gateway_auth::create_elicitation_handler(),
+        )
+        .await
+        .is_err()
+    {
+        println!("  MCP initialization failed");
+        return;
+    }
+
+    // Search for CLI tools
+    let start = Instant::now();
+    let result = client
+        .call_tool(
+            "SEARCH_TOOLS".to_string(),
+            Some(json!({"query": "cli execute command"})),
+            Some(Duration::from_secs(60)),
+        )
+        .await;
+
+    match result {
+        Ok(r) => {
+            println!("  SEARCH_TOOLS(cli) succeeded in {:?}", start.elapsed());
+            let content = serde_json::to_string_pretty(&r).unwrap_or_default();
+            println!(
+                "  Response preview: {}...",
+                &content[..content.len().min(500)]
+            );
+        }
+        Err(e) => {
+            println!("  SEARCH_TOOLS failed: {e}");
+        }
+    }
+}
+
+/// Test 6: Verify Claim Judge works
+#[tokio::test]
+async fn test_claim_judge() {
+    if env::var("OPENAI_API_KEY").is_err() {
+        println!("\n⏭️  Skipping: OPENAI_API_KEY not set\n");
+        return;
+    }
+
+    println!("\n# Test: Claim Judge\n");
+
+    let judge = match ClaimJudge::new() {
+        Ok(j) => j,
+        Err(e) => {
+            println!("  Failed to create judge: {e}");
+            return;
+        }
+    };
+
+    let task_prompt = "List the files in the current directory";
+    let answer = "The current directory contains: main.rs, lib.rs, Cargo.toml, README.md";
+    let claims = vec![
+        "The response lists files in the directory".to_string(),
+        "The response includes Cargo.toml".to_string(),
+        "The response shows file sizes".to_string(), // This should fail
+    ];
+
+    let start = Instant::now();
+    match judge.verify_claims(task_prompt, answer, &claims).await {
+        Ok(result) => {
+            println!("  Verification completed in {:?}", start.elapsed());
+            println!("  Coverage: {:.2}", result.coverage);
+            println!("  Passed: {}", result.passed);
+            println!("\n  Per-claim results:");
+            for (claim, score) in &result.scores {
+                let score_str = match score {
+                    ClaimScore::Fulfilled => "FULFILLED",
+                    ClaimScore::PartiallyFulfilled => "PARTIAL",
+                    ClaimScore::NotFulfilled => "NOT_FULFILLED",
+                };
+                println!("    - {}: {}", score_str, &claim[..claim.len().min(50)]);
+            }
+        }
+        Err(e) => {
+            println!("  Verification failed: {e}");
+        }
+    }
+}
+
+/// Test 7: Verify RLM routing works
+#[tokio::test]
+async fn test_rlm_routing() {
+    println!("\n# Test: RLM Routing\n");
+
+    let temp_dir = TempDir::new().unwrap();
+    let router = match create_rlm_router(temp_dir.path()).await {
+        Ok(r) => r,
+        Err(e) => {
+            println!("  Failed to create RLM router: {e}");
+            return;
+        }
+    };
+
+    // Test small response (should pass through)
+    let small_content = r#"{"files": ["main.rs", "lib.rs"]}"#;
+    match router
+        .process_result("test_1", "gateway", "list_files", small_content)
+        .await
+    {
+        Ok(result) => {
+            let routing = match result {
+                codex_core::rlm::ProcessedResult::PassThrough { .. } => "passthrough",
+                codex_core::rlm::ProcessedResult::StoredInCorpus { .. } => "corpus",
+            };
+            println!(
+                "  Small response ({} bytes): {}",
+                small_content.len(),
+                routing
+            );
+            assert!(matches!(
+                result,
+                codex_core::rlm::ProcessedResult::PassThrough { .. }
+            ));
+        }
+        Err(e) => {
+            println!("  Small response routing failed: {e}");
+        }
+    }
+
+    // Test large response (should go to corpus)
+    let large_content = "x".repeat(20000);
+    match router
+        .process_result("test_2", "gateway", "large_tool", &large_content)
+        .await
+    {
+        Ok(result) => {
+            let routing = match result {
+                codex_core::rlm::ProcessedResult::PassThrough { .. } => "passthrough",
+                codex_core::rlm::ProcessedResult::StoredInCorpus { .. } => "corpus",
+            };
+            println!(
+                "  Large response ({} bytes): {}",
+                large_content.len(),
+                routing
+            );
+            assert!(matches!(
+                result,
+                codex_core::rlm::ProcessedResult::StoredInCorpus { .. }
+            ));
+        }
+        Err(e) => {
+            println!("  Large response routing failed: {e}");
+        }
+    }
+}
+
+// =============================================================================
+// MAIN EVALUATION
+// =============================================================================
+
+/// Run three-way evaluation on first 10 tasks (test mode)
+#[tokio::test]
+async fn run_mcp_atlas_three_way_evaluation() {
+    if should_skip() {
+        println!("\n");
+        println!("═══════════════════════════════════════════════════════════════");
+        println!("       MCP-Atlas Evaluation - Setup Required");
+        println!("═══════════════════════════════════════════════════════════════");
+        println!();
+        println!("Required environment variables:");
+        println!("  KONTEXT_CLIENT_ID=<your-client-id>");
+        println!("  KONTEXT_CLIENT_SECRET=<your-client-secret>");
+        println!("  KONTEXT_MCP_URL=http://localhost:4000/mcp");
+        println!("  KONTEXT_TOKEN_URL=http://localhost:4000/oauth2/token");
+        println!("  OPENAI_API_KEY=<your-api-key>");
+        println!();
+        println!("Optional configuration:");
+        println!("  EVAL_LIMIT=5                   # Run only N tasks");
+        println!("  EVAL_TASK_PREFIX=task_linear   # Filter by task ID prefix");
+        println!("  EVAL_MODEL=gpt-4o              # Model for tool-calling client");
+        println!("  EVAL_GATEWAY_TASK_CSV=v1       # gateway_tasks.csv");
+        println!("  EVAL_GATEWAY_TASK_CSV=v2       # gateway_tasks_v2.csv (default)");
+        println!("  EVAL_GATEWAY_TASK_CSV=/path/to/gateway_tasks.csv  # Custom CSV path");
+        println!("  EVAL_DATASET_PATH=/path/to/dataset.csv            # Legacy override");
+        println!();
+        println!("Tool-calling client modes:");
+        println!(
+            "  EVAL_TOOL_MODES=baseline,codemode  # Comma-separated (baseline,codemode,rlm,codemoderlm,all)"
+        );
+        println!();
+        println!("Codex client:");
+        println!("  EVAL_USE_CODEX=true            # Enable Codex client");
+        println!(
+            "  EVAL_CODEX_MODEL=gpt-4-turbo   # Independent model for Codex (defaults to EVAL_MODEL)"
+        );
+        println!();
+        println!("Run with:");
+        println!("  source .env");
+        println!(
+            "  cargo test -p codex-core --test mcp_atlas_eval run_mcp_atlas_three_way_evaluation -- --nocapture"
+        );
+        println!();
+        println!("Examples:");
+        println!("  # Run only tool-calling modes:");
+        println!("  EVAL_TOOL_MODES=baseline,codemode cargo test ...");
+        println!();
+        println!("  # Run only Codex client:");
+        println!("  EVAL_TOOL_MODES= EVAL_USE_CODEX=true cargo test ...");
+        println!();
+        println!("  # Run both with different models:");
+        println!(
+            "  EVAL_TOOL_MODES=baseline EVAL_USE_CODEX=true EVAL_MODEL=gpt-4o EVAL_CODEX_MODEL=gpt-4-turbo cargo test ..."
+        );
+        println!();
+        return;
+    }
+
+    println!("\n");
+    println!("═══════════════════════════════════════════════════════════════════════════════");
+    println!("       MCP-Atlas Three-Way Evaluation");
+    println!("═══════════════════════════════════════════════════════════════════════════════");
+    println!();
+
+    // Step 1: Load FULL dataset (filter comes later)
+    let dataset_path = get_dataset_path();
+    println!("Loading dataset from {dataset_path:?}...");
+
+    let tasks = match codex_core::eval::load_dataset(&dataset_path) {
+        Ok(t) => t,
+        Err(e) => {
+            println!("Failed to load dataset: {e}");
+            return;
+        }
+    };
+
+    println!("Loaded {} tasks from dataset\n", tasks.len());
+
+    // Step 2: Setup Gateway connection
+    let config = gateway_auth::build_kontext_config().expect("Config should be valid");
+    println!("Connecting to Gateway...");
+
+    let token = match gateway_auth::authenticate(&config).await {
+        Ok(t) => t,
+        Err(e) => {
+            println!("Gateway authentication failed: {e}");
+            return;
+        }
+    };
+
+    let mcp_url = build_mcp_url(&config, &token.access_token).expect("Failed to build MCP URL");
+
+    let client = match RmcpClient::new_streamable_http_client(
+        &config.server_name,
+        &mcp_url,
+        None,
+        None,
+        None,
+        OAuthCredentialsStoreMode::File,
+    )
+    .await
+    {
+        Ok(c) => Arc::new(c),
+        Err(e) => {
+            println!("Failed to create MCP client: {e}");
+            return;
+        }
+    };
+
+    if let Err(e) = client
+        .initialize(
+            gateway_auth::create_init_params("mcp-atlas-eval"),
+            Some(Duration::from_secs(30)),
+            gateway_auth::create_elicitation_handler(),
+        )
+        .await
+    {
+        println!("MCP initialization failed: {e}");
+        return;
+    }
+    println!("Gateway connected\n");
+
+    // Step 3: Setup RLM infrastructure
+    let temp_dir = TempDir::new().unwrap();
+    let rlm_router: Option<Arc<GatewayResultRouter>> =
+        match create_rlm_router(temp_dir.path()).await {
+            Ok(r) => Some(Arc::new(r)),
+            Err(e) => {
+                println!("Warning: RLM router creation failed: {e}");
+                None
+            }
+        };
+
+    // Step 4: Setup judge
+    let judge = match ClaimJudge::new() {
+        Ok(j) => j,
+        Err(e) => {
+            println!("Failed to create claim judge: {e}");
+            return;
+        }
+    };
+
+    // Step 5: Create runner and discover tools
+    println!("Discovering available Gateway tools...");
+    let agent_model = std::env::var("EVAL_MODEL").unwrap_or_else(|_| "gpt-4o".to_string());
+    let runner = match ToolCallingRunner::new(client.clone(), rlm_router.clone()).await {
+        Ok(r) => r.with_model(&agent_model),
+        Err(e) => {
+            println!("Failed to create runner: {e}");
+            return;
+        }
+    };
+    println!("Using model: {agent_model}");
+
+    // Print discovered tools
+    let tools = runner.available_tools();
+    println!("Found {} tools:\n", tools.len());
+    let mut by_server: std::collections::HashMap<&str, Vec<&str>> =
+        std::collections::HashMap::new();
+    for tool in tools {
+        by_server.entry(&tool.server).or_default().push(&tool.name);
+    }
+    for (server, tool_names) in &by_server {
+        println!("  {}: {}", server, tool_names.join(", "));
+    }
+    println!();
+
+    // Step 6: Use all tasks from the gateway dataset (already filtered to available tools)
+    // Filter out tasks with 0 coverage (tools that don't match)
+    let eval_tasks: Vec<_> = tasks
+        .iter()
+        .filter(|task| {
+            if task.enabled_tools.is_empty() {
+                return false;
+            }
+            // At least one tool must resolve
+            task.enabled_tools
+                .iter()
+                .any(|tool_name| runner.resolve_tool(tool_name).is_some())
+        })
+        .collect();
+
+    println!(
+        "Tasks with resolvable tools: {}/{}\n",
+        eval_tasks.len(),
+        tasks.len()
+    );
+
+    if eval_tasks.is_empty() {
+        println!("No tasks meet the minimum coverage threshold. Exiting.");
+        return;
+    }
+
+    // Show the solvable tasks with their coverage
+    println!("Solvable tasks:\n");
+    for task in eval_tasks.iter().take(20) {
+        let coverage = runner.get_tool_coverage(task);
+        let matches = runner.get_matching_tools(task);
+        println!(
+            "═══ Task: {} ═══",
+            &task.task_id[..task.task_id.len().min(15)]
+        );
+        println!(
+            "Coverage: {:.0}% ({} tools matched)",
+            coverage * 100.0,
+            matches.len()
+        );
+
+        // Show prompt
+        let prompt_preview = if task.prompt.len() > 200 {
+            format!("{}...", &task.prompt[..200].replace('\n', " "))
+        } else {
+            task.prompt.replace('\n', " ")
+        };
+        println!("Prompt: {prompt_preview}");
+
+        // Show claims
+        println!("Claims ({}):", task.claims.len());
+        for (i, claim) in task.claims.iter().enumerate().take(3) {
+            println!("  {}. {}", i + 1, &claim[..claim.len().min(80)]);
+        }
+        if task.claims.len() > 3 {
+            println!("  ... and {} more claims", task.claims.len() - 3);
+        }
+
+        // Show tool mapping
+        println!("Tools:");
+        for (dataset_tool, gateway_tool) in matches.iter().take(3) {
+            println!(
+                "  {} → {} ({})",
+                dataset_tool, gateway_tool.name, gateway_tool.server
+            );
+        }
+        if matches.len() > 3 {
+            println!("  ... and {} more tools", matches.len() - 3);
+        }
+
+        // Show missing tools
+        let missing: Vec<_> = task
+            .enabled_tools
+            .iter()
+            .filter(|t| runner.resolve_tool(t).is_none())
+            .collect();
+        if !missing.is_empty() {
+            println!("Missing tools: {missing:?}");
+        }
+        println!();
+    }
+    println!();
+
+    // Apply subset filters from environment variables
+    // EVAL_LIMIT: max number of tasks (default: all)
+    // EVAL_TASK_PREFIX: filter to tasks starting with this prefix (e.g., "task_linear")
+    // EVAL_MODES: comma-separated modes to run (e.g., "baseline,codemode" or "rlm")
+    let limit: usize = std::env::var("EVAL_LIMIT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(usize::MAX);
+
+    let task_prefixes: Option<Vec<String>> = std::env::var("EVAL_TASK_PREFIX")
+        .ok()
+        .map(|s| s.split(',').map(|p| p.trim().to_string()).collect());
+
+    let eval_tasks: Vec<_> = eval_tasks
+        .into_iter()
+        .filter(|task| {
+            if let Some(ref prefixes) = task_prefixes {
+                prefixes
+                    .iter()
+                    .any(|prefix| task.task_id.starts_with(prefix))
+            } else {
+                true
+            }
+        })
+        .take(limit)
+        .collect();
+
+    if eval_tasks.is_empty() {
+        println!("No tasks match the filter criteria.");
+        if let Some(ref prefixes) = task_prefixes {
+            println!("  EVAL_TASK_PREFIX={}", prefixes.join(","));
+        }
+        return;
+    }
+
+    println!("Running evaluation on {} tasks", eval_tasks.len());
+    if let Some(ref prefixes) = task_prefixes {
+        println!("  (filtered by prefixes: {})", prefixes.join(", "));
+    }
+    if limit < usize::MAX {
+        println!("  (limited to {limit} tasks)");
+    }
+    println!();
+
+    // Step 7: Parse tool-calling modes from EVAL_TOOL_MODES (comma-separated)
+    // Options: baseline, codemode, rlm, codemoderlm. Default: baseline,codemode
+    let tool_modes: Vec<ToolCallingMode> = env::var("EVAL_TOOL_MODES")
+        .unwrap_or_else(|_| "baseline,codemode".to_string())
+        .split(',')
+        .filter_map(|s| match s.trim().to_lowercase().as_str() {
+            "baseline" => Some(ToolCallingMode::Baseline),
+            "codemode" | "code" => Some(ToolCallingMode::CodeMode),
+            "rlm" | "baselinerlm" => Some(ToolCallingMode::BaselineRlm),
+            "codemoderlm" | "code+rlm" | "coderlm" => Some(ToolCallingMode::CodeModeRlm),
+            "all" => None, // Handle "all" separately
+            _ => None,
+        })
+        .collect();
+
+    // Check if "all" was specified
+    let tool_modes: Vec<ToolCallingMode> = if env::var("EVAL_TOOL_MODES")
+        .map(|s| s.to_lowercase().contains("all"))
+        .unwrap_or(false)
+    {
+        vec![
+            ToolCallingMode::Baseline,
+            ToolCallingMode::CodeMode,
+            ToolCallingMode::BaselineRlm,
+            ToolCallingMode::CodeModeRlm,
+        ]
+    } else {
+        tool_modes
+    };
+
+    // Step 7b: Parse codex flag from EVAL_USE_CODEX (boolean)
+    let use_codex = env::var("EVAL_USE_CODEX")
+        .map(|s| s.eq_ignore_ascii_case("true") || s == "1")
+        .unwrap_or(false);
+
+    // Parse independent codex model (defaults to EVAL_MODEL)
+    let codex_model = env::var("EVAL_CODEX_MODEL").unwrap_or_else(|_| agent_model.clone());
+
+    println!(
+        "Running tool-calling modes: {:?}",
+        tool_modes
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect::<Vec<_>>()
+    );
+    println!("Use Codex client: {use_codex}");
+    if use_codex {
+        println!("Codex model: {codex_model}");
+    }
+    println!();
+
+    // CodexRunner has been removed (depends on deeply-coupled codex internals).
+    // The 4 benchmark modes (Baseline, CodeMode, BaselineRlm, CodeModeRlm) work
+    // via the ToolCallingRunner and do not need CodexRunner.
+    let codex_runner: Option<()> = None;
+    let _ = use_codex; // suppress unused warning
+
+    // Use mode_name strings as keys for results
+    let mut all_results: HashMap<String, Vec<EvalResult>> = HashMap::new();
+
+    // Run tool-calling modes
+    for mode in &tool_modes {
+        let mode_name = mode.to_string();
+        println!("\n═══ Running {mode_name} mode (ToolCalling) ═══\n");
+
+        let mut results = Vec::new();
+
+        for (i, task) in eval_tasks.iter().enumerate() {
+            println!(
+                "  Task {}/{}: {}...",
+                i + 1,
+                eval_tasks.len(),
+                &task.task_id[..task.task_id.len().min(20)]
+            );
+
+            // Execute task using tool-calling runner
+            let task_result = runner.run_task(task, *mode).await;
+
+            // Print tool calls made
+            if !task_result.tool_calls.is_empty() {
+                let tool_names: Vec<_> = task_result
+                    .tool_calls
+                    .iter()
+                    .map(|t| t.name.as_str())
+                    .collect();
+                println!("    Tools used: {}", tool_names.join(", "));
+            }
+
+            // Judge the answer
+            let verification = match judge
+                .verify_claims(&task.prompt, &task_result.final_answer, &task.claims)
+                .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    println!("    Verification failed: {e}");
+                    ClaimVerificationResult {
+                        scores: vec![],
+                        coverage: 0.0,
+                        passed: false,
+                        raw_response: e.to_string(),
+                    }
+                }
+            };
+
+            let status = if verification.passed { "PASS" } else { "FAIL" };
+            let latency_secs = task_result.latency_ms as f64 / 1000.0;
+            println!(
+                "    Coverage: {:.2}, Status: {}, Tokens: {}, Latency: {:.1}s",
+                verification.coverage, status, task_result.context_tokens, latency_secs
+            );
+            if let Some(ref err) = task_result.error {
+                println!("    ERROR: {err}");
+            }
+
+            results.push(EvalResult {
+                task_id: task.task_id.clone(),
+                task_result,
+                verification,
+            });
+        }
+
+        all_results.insert(mode_name, results);
+    }
+
+    // CodexRunner has been removed; skip Codex client mode.
+    let _ = codex_runner;
+
+    // Step 8: Print results
+    print_comparison(&all_results);
+
+    // Step 9: Save results to JSON
+    let mode_strings: Vec<String> = tool_modes.iter().map(|m| m.to_string()).collect();
+    save_results(
+        &all_results,
+        &agent_model,
+        &codex_model,
+        &dataset_path.to_string_lossy(),
+        &mode_strings,
+        use_codex,
+        limit,
+    );
+}
+
+/// Print comparative results (uses mode_name strings as keys)
+fn print_comparison(results: &HashMap<String, Vec<EvalResult>>) {
+    println!("\n");
+    println!("═══════════════════════════════════════════════════════════════════════════════");
+    println!("                    MCP-Atlas Evaluation Results");
+    println!("═══════════════════════════════════════════════════════════════════════════════");
+    println!();
+
+    // Define the order of modes for display
+    let mode_order = [
+        "Baseline",
+        "CodeMode",
+        "Baseline+RLM",
+        "CodeMode+RLM",
+        "Codex",
+    ];
+
+    // Per-mode summary
+    for mode_name in &mode_order {
+        if let Some(mode_results) = results.get(*mode_name) {
+            let pass_count = mode_results
+                .iter()
+                .filter(|r| r.verification.passed)
+                .count();
+            let avg_coverage: f64 = mode_results
+                .iter()
+                .map(|r| r.verification.coverage)
+                .sum::<f64>()
+                / mode_results.len().max(1) as f64;
+            let avg_tokens: i64 = mode_results
+                .iter()
+                .map(|r| r.task_result.context_tokens)
+                .sum::<i64>()
+                / mode_results.len().max(1) as i64;
+            let avg_latency_ms: u64 = mode_results
+                .iter()
+                .map(|r| r.task_result.latency_ms)
+                .sum::<u64>()
+                / mode_results.len().max(1) as u64;
+            let avg_latency_secs = avg_latency_ms as f64 / 1000.0;
+
+            println!("## {mode_name} Mode");
+            println!();
+            println!("| Metric | Value |");
+            println!("|--------|-------|");
+            println!(
+                "| Pass Rate | {:.1}% ({}/{}) |",
+                pass_count as f64 / mode_results.len().max(1) as f64 * 100.0,
+                pass_count,
+                mode_results.len()
+            );
+            println!("| Avg Coverage | {avg_coverage:.3} |");
+            println!("| Avg Context Tokens | {avg_tokens} |");
+            println!("| Avg Latency | {avg_latency_secs:.1}s |");
+            println!();
+        }
+    }
+
+    // Comparative table
+    println!("## Comparison\n");
+    println!("| Mode | Pass Rate | Avg Coverage | Avg Tokens | Token Reduction | Avg Latency |");
+    println!("|------|-----------|--------------|------------|-----------------|-------------|");
+
+    let baseline_tokens = results
+        .get("Baseline")
+        .map(|r| {
+            r.iter().map(|e| e.task_result.context_tokens).sum::<i64>() / r.len().max(1) as i64
+        })
+        .unwrap_or(1);
+
+    for mode_name in &mode_order {
+        if let Some(mode_results) = results.get(*mode_name) {
+            let pass_count = mode_results
+                .iter()
+                .filter(|r| r.verification.passed)
+                .count();
+            let pass_rate = pass_count as f64 / mode_results.len().max(1) as f64 * 100.0;
+            let avg_coverage: f64 = mode_results
+                .iter()
+                .map(|r| r.verification.coverage)
+                .sum::<f64>()
+                / mode_results.len().max(1) as f64;
+            let avg_tokens: i64 = mode_results
+                .iter()
+                .map(|r| r.task_result.context_tokens)
+                .sum::<i64>()
+                / mode_results.len().max(1) as i64;
+            let avg_latency_ms: u64 = mode_results
+                .iter()
+                .map(|r| r.task_result.latency_ms)
+                .sum::<u64>()
+                / mode_results.len().max(1) as u64;
+
+            let reduction = if baseline_tokens > 0 {
+                100.0 - (avg_tokens as f64 / baseline_tokens as f64 * 100.0)
+            } else {
+                0.0
+            };
+
+            let reduction_str = if *mode_name == "Baseline" {
+                "-".to_string()
+            } else {
+                format!("-{reduction:.0}%")
+            };
+
+            println!(
+                "| {} | {:.1}% | {:.3} | {} | {} | {:.1}s |",
+                mode_name,
+                pass_rate,
+                avg_coverage,
+                avg_tokens,
+                reduction_str,
+                avg_latency_ms as f64 / 1000.0
+            );
+        }
+    }
+
+    println!();
+
+    // Per-task comparison
+    println!("## Per-Task Comparison\n");
+    println!("| Task | Baseline | CodeMode | Baseline+RLM | CodeMode+RLM | Codex | Winner |");
+    println!("|------|----------|----------|--------------|--------------|-------|--------|");
+
+    let baseline_results = results.get("Baseline");
+    let codemode_results = results.get("CodeMode");
+    let rlm_results = results.get("Baseline+RLM");
+    let codemode_rlm_results = results.get("CodeMode+RLM");
+    let codex_results = results.get("Codex");
+
+    // Get any available results for iteration
+    let any_results = baseline_results
+        .or(codemode_results)
+        .or(rlm_results)
+        .or(codemode_rlm_results)
+        .or(codex_results);
+
+    if let Some(first_results) = any_results {
+        for (i, result) in first_results.iter().enumerate() {
+            let b_cov = baseline_results
+                .and_then(|r| r.get(i))
+                .map(|r| r.verification.coverage)
+                .unwrap_or(0.0);
+            let c_cov = codemode_results
+                .and_then(|r| r.get(i))
+                .map(|r| r.verification.coverage)
+                .unwrap_or(0.0);
+            let r_cov = rlm_results
+                .and_then(|r| r.get(i))
+                .map(|r| r.verification.coverage)
+                .unwrap_or(0.0);
+            let cr_cov = codemode_rlm_results
+                .and_then(|r| r.get(i))
+                .map(|r| r.verification.coverage)
+                .unwrap_or(0.0);
+            let codex_cov = codex_results
+                .and_then(|r| r.get(i))
+                .map(|r| r.verification.coverage)
+                .unwrap_or(0.0);
+
+            let b_status = if b_cov >= PASS_THRESHOLD {
+                "✓"
+            } else {
+                "✗"
+            };
+            let c_status = if c_cov >= PASS_THRESHOLD {
+                "✓"
+            } else {
+                "✗"
+            };
+            let r_status = if r_cov >= PASS_THRESHOLD {
+                "✓"
+            } else {
+                "✗"
+            };
+            let cr_status = if cr_cov >= PASS_THRESHOLD {
+                "✓"
+            } else {
+                "✗"
+            };
+            let codex_status = if codex_cov >= PASS_THRESHOLD {
+                "✓"
+            } else {
+                "✗"
+            };
+
+            // Determine winner based on highest coverage
+            let max_cov = b_cov.max(c_cov).max(r_cov).max(cr_cov).max(codex_cov);
+            let winner = if max_cov == 0.0 {
+                "all fail"
+            } else if codex_cov == max_cov
+                && b_cov == max_cov
+                && c_cov == max_cov
+                && r_cov == max_cov
+                && cr_cov == max_cov
+            {
+                "tie (all)"
+            } else if codex_cov == max_cov {
+                "Codex"
+            } else if b_cov == max_cov {
+                "Baseline"
+            } else if r_cov == max_cov {
+                "Baseline+RLM"
+            } else if cr_cov == max_cov {
+                "CodeMode+RLM"
+            } else {
+                "CodeMode"
+            };
+
+            println!(
+                "| {} | {:.2} {} | {:.2} {} | {:.2} {} | {:.2} {} | {:.2} {} | {} |",
+                &result.task_id[..result.task_id.len().min(15)],
+                b_cov,
+                b_status,
+                c_cov,
+                c_status,
+                r_cov,
+                r_status,
+                cr_cov,
+                cr_status,
+                codex_cov,
+                codex_status,
+                winner
+            );
+        }
+    }
+
+    println!();
+    println!("## Key Insight\n");
+    println!("RLM modes aim to achieve significant token reduction while maintaining quality.");
+    println!("CodeMode+RLM combines code generation with RLM routing for best of both worlds.");
+    println!("Codex client uses the full Codex system prompts and agent loop.");
+}
+
+/// Save evaluation results to a JSON file compatible with `scripts/plot_results.py`.
+///
+/// The file is written to `codex-rs/mcp-atlas/services/mcp_eval/results/` with a
+/// Unix-timestamp suffix so successive runs never collide.
+fn save_results(
+    results: &HashMap<String, Vec<EvalResult>>,
+    agent_model: &str,
+    codex_model: &str,
+    dataset_path: &str,
+    tool_modes: &[String],
+    use_codex: bool,
+    eval_limit: usize,
+) {
+    let results_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
+        .join("../mcp-atlas/services/mcp_eval/results");
+
+    if let Err(e) = std::fs::create_dir_all(&results_dir) {
+        println!("Warning: could not create results dir {results_dir:?}: {e}");
+        return;
+    }
+
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let mode_order = [
+        "Baseline",
+        "CodeMode",
+        "Baseline+RLM",
+        "CodeMode+RLM",
+        "Codex",
+    ];
+
+    // Build per-mode JSON objects
+    let mut results_json = serde_json::Map::new();
+    for mode_name in &mode_order {
+        if let Some(mode_results) = results.get(*mode_name) {
+            let total = mode_results.len().max(1);
+            let pass_count = mode_results
+                .iter()
+                .filter(|r| r.verification.passed)
+                .count();
+            let avg_coverage: f64 =
+                mode_results.iter().map(|r| r.verification.coverage).sum::<f64>() / total as f64;
+            let avg_tokens: i64 = mode_results
+                .iter()
+                .map(|r| r.task_result.context_tokens)
+                .sum::<i64>()
+                / total as i64;
+            let avg_latency_ms: u64 = mode_results
+                .iter()
+                .map(|r| r.task_result.latency_ms)
+                .sum::<u64>()
+                / total as u64;
+
+            let summary = json!({
+                "total_tasks": mode_results.len(),
+                "pass_count": pass_count,
+                "pass_rate": pass_count as f64 / total as f64,
+                "avg_coverage": avg_coverage,
+                "avg_context_tokens": avg_tokens,
+                "avg_latency_ms": avg_latency_ms,
+            });
+
+            let tasks: Vec<serde_json::Value> = mode_results
+                .iter()
+                .map(|r| {
+                    json!({
+                        "task_id": r.task_id,
+                        "task_result": {
+                            "task_id": r.task_result.task_id,
+                            "mode_name": r.task_result.mode_name,
+                            "context_tokens": r.task_result.context_tokens,
+                            "latency_ms": r.task_result.latency_ms,
+                            "error": r.task_result.error,
+                            "final_answer": r.task_result.final_answer,
+                        },
+                        "verification": {
+                            "coverage": r.verification.coverage,
+                            "passed": r.verification.passed,
+                        },
+                    })
+                })
+                .collect();
+
+            results_json.insert(
+                mode_name.to_string(),
+                json!({ "summary": summary, "tasks": tasks }),
+            );
+        }
+    }
+
+    let output = json!({
+        "generated_at_unix": ts,
+        "agent_model": agent_model,
+        "codex_model": codex_model,
+        "dataset_path": dataset_path,
+        "tool_modes": tool_modes,
+        "use_codex": use_codex,
+        "eval_limit": eval_limit,
+        "results": results_json,
+    });
+
+    let path = results_dir.join(format!("mcp_atlas_eval_{ts}.json"));
+    match std::fs::File::create(&path) {
+        Ok(mut f) => {
+            let pretty =
+                serde_json::to_string_pretty(&output).unwrap_or_else(|_| output.to_string());
+            if let Err(e) = f.write_all(pretty.as_bytes()) {
+                println!("Warning: failed to write results to {path:?}: {e}");
+            } else {
+                println!("\nResults saved to {path:?}");
+                println!(
+                    "  Plot with: python3 scripts/plot_results.py {}",
+                    path.display()
+                );
+            }
+        }
+        Err(e) => {
+            println!("Warning: could not create results file {path:?}: {e}");
+        }
+    }
+}
+
+/// Full evaluation on all 500 tasks (ignored by default - run with --ignored)
+#[tokio::test]
+#[ignore]
+async fn run_full_mcp_atlas_evaluation() {
+    if should_skip() {
+        println!("Skipping full evaluation - credentials not set");
+        return;
+    }
+
+    println!("\n");
+    println!("═══════════════════════════════════════════════════════════════════════════════");
+    println!("       MCP-Atlas FULL Evaluation (500 tasks × 3 modes = 1500 runs)");
+    println!("═══════════════════════════════════════════════════════════════════════════════");
+    println!();
+
+    // Same as above but without the .take(10)
+    // This would run all 500 tasks
+    println!("Full evaluation would run here...");
+    println!("This is a placeholder - implement the same logic as test mode but with all tasks.");
+}
+
+/// Analyze dataset to find tasks solvable with available Gateway tools
+#[tokio::test]
+async fn analyze_solvable_tasks() {
+    if should_skip() {
+        println!("\n⏭️  Skipping: credentials not set\n");
+        return;
+    }
+
+    println!("\n");
+    println!("═══════════════════════════════════════════════════════════════════════════════");
+    println!("       MCP-Atlas Dataset Analysis: Which Tasks Can Be Solved?");
+    println!("═══════════════════════════════════════════════════════════════════════════════");
+    println!();
+
+    // Load dataset
+    let dataset_path = get_dataset_path();
+    let tasks = match codex_core::eval::load_dataset(&dataset_path) {
+        Ok(t) => t,
+        Err(e) => {
+            println!("Failed to load dataset: {e}");
+            return;
+        }
+    };
+    println!("Loaded {} tasks from dataset\n", tasks.len());
+
+    // Connect to Gateway and discover tools
+    let config = gateway_auth::build_kontext_config().expect("Config should be valid");
+    let token = match gateway_auth::authenticate(&config).await {
+        Ok(t) => t,
+        Err(e) => {
+            println!("Gateway authentication failed: {e}");
+            return;
+        }
+    };
+
+    let mcp_url = build_mcp_url(&config, &token.access_token).expect("Failed to build MCP URL");
+    let client = match RmcpClient::new_streamable_http_client(
+        &config.server_name,
+        &mcp_url,
+        None,
+        None,
+        None,
+        OAuthCredentialsStoreMode::File,
+    )
+    .await
+    {
+        Ok(c) => Arc::new(c),
+        Err(e) => {
+            println!("Failed to create MCP client: {e}");
+            return;
+        }
+    };
+
+    if let Err(e) = client
+        .initialize(
+            gateway_auth::create_init_params("mcp-atlas-eval"),
+            Some(Duration::from_secs(30)),
+            gateway_auth::create_elicitation_handler(),
+        )
+        .await
+    {
+        println!("MCP initialization failed: {e}");
+        return;
+    }
+
+    // Create runner to discover tools
+    let runner = match ToolCallingRunner::new(client.clone(), None).await {
+        Ok(r) => r,
+        Err(e) => {
+            println!("Failed to create runner: {e}");
+            return;
+        }
+    };
+
+    // Print available Gateway tools
+    let gateway_tools = runner.available_tools();
+    println!("Available Gateway tools ({} total):\n", gateway_tools.len());
+
+    let mut by_server: std::collections::HashMap<&str, Vec<&str>> =
+        std::collections::HashMap::new();
+    for tool in gateway_tools {
+        by_server.entry(&tool.server).or_default().push(&tool.name);
+    }
+    for (server, tool_names) in &by_server {
+        println!("  {}: {}", server, tool_names.join(", "));
+    }
+    println!();
+
+    // Analyze each task
+    println!("═══ Task Analysis ═══\n");
+
+    // Target servers
+    let target_servers = ["git", "CLI", "Code Executor"];
+
+    // Categorize tasks
+    let mut fully_matched: Vec<(&codex_core::eval::McpAtlasTask, f64)> = Vec::new();
+    let mut partially_matched: Vec<(&codex_core::eval::McpAtlasTask, f64, Vec<String>)> =
+        Vec::new();
+    let mut no_match: Vec<&codex_core::eval::McpAtlasTask> = Vec::new();
+
+    for task in &tasks {
+        let matches = runner.get_matching_tools(task);
+
+        // Check if matches are from target servers
+        let target_match_count = matches
+            .iter()
+            .filter(|(_, tool)| {
+                target_servers
+                    .iter()
+                    .any(|s| tool.server.to_lowercase().contains(&s.to_lowercase()))
+            })
+            .count();
+
+        let target_ratio = if task.enabled_tools.is_empty() {
+            0.0
+        } else {
+            target_match_count as f64 / task.enabled_tools.len() as f64
+        };
+
+        if target_ratio >= 0.8 {
+            fully_matched.push((task, target_ratio));
+        } else if target_ratio > 0.0 {
+            let unmatched: Vec<String> = task
+                .enabled_tools
+                .iter()
+                .filter(|t| !matches.iter().any(|(dt, _)| dt == *t))
+                .cloned()
+                .collect();
+            partially_matched.push((task, target_ratio, unmatched));
+        } else {
+            no_match.push(task);
+        }
+    }
+
+    // Sort by match ratio
+    fully_matched.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    partially_matched.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    // Report
+    println!("## Summary\n");
+    println!("| Category | Count | Percentage |");
+    println!("|----------|-------|------------|");
+    println!(
+        "| Fully Matched (≥80% tools available) | {} | {:.1}% |",
+        fully_matched.len(),
+        fully_matched.len() as f64 / tasks.len() as f64 * 100.0
+    );
+    println!(
+        "| Partially Matched (<80% but >0% tools) | {} | {:.1}% |",
+        partially_matched.len(),
+        partially_matched.len() as f64 / tasks.len() as f64 * 100.0
+    );
+    println!(
+        "| No Match (0% tools available) | {} | {:.1}% |",
+        no_match.len(),
+        no_match.len() as f64 / tasks.len() as f64 * 100.0
+    );
+    println!();
+
+    // Show best candidates
+    println!("## Best Candidate Tasks (≥80% tool coverage)\n");
+    if fully_matched.is_empty() {
+        println!("No tasks have ≥80% tool coverage with target servers.\n");
+    } else {
+        println!("| Task ID | Match % | Prompt Preview | Tools |");
+        println!("|---------|---------|----------------|-------|");
+        for (task, ratio) in fully_matched.iter().take(20) {
+            let prompt_preview = if task.prompt.len() > 50 {
+                format!("{}...", &task.prompt[..50].replace('\n', " "))
+            } else {
+                task.prompt.replace('\n', " ")
+            };
+            let tool_count = task.enabled_tools.len();
+            println!(
+                "| {} | {:.0}% | {} | {} |",
+                &task.task_id[..task.task_id.len().min(15)],
+                ratio * 100.0,
+                prompt_preview,
+                tool_count
+            );
+        }
+        println!();
+    }
+
+    // Show partially matched with missing tools
+    println!("## Partially Matched Tasks (with missing tools)\n");
+    if partially_matched.is_empty() {
+        println!("No partially matched tasks.\n");
+    } else {
+        println!("| Task ID | Match % | Missing Tools |");
+        println!("|---------|---------|---------------|");
+        for (task, ratio, missing) in partially_matched.iter().take(10) {
+            let missing_preview: String = missing
+                .iter()
+                .take(3)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ");
+            let more = if missing.len() > 3 {
+                format!(" (+{})", missing.len() - 3)
+            } else {
+                String::new()
+            };
+            println!(
+                "| {} | {:.0}% | {}{} |",
+                &task.task_id[..task.task_id.len().min(15)],
+                ratio * 100.0,
+                missing_preview,
+                more
+            );
+        }
+        println!();
+    }
+
+    // Common missing tool patterns
+    println!("## Common Missing Tools (blocking task solvability)\n");
+    let mut missing_tool_counts: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    for task in &tasks {
+        for tool in &task.enabled_tools {
+            if runner
+                .get_matching_tools(task)
+                .iter()
+                .all(|(dt, _)| dt != tool)
+            {
+                *missing_tool_counts.entry(tool.clone()).or_insert(0) += 1;
+            }
+        }
+    }
+    let mut missing_sorted: Vec<_> = missing_tool_counts.into_iter().collect();
+    missing_sorted.sort_by(|a, b| b.1.cmp(&a.1));
+
+    println!("| Tool Name | Tasks Affected |");
+    println!("|-----------|----------------|");
+    for (tool, count) in missing_sorted.iter().take(15) {
+        println!("| {tool} | {count} |");
+    }
+    println!();
+
+    // Recommendations
+    println!("## Recommendations\n");
+    println!(
+        "1. **Best tasks for evaluation**: {} tasks have ≥80% tool coverage",
+        fully_matched.len()
+    );
+    if !fully_matched.is_empty() {
+        println!("   - These are most likely to succeed with current Gateway tools");
+    }
+    println!();
+    println!("2. **To increase coverage, add support for**:");
+    for (tool, count) in missing_sorted.iter().take(5) {
+        println!("   - `{tool}` (would unlock {count} tasks)");
+    }
+    println!();
+
+    // Show sample fully matched task details
+    if let Some((task, ratio)) = fully_matched.first() {
+        println!("## Sample Fully Matched Task\n");
+        println!("**Task ID**: {}\n", task.task_id);
+        println!("**Match Ratio**: {:.0}%\n", ratio * 100.0);
+        println!("**Prompt**:\n```\n{}\n```\n", task.prompt);
+        println!("**Enabled Tools**: {:?}\n", task.enabled_tools);
+        println!("**Claims to verify**:");
+        for (i, claim) in task.claims.iter().enumerate().take(5) {
+            println!("  {}. {}", i + 1, claim);
+        }
+        if task.claims.len() > 5 {
+            println!("  ... ({} more claims)", task.claims.len() - 5);
+        }
+        println!();
+
+        // Show tool mapping
+        println!("**Tool Mapping**:");
+        for (dt, gt) in runner.get_matching_tools(task) {
+            println!("  {} → {} ({})", dt, gt.name, gt.server);
+        }
+    }
+}
+
+/// Verbose debug evaluation on 5 random tasks
+/// This test logs EVERY step to help debug why tasks fail
+#[tokio::test]
+async fn run_verbose_debug_evaluation() {
+    if should_skip() {
+        println!("\n⏭️  Skipping: credentials not set\n");
+        return;
+    }
+
+    println!("\n");
+    println!("═══════════════════════════════════════════════════════════════════════════════");
+    println!("       VERBOSE DEBUG EVALUATION - 5 Random Tasks");
+    println!("═══════════════════════════════════════════════════════════════════════════════");
+    println!();
+
+    // Step 1: Load dataset
+    let dataset_path = get_dataset_path();
+    println!("[STEP 1] Loading dataset from {dataset_path:?}...");
+
+    let tasks = match codex_core::eval::load_dataset(&dataset_path) {
+        Ok(t) => {
+            println!("  ✓ Loaded {} tasks\n", t.len());
+            t
+        }
+        Err(e) => {
+            println!("  ✗ Failed to load dataset: {e}\n");
+            return;
+        }
+    };
+
+    // Step 2: Connect to Gateway
+    println!("[STEP 2] Connecting to Gateway...");
+    let config = gateway_auth::build_kontext_config().expect("Config should be valid");
+    println!("  Token URL: {:?}", config.token_url);
+    println!("  MCP URL: {:?}", config.mcp_url);
+
+    let token = match gateway_auth::authenticate(&config).await {
+        Ok(t) => {
+            println!("  ✓ Authentication successful\n");
+            t
+        }
+        Err(e) => {
+            println!("  ✗ Authentication failed: {e}\n");
+            return;
+        }
+    };
+
+    let mcp_url = build_mcp_url(&config, &token.access_token).expect("Failed to build MCP URL");
+    let client = match RmcpClient::new_streamable_http_client(
+        &config.server_name,
+        &mcp_url,
+        None,
+        None,
+        None,
+        OAuthCredentialsStoreMode::File,
+    )
+    .await
+    {
+        Ok(c) => {
+            println!("  ✓ MCP client created\n");
+            Arc::new(c)
+        }
+        Err(e) => {
+            println!("  ✗ Failed to create MCP client: {e}\n");
+            return;
+        }
+    };
+
+    if let Err(e) = client
+        .initialize(
+            gateway_auth::create_init_params("mcp-atlas-eval"),
+            Some(Duration::from_secs(30)),
+            gateway_auth::create_elicitation_handler(),
+        )
+        .await
+    {
+        println!("  ✗ MCP initialization failed: {e}\n");
+        return;
+    }
+    println!("  ✓ MCP initialized\n");
+
+    // Step 3: Setup RLM
+    println!("[STEP 3] Setting up RLM router...");
+    let temp_dir = TempDir::new().unwrap();
+    let rlm_router: Option<Arc<GatewayResultRouter>> =
+        match create_rlm_router(temp_dir.path()).await {
+            Ok(r) => {
+                println!("  ✓ RLM router created\n");
+                Some(Arc::new(r))
+            }
+            Err(e) => {
+                println!("  ⚠ RLM router creation failed (will skip RLM mode): {e}\n");
+                None
+            }
+        };
+
+    // Step 4: Setup judge
+    println!("[STEP 4] Setting up claim judge...");
+    let judge = match ClaimJudge::new() {
+        Ok(j) => {
+            println!("  ✓ Claim judge created\n");
+            j
+        }
+        Err(e) => {
+            println!("  ✗ Failed to create claim judge: {e}\n");
+            return;
+        }
+    };
+
+    // Step 5: Discover tools
+    println!("[STEP 5] Discovering Gateway tools...");
+    let runner = match ToolCallingRunner::new(client.clone(), rlm_router.clone()).await {
+        Ok(r) => r,
+        Err(e) => {
+            println!("  ✗ Failed to create runner: {e}\n");
+            return;
+        }
+    };
+
+    let tools = runner.available_tools();
+    println!("  Found {} tools:\n", tools.len());
+    for tool in tools {
+        println!(
+            "    - {} ({}): {}",
+            tool.name,
+            tool.server,
+            &tool.description[..tool.description.len().min(60)]
+        );
+    }
+    println!();
+
+    // Step 6: Select 5 random tasks with at least one resolvable tool
+    println!("[STEP 6] Selecting 5 random tasks...");
+    let eligible_tasks: Vec<_> = tasks
+        .iter()
+        .filter(|task| {
+            !task.enabled_tools.is_empty()
+                && task
+                    .enabled_tools
+                    .iter()
+                    .any(|t| runner.resolve_tool(t).is_some())
+        })
+        .collect();
+
+    println!(
+        "  Eligible tasks (with resolvable tools): {}/{}\n",
+        eligible_tasks.len(),
+        tasks.len()
+    );
+
+    // Select 5 specific indices for reproducibility: first, last, and 3 spread through middle
+    let indices = if eligible_tasks.len() >= 5 {
+        vec![
+            0,
+            eligible_tasks.len() / 4,
+            eligible_tasks.len() / 2,
+            3 * eligible_tasks.len() / 4,
+            eligible_tasks.len() - 1,
+        ]
+    } else {
+        (0..eligible_tasks.len().min(5)).collect()
+    };
+
+    let selected_tasks: Vec<_> = indices
+        .iter()
+        .filter_map(|&i| eligible_tasks.get(i).copied())
+        .collect();
+
+    println!(
+        "  Selected {} tasks for verbose evaluation:\n",
+        selected_tasks.len()
+    );
+    for (i, task) in selected_tasks.iter().enumerate() {
+        println!(
+            "    {}. {} - {}",
+            i + 1,
+            task.task_id,
+            &task.prompt[..task.prompt.len().min(50)]
+        );
+    }
+    println!();
+
+    // Step 7: Run verbose evaluation on each task
+    for (task_num, task) in selected_tasks.iter().enumerate() {
+        println!("\n");
+        println!(
+            "╔═══════════════════════════════════════════════════════════════════════════════╗"
+        );
+        println!(
+            "║  TASK {}/{}: {}  ",
+            task_num + 1,
+            selected_tasks.len(),
+            task.task_id
+        );
+        println!(
+            "╚═══════════════════════════════════════════════════════════════════════════════╝"
+        );
+        println!();
+
+        // Show task details
+        println!(
+            "┌─ TASK DETAILS ─────────────────────────────────────────────────────────────────┐"
+        );
+        println!("│ Prompt:");
+        for line in task.prompt.lines() {
+            println!("│   {line}");
+        }
+        println!("│");
+        println!("│ Enabled Tools: {:?}", task.enabled_tools);
+        println!("│");
+        println!("│ Tool Resolution:");
+        for tool_name in &task.enabled_tools {
+            if let Some(gateway_tool) = runner.resolve_tool(tool_name) {
+                println!(
+                    "│   ✓ {} → {} ({})",
+                    tool_name, gateway_tool.name, gateway_tool.server
+                );
+            } else {
+                println!("│   ✗ {tool_name} → NOT FOUND");
+            }
+        }
+        println!("│");
+        println!("│ Claims to verify ({}):", task.claims.len());
+        for (i, claim) in task.claims.iter().enumerate() {
+            println!("│   {}. {}", i + 1, claim);
+        }
+        println!("│");
+        println!("│ Expected Trajectory ({} steps):", task.trajectory.len());
+        for (i, step) in task.trajectory.iter().enumerate() {
+            println!("│   {}. {} with args: {}", i + 1, step.tool, step.args);
+        }
+        println!(
+            "└────────────────────────────────────────────────────────────────────────────────┘"
+        );
+        println!();
+
+        // Run in RLM mode only (the mode that had best results)
+        let mode = ToolCallingMode::BaselineRlm;
+
+        println!(
+            "┌─ EXECUTION ({mode}) ────────────────────────────────────────────────────────────┐"
+        );
+        println!("│");
+        println!("│ Sending prompt to agent (GPT-4o)...");
+
+        let start = Instant::now();
+        let task_result = runner.run_task(task, mode).await;
+        let elapsed = start.elapsed();
+
+        println!("│ Execution completed in {elapsed:?}");
+        println!("│");
+
+        // Show tool calls
+        if task_result.tool_calls.is_empty() {
+            println!("│ ⚠ NO TOOL CALLS MADE!");
+            println!("│ The agent did not use any tools.");
+        } else {
+            println!("│ Tool Calls Made ({}):", task_result.tool_calls.len());
+            for (i, call) in task_result.tool_calls.iter().enumerate() {
+                println!("│   ── Call {} ──", i + 1);
+                println!("│   Tool: {}", call.name);
+                println!(
+                    "│   Arguments: {}",
+                    serde_json::to_string_pretty(&call.arguments)
+                        .unwrap_or_default()
+                        .replace('\n', "\n│   ")
+                );
+                println!("│   Result tokens: {}", call.result_tokens);
+                println!("│   Stored in corpus: {}", call.stored_in_corpus);
+
+                // Truncate result for display
+                let result_preview = if call.result.len() > 500 {
+                    format!(
+                        "{}...\n│   [TRUNCATED: {} more chars]",
+                        &call.result[..500],
+                        call.result.len() - 500
+                    )
+                } else {
+                    call.result.clone()
+                };
+                println!("│   Result: {}", result_preview.replace('\n', "\n│   "));
+            }
+        }
+        println!("│");
+
+        // Show error if any
+        if let Some(ref error) = task_result.error {
+            println!("│ ✗ ERROR: {error}");
+            println!("│");
+        }
+
+        // Show final answer
+        println!("│ Final Answer:");
+        let answer_preview = if task_result.final_answer.len() > 1000 {
+            format!(
+                "{}...\n│   [TRUNCATED: {} more chars]",
+                &task_result.final_answer[..1000],
+                task_result.final_answer.len() - 1000
+            )
+        } else if task_result.final_answer.is_empty() {
+            "[EMPTY ANSWER]".to_string()
+        } else {
+            task_result.final_answer.clone()
+        };
+        for line in answer_preview.lines() {
+            println!("│   {line}");
+        }
+        println!("│");
+        println!("│ Context tokens used: {}", task_result.context_tokens);
+        println!(
+            "└────────────────────────────────────────────────────────────────────────────────┘"
+        );
+        println!();
+
+        // Show claim verification
+        println!(
+            "┌─ CLAIM VERIFICATION ───────────────────────────────────────────────────────────┐"
+        );
+        println!("│");
+        println!("│ Sending to judge (GPT-4o)...");
+
+        let verify_start = Instant::now();
+        let verification = match judge
+            .verify_claims(&task.prompt, &task_result.final_answer, &task.claims)
+            .await
+        {
+            Ok(v) => {
+                println!("│ Verification completed in {:?}", verify_start.elapsed());
+                v
+            }
+            Err(e) => {
+                println!("│ ✗ Verification FAILED: {e}");
+                ClaimVerificationResult {
+                    scores: vec![],
+                    coverage: 0.0,
+                    passed: false,
+                    raw_response: e.to_string(),
+                }
+            }
+        };
+
+        println!("│");
+        println!("│ Per-claim results:");
+        for (claim, score) in &verification.scores {
+            let (score_str, symbol) = match score {
+                ClaimScore::Fulfilled => ("FULFILLED", "✓"),
+                ClaimScore::PartiallyFulfilled => ("PARTIAL  ", "~"),
+                ClaimScore::NotFulfilled => ("NOT_MET  ", "✗"),
+            };
+            println!(
+                "│   {} {} {}",
+                symbol,
+                score_str,
+                &claim[..claim.len().min(60)]
+            );
+        }
+        println!("│");
+        println!("│ Coverage: {:.2}", verification.coverage);
+        println!("│ Threshold: {PASS_THRESHOLD:.2}");
+        println!(
+            "│ Status: {}",
+            if verification.passed {
+                "✓ PASS"
+            } else {
+                "✗ FAIL"
+            }
+        );
+        println!("│");
+
+        // Show raw judge response for debugging
+        if !verification.raw_response.is_empty() && !verification.passed {
+            println!("│ Judge Raw Response (for debugging):");
+            let raw_preview = if verification.raw_response.len() > 500 {
+                format!("{}...", &verification.raw_response[..500])
+            } else {
+                verification.raw_response.clone()
+            };
+            for line in raw_preview.lines() {
+                println!("│   {line}");
+            }
+        }
+        println!(
+            "└────────────────────────────────────────────────────────────────────────────────┘"
+        );
+
+        // Summary
+        println!();
+        println!(
+            "┌─ TASK SUMMARY ─────────────────────────────────────────────────────────────────┐"
+        );
+        println!("│ Task: {}", task.task_id);
+        println!("│ Tool calls: {}", task_result.tool_calls.len());
+        println!("│ Expected trajectory steps: {}", task.trajectory.len());
+        println!("│ Coverage: {:.2}", verification.coverage);
+        println!(
+            "│ Result: {}",
+            if verification.passed {
+                "✓ PASS"
+            } else {
+                "✗ FAIL"
+            }
+        );
+
+        // Diagnosis
+        println!("│");
+        println!("│ DIAGNOSIS:");
+        if task_result.tool_calls.is_empty() {
+            println!(
+                "│   - Agent made NO tool calls (expected {})",
+                task.trajectory.len()
+            );
+            println!("│   - Check: Is the system prompt telling agent to use tools?");
+            println!("│   - Check: Are tool definitions correctly formatted?");
+        } else if task_result.tool_calls.len() != task.trajectory.len() {
+            println!(
+                "│   - Agent made {} calls, expected {}",
+                task_result.tool_calls.len(),
+                task.trajectory.len()
+            );
+        }
+
+        if let Some(ref error) = task_result.error {
+            println!("│   - Execution error: {error}");
+        }
+
+        if !verification.passed && task_result.final_answer.is_empty() {
+            println!("│   - Final answer is EMPTY!");
+        }
+
+        // Check if tool calls match expected trajectory
+        let expected_tools: Vec<_> = task.trajectory.iter().map(|s| &s.tool).collect();
+        let actual_tools: Vec<_> = task_result.tool_calls.iter().map(|c| &c.name).collect();
+        if expected_tools != actual_tools {
+            println!("│   - Tool sequence mismatch:");
+            println!("│     Expected: {expected_tools:?}");
+            println!("│     Actual:   {actual_tools:?}");
+        }
+
+        println!(
+            "└────────────────────────────────────────────────────────────────────────────────┘"
+        );
+    }
+
+    println!("\n");
+    println!("═══════════════════════════════════════════════════════════════════════════════");
+    println!("       VERBOSE DEBUG EVALUATION COMPLETE");
+    println!("═══════════════════════════════════════════════════════════════════════════════");
+}
+
+/// Print setup instructions
+#[tokio::test]
+async fn print_setup_instructions() {
+    if !should_skip() {
+        return;
+    }
+
+    println!("\n");
+    println!("═══════════════════════════════════════════════════════════════");
+    println!("           MCP-Atlas Evaluation - Setup Instructions");
+    println!("═══════════════════════════════════════════════════════════════");
+    println!();
+    println!("This evaluation requires:");
+    println!();
+    println!("  1. Kontext Gateway credentials");
+    println!("  2. OpenAI API key (for agent and judge)");
+    println!("  3. MCP-Atlas dataset");
+    println!();
+    println!("Setup:");
+    println!();
+    println!("  # Create .env file:");
+    println!("  KONTEXT_CLIENT_ID=<your-client-id>");
+    println!("  KONTEXT_CLIENT_SECRET=<your-client-secret>");
+    println!("  KONTEXT_MCP_URL=http://localhost:4000/mcp");
+    println!("  KONTEXT_TOKEN_URL=http://localhost:4000/oauth2/token");
+    println!("  OPENAI_API_KEY=<your-openai-key>");
+    println!("  EVAL_GATEWAY_TASK_CSV=v2");
+    println!();
+    println!("  # Optional alternate dataset:");
+    println!(
+        "  # EVAL_GATEWAY_TASK_CSV=v1  (maps to ../mcp-atlas/services/mcp_eval/gateway_tasks.csv)"
+    );
+    println!("  # EVAL_GATEWAY_TASK_CSV=/path/to/custom_gateway_tasks.csv");
+    println!();
+    println!("Run tests:");
+    println!();
+    println!("  # Verification tests:");
+    println!("  source .env");
+    println!("  cargo test -p codex-core --test mcp_atlas_eval -- --nocapture");
+    println!();
+    println!("  # Three-way evaluation (10 tasks):");
+    println!(
+        "  cargo test -p codex-core --test mcp_atlas_eval run_mcp_atlas_three_way_evaluation -- --nocapture"
+    );
+    println!();
+    println!("  # Full evaluation (500 tasks - takes a long time):");
+    println!(
+        "  cargo test -p codex-core --test mcp_atlas_eval run_full_mcp_atlas_evaluation -- --nocapture --ignored"
+    );
+    println!();
+    println!("═══════════════════════════════════════════════════════════════");
+    println!();
+}

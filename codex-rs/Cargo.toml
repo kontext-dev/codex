@@ -141,6 +141,8 @@ mcp_test_support = { path = "mcp-server/tests/common" }
 
 # External
 age = "0.11.1"
+arrow = { version = "54", default-features = false, features = ["ipc"] }
+async-openai = "0.28"
 allocative = "0.3.3"
 ansi-to-tui = "7.0.0"
 anyhow = "1"
@@ -186,6 +188,7 @@ insta = "1.46.3"
 inventory = "0.3.19"
 itertools = "0.14.0"
 keyring = { version = "3.6", default-features = false }
+kontext-dev = "0.2.5"
 landlock = "0.4.4"
 lazy_static = "1"
 libc = "0.2.177"

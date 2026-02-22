@@ -166,5 +166,9 @@ pub use client_common::ResponseStream;
 pub use compact::content_items_to_text;
 pub use event_mapping::parse_turn_item;
 pub mod compact;
+#[cfg(feature = "benchmarking")]
+pub mod eval;
 pub mod memory_trace;
 pub mod otel_init;
+#[cfg(feature = "benchmarking")]
+pub mod rlm;
