@@ -1,3 +1,4 @@
+#![cfg(feature = "benchmarking")]
 //! Quick test to list all available Gateway tools
 
 use std::time::Duration;
@@ -7,21 +8,24 @@ use codex_rmcp_client::RmcpClient;
 use core_test_support::gateway_auth;
 use kontext_dev::build_mcp_url;
 use serde_json::json;
+use tracing_test::traced_test;
 
 #[tokio::test]
+#[traced_test]
 async fn list_all_gateway_tools() {
     if gateway_auth::should_skip() {
-        println!("Skipping: credentials not set");
+        tracing::warn!("Skipping: credentials not set");
         return;
     }
 
     let config = gateway_auth::build_kontext_config().expect("Config should be valid");
     let token = match gateway_auth::authenticate(&config).await {
         Ok(t) => t,
-        Err(e) => {
-            println!("Auth failed: {e}");
+        Err(e) if e.to_string().contains("onnection refused") => {
+            tracing::warn!("Skipping: gateway not running");
             return;
         }
+        Err(e) => panic!("Auth failed (credentials configured): {e}"),
     };
 
     let mcp_url = build_mcp_url(&config, &token.access_token).expect("Failed to build MCP URL");
@@ -37,10 +41,11 @@ async fn list_all_gateway_tools() {
     .await
     {
         Ok(c) => c,
-        Err(e) => {
-            println!("Failed to create client: {e}");
+        Err(e) if e.to_string().contains("onnection refused") => {
+            tracing::warn!("Skipping: gateway not running");
             return;
         }
+        Err(e) => panic!("Failed to create client (gateway should be reachable): {e}"),
     };
 
     if let Err(e) = client
@@ -51,12 +56,15 @@ async fn list_all_gateway_tools() {
         )
         .await
     {
-        println!("Init failed: {e}");
-        return;
+        if e.to_string().contains("onnection refused") {
+            tracing::warn!("Skipping: gateway not running");
+            return;
+        }
+        panic!("Init failed (gateway should be reachable): {e}");
     }
 
     // Search for ALL tools with empty query
-    println!("\n# Available Gateway Tools\n");
+    tracing::info!("Available Gateway Tools");
 
     let result = client
         .call_tool(
@@ -97,11 +105,13 @@ async fn list_all_gateway_tools() {
                     if let Some(errors) = tools_payload.get("errors").and_then(|v| v.as_array())
                         && !errors.is_empty()
                     {
-                        println!("Gateway search errors: {errors:?}");
+                        tracing::error!("Gateway search errors: {errors:?}");
                     }
 
                     if !tools.is_empty() || tools_payload.get("items").is_some() {
-                        println!("Found {} tools:\n", tools.len());
+                        tracing::info!("Found {} tools", tools.len());
+
+                        assert!(!tools.is_empty(), "Should discover at least one tool");
 
                         // Group by server
                         let mut by_server: std::collections::HashMap<String, Vec<String>> =
@@ -125,20 +135,19 @@ async fn list_all_gateway_tools() {
                         }
 
                         for (server, tools) in by_server.iter() {
-                            println!("## {} ({} tools)", server, tools.len());
+                            tracing::debug!("{} ({} tools)", server, tools.len());
                             for tool in tools.iter().take(30) {
-                                println!("  - {tool}");
+                                tracing::debug!("- {tool}");
                             }
                             if tools.len() > 30 {
-                                println!("  ... and {} more", tools.len() - 30);
+                                tracing::debug!("... and {} more", tools.len() - 30);
                             }
-                            println!();
                         }
                     } else {
-                        println!("Failed to parse tools payload: {text}");
+                        tracing::error!("Failed to parse tools payload: {text}");
                     }
                 } else {
-                    println!(
+                    tracing::trace!(
                         "Response structure: {}",
                         &response_str[..response_str.len().min(1000)]
                     );
@@ -146,7 +155,7 @@ async fn list_all_gateway_tools() {
             }
         }
         Err(e) => {
-            println!("SEARCH_TOOLS failed: {e}");
+            tracing::error!("SEARCH_TOOLS failed: {e}");
         }
     }
 }

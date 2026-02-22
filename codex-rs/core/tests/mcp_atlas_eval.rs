@@ -66,6 +66,7 @@ use kontext_dev::build_mcp_url;
 use serde_json::json;
 use tempfile::TempDir;
 use tokio::sync::RwLock;
+use tracing_test::traced_test;
 
 /// Gateway task CSV paths relative to core directory (CARGO_MANIFEST_DIR).
 const GATEWAY_TASKS_V1_DATASET_PATH: &str = "../mcp-atlas/services/mcp_eval/gateway_tasks.csv";
@@ -158,40 +159,41 @@ async fn create_rlm_router(temp_path: &std::path::Path) -> anyhow::Result<Gatewa
 
 /// Test 1: Verify dataset loads correctly
 #[tokio::test]
+#[traced_test]
 async fn test_dataset_loads() {
-    println!("\n# Test: Dataset Loading\n");
+    tracing::info!("Test: Dataset Loading");
 
     let dataset_path = get_dataset_path();
-    println!("  Loading from: {dataset_path:?}");
+    tracing::debug!("Loading from: {:?}", dataset_path);
 
     if !dataset_path.exists() {
-        println!("  Dataset not found at {dataset_path:?}");
-        println!("  Please ensure the MCP-Atlas dataset is downloaded.");
+        tracing::warn!("Dataset not found at {:?}", dataset_path);
+        tracing::warn!("Please ensure the MCP-Atlas dataset is downloaded.");
         return;
     }
 
     match codex_core::eval::load_dataset(&dataset_path) {
         Ok(tasks) => {
-            println!("  Loaded {} tasks", tasks.len());
+            tracing::debug!("Loaded {} tasks", tasks.len());
             assert!(!tasks.is_empty(), "Dataset should not be empty");
 
             // Print first task as sample
             if let Some(task) = tasks.first() {
-                println!("\n  Sample task:");
-                println!("    ID: {}", task.task_id);
-                println!(
-                    "    Tools: {:?}",
+                tracing::debug!("Sample task:");
+                tracing::debug!("ID: {}", task.task_id);
+                tracing::debug!(
+                    "Tools: {:?}",
                     &task.enabled_tools[..task.enabled_tools.len().min(5)]
                 );
-                println!(
-                    "    Prompt: {}...",
+                tracing::debug!(
+                    "Prompt: {}...",
                     &task.prompt[..task.prompt.len().min(100)]
                 );
-                println!("    Claims: {} total", task.claims.len());
+                tracing::debug!("Claims: {} total", task.claims.len());
             }
         }
         Err(e) => {
-            println!("  Failed to load dataset: {e}");
+            tracing::error!("Failed to load dataset: {e}");
             panic!("Dataset loading failed");
         }
     }
@@ -199,28 +201,29 @@ async fn test_dataset_loads() {
 
 /// Test 2: Verify Gateway connection works
 #[tokio::test]
+#[traced_test]
 async fn test_gateway_connection() {
     if should_skip() {
-        println!("\n⏭️  Skipping: credentials not set\n");
+        tracing::warn!("Skipping: credentials not set");
         return;
     }
 
-    println!("\n# Test: Gateway Connection\n");
+    tracing::info!("Test: Gateway Connection");
 
     let config = gateway_auth::build_kontext_config().expect("Config should be valid");
-    println!("  Token URL: {:?}", config.token_url);
+    tracing::debug!("Token URL: {:?}", config.token_url);
 
     // Authenticate
     let token = match gateway_auth::authenticate(&config).await {
         Ok(t) => {
-            println!("  Authentication successful");
+            tracing::debug!("Authentication successful");
             t
         }
-        Err(e) => {
-            println!("  Authentication failed: {e}");
-            println!("  Gateway may not be running");
+        Err(e) if e.to_string().contains("onnection refused") => {
+            tracing::warn!("Skipping: gateway not running");
             return;
         }
+        Err(e) => panic!("Auth failed (credentials configured): {e}"),
     };
 
     // Build MCP URL and connect
@@ -237,14 +240,15 @@ async fn test_gateway_connection() {
     .await
     {
         Ok(c) => c,
-        Err(e) => {
-            println!("  Failed to create MCP client: {e}");
+        Err(e) if e.to_string().contains("onnection refused") => {
+            tracing::warn!("Skipping: gateway not running");
             return;
         }
+        Err(e) => panic!("MCP client creation failed (credentials configured): {e}"),
     };
 
     // Initialize
-    match client
+    if let Err(e) = client
         .initialize(
             gateway_auth::create_init_params("mcp-atlas-eval"),
             Some(Duration::from_secs(30)),
@@ -252,59 +256,56 @@ async fn test_gateway_connection() {
         )
         .await
     {
-        Ok(result) => {
-            println!(
-                "  MCP initialized: {} v{}",
-                result.server_info.name, result.server_info.version
-            );
-        }
-        Err(e) => {
-            println!("  MCP initialization failed: {e}");
+        if e.to_string().contains("onnection refused") {
+            tracing::warn!("Skipping: gateway not running");
             return;
         }
+        panic!("MCP initialization failed: {e}");
     }
 
     // List tools
     match client.list_tools(None, Some(Duration::from_secs(30))).await {
         Ok(result) => {
-            println!("  Found {} tools", result.tools.len());
+            tracing::info!("Found {} tools", result.tools.len());
             // Print EXECUTE_TOOL schema to understand expected args
             for tool in &result.tools {
-                println!("\n  Tool: {}", tool.name);
-                println!(
-                    "  Description: {}",
+                tracing::debug!("Tool: {}", tool.name);
+                tracing::debug!(
+                    "Description: {}",
                     tool.description.as_deref().unwrap_or("N/A")
                 );
-                println!(
-                    "  Schema: {}",
+                tracing::debug!(
+                    "Schema: {}",
                     serde_json::to_string_pretty(&tool.input_schema).unwrap_or("N/A".to_string())
                 );
             }
             assert!(!result.tools.is_empty(), "Should have tools available");
         }
         Err(e) => {
-            println!("  Failed to list tools: {e}");
+            tracing::error!("Failed to list tools: {e}");
         }
     }
 }
 
 /// Test 3: Verify real Git MCP tool works
 #[tokio::test]
+#[traced_test]
 async fn test_git_mcp_tool() {
     if should_skip() {
-        println!("\n⏭️  Skipping: credentials not set\n");
+        tracing::warn!("Skipping: credentials not set");
         return;
     }
 
-    println!("\n# Test: Git MCP Tool\n");
+    tracing::info!("Test: Git MCP Tool");
 
     let config = gateway_auth::build_kontext_config().expect("Config should be valid");
     let token = match gateway_auth::authenticate(&config).await {
         Ok(t) => t,
-        Err(e) => {
-            println!("  Gateway not reachable: {e}");
+        Err(e) if e.to_string().contains("onnection refused") => {
+            tracing::warn!("Skipping: gateway not running");
             return;
         }
+        Err(e) => panic!("Auth failed (credentials configured): {e}"),
     };
 
     let mcp_url = build_mcp_url(&config, &token.access_token).expect("Failed to build MCP URL");
@@ -320,23 +321,26 @@ async fn test_git_mcp_tool() {
     .await
     {
         Ok(c) => c,
-        Err(e) => {
-            println!("  Failed to create MCP client: {e}");
+        Err(e) if e.to_string().contains("onnection refused") => {
+            tracing::warn!("Skipping: gateway not running");
             return;
         }
+        Err(e) => panic!("MCP client creation failed (credentials configured): {e}"),
     };
 
-    if client
+    if let Err(e) = client
         .initialize(
             gateway_auth::create_init_params("mcp-atlas-eval"),
             Some(Duration::from_secs(30)),
             gateway_auth::create_elicitation_handler(),
         )
         .await
-        .is_err()
     {
-        println!("  MCP initialization failed");
-        return;
+        if e.to_string().contains("onnection refused") {
+            tracing::warn!("Skipping: gateway not running");
+            return;
+        }
+        panic!("MCP initialization failed: {e}");
     }
 
     // Try to call a git-related tool
@@ -351,36 +355,38 @@ async fn test_git_mcp_tool() {
 
     match result {
         Ok(r) => {
-            println!("  SEARCH_TOOLS(git) succeeded in {:?}", start.elapsed());
+            tracing::debug!("SEARCH_TOOLS(git) succeeded in {:?}", start.elapsed());
             let content = serde_json::to_string_pretty(&r).unwrap_or_default();
-            println!(
-                "  Response preview: {}...",
+            tracing::debug!(
+                "Response preview: {}...",
                 &content[..content.len().min(500)]
             );
         }
         Err(e) => {
-            println!("  SEARCH_TOOLS failed: {e}");
+            tracing::error!("SEARCH_TOOLS failed: {e}");
         }
     }
 }
 
 /// Test 4: Verify Code Executor MCP tool works
 #[tokio::test]
+#[traced_test]
 async fn test_code_executor_mcp_tool() {
     if should_skip() {
-        println!("\n⏭️  Skipping: credentials not set\n");
+        tracing::warn!("Skipping: credentials not set");
         return;
     }
 
-    println!("\n# Test: Code Executor MCP Tool\n");
+    tracing::info!("Test: Code Executor MCP Tool");
 
     let config = gateway_auth::build_kontext_config().expect("Config should be valid");
     let token = match gateway_auth::authenticate(&config).await {
         Ok(t) => t,
-        Err(e) => {
-            println!("  Gateway not reachable: {e}");
+        Err(e) if e.to_string().contains("onnection refused") => {
+            tracing::warn!("Skipping: gateway not running");
             return;
         }
+        Err(e) => panic!("Auth failed (credentials configured): {e}"),
     };
 
     let mcp_url = build_mcp_url(&config, &token.access_token).expect("Failed to build MCP URL");
@@ -396,23 +402,26 @@ async fn test_code_executor_mcp_tool() {
     .await
     {
         Ok(c) => c,
-        Err(e) => {
-            println!("  Failed to create MCP client: {e}");
+        Err(e) if e.to_string().contains("onnection refused") => {
+            tracing::warn!("Skipping: gateway not running");
             return;
         }
+        Err(e) => panic!("MCP client creation failed (credentials configured): {e}"),
     };
 
-    if client
+    if let Err(e) = client
         .initialize(
             gateway_auth::create_init_params("mcp-atlas-eval"),
             Some(Duration::from_secs(30)),
             gateway_auth::create_elicitation_handler(),
         )
         .await
-        .is_err()
     {
-        println!("  MCP initialization failed");
-        return;
+        if e.to_string().contains("onnection refused") {
+            tracing::warn!("Skipping: gateway not running");
+            return;
+        }
+        panic!("MCP initialization failed: {e}");
     }
 
     // Try EXECUTE_CODE
@@ -429,34 +438,36 @@ async fn test_code_executor_mcp_tool() {
 
     match result {
         Ok(r) => {
-            println!("  EXECUTE_CODE succeeded in {:?}", start.elapsed());
+            tracing::debug!("EXECUTE_CODE succeeded in {:?}", start.elapsed());
             let content = serde_json::to_string_pretty(&r).unwrap_or_default();
-            println!("  Response: {content}");
+            tracing::debug!("Response: {content}");
         }
         Err(e) => {
-            println!("  EXECUTE_CODE failed: {e}");
-            println!("  (This is expected if EXECUTE_CODE is not available)");
+            tracing::error!("EXECUTE_CODE failed: {e}");
+            tracing::warn!("(This is expected if EXECUTE_CODE is not available)");
         }
     }
 }
 
 /// Test 5: Verify CLI MCP tool works
 #[tokio::test]
+#[traced_test]
 async fn test_cli_mcp_tool() {
     if should_skip() {
-        println!("\n⏭️  Skipping: credentials not set\n");
+        tracing::warn!("Skipping: credentials not set");
         return;
     }
 
-    println!("\n# Test: CLI MCP Tool\n");
+    tracing::info!("Test: CLI MCP Tool");
 
     let config = gateway_auth::build_kontext_config().expect("Config should be valid");
     let token = match gateway_auth::authenticate(&config).await {
         Ok(t) => t,
-        Err(e) => {
-            println!("  Gateway not reachable: {e}");
+        Err(e) if e.to_string().contains("onnection refused") => {
+            tracing::warn!("Skipping: gateway not running");
             return;
         }
+        Err(e) => panic!("Auth failed (credentials configured): {e}"),
     };
 
     let mcp_url = build_mcp_url(&config, &token.access_token).expect("Failed to build MCP URL");
@@ -472,23 +483,26 @@ async fn test_cli_mcp_tool() {
     .await
     {
         Ok(c) => c,
-        Err(e) => {
-            println!("  Failed to create MCP client: {e}");
+        Err(e) if e.to_string().contains("onnection refused") => {
+            tracing::warn!("Skipping: gateway not running");
             return;
         }
+        Err(e) => panic!("MCP client creation failed (credentials configured): {e}"),
     };
 
-    if client
+    if let Err(e) = client
         .initialize(
             gateway_auth::create_init_params("mcp-atlas-eval"),
             Some(Duration::from_secs(30)),
             gateway_auth::create_elicitation_handler(),
         )
         .await
-        .is_err()
     {
-        println!("  MCP initialization failed");
-        return;
+        if e.to_string().contains("onnection refused") {
+            tracing::warn!("Skipping: gateway not running");
+            return;
+        }
+        panic!("MCP initialization failed: {e}");
     }
 
     // Search for CLI tools
@@ -503,33 +517,34 @@ async fn test_cli_mcp_tool() {
 
     match result {
         Ok(r) => {
-            println!("  SEARCH_TOOLS(cli) succeeded in {:?}", start.elapsed());
+            tracing::debug!("SEARCH_TOOLS(cli) succeeded in {:?}", start.elapsed());
             let content = serde_json::to_string_pretty(&r).unwrap_or_default();
-            println!(
-                "  Response preview: {}...",
+            tracing::debug!(
+                "Response preview: {}...",
                 &content[..content.len().min(500)]
             );
         }
         Err(e) => {
-            println!("  SEARCH_TOOLS failed: {e}");
+            tracing::error!("SEARCH_TOOLS failed: {e}");
         }
     }
 }
 
 /// Test 6: Verify Claim Judge works
 #[tokio::test]
+#[traced_test]
 async fn test_claim_judge() {
     if env::var("OPENAI_API_KEY").is_err() {
-        println!("\n⏭️  Skipping: OPENAI_API_KEY not set\n");
+        tracing::warn!("Skipping: OPENAI_API_KEY not set");
         return;
     }
 
-    println!("\n# Test: Claim Judge\n");
+    tracing::info!("Test: Claim Judge");
 
     let judge = match ClaimJudge::new() {
         Ok(j) => j,
         Err(e) => {
-            println!("  Failed to create judge: {e}");
+            tracing::error!("Failed to create judge: {e}");
             return;
         }
     };
@@ -545,35 +560,36 @@ async fn test_claim_judge() {
     let start = Instant::now();
     match judge.verify_claims(task_prompt, answer, &claims).await {
         Ok(result) => {
-            println!("  Verification completed in {:?}", start.elapsed());
-            println!("  Coverage: {:.2}", result.coverage);
-            println!("  Passed: {}", result.passed);
-            println!("\n  Per-claim results:");
+            tracing::info!("Verification completed in {:?}", start.elapsed());
+            tracing::info!("Coverage: {:.2}", result.coverage);
+            tracing::info!("Passed: {}", result.passed);
+            tracing::info!("Per-claim results:");
             for (claim, score) in &result.scores {
                 let score_str = match score {
                     ClaimScore::Fulfilled => "FULFILLED",
                     ClaimScore::PartiallyFulfilled => "PARTIAL",
                     ClaimScore::NotFulfilled => "NOT_FULFILLED",
                 };
-                println!("    - {}: {}", score_str, &claim[..claim.len().min(50)]);
+                tracing::info!("- {}: {}", score_str, &claim[..claim.len().min(50)]);
             }
         }
         Err(e) => {
-            println!("  Verification failed: {e}");
+            tracing::error!("Verification failed: {e}");
         }
     }
 }
 
 /// Test 7: Verify RLM routing works
 #[tokio::test]
+#[traced_test]
 async fn test_rlm_routing() {
-    println!("\n# Test: RLM Routing\n");
+    tracing::info!("Test: RLM Routing");
 
     let temp_dir = TempDir::new().unwrap();
     let router = match create_rlm_router(temp_dir.path()).await {
         Ok(r) => r,
         Err(e) => {
-            println!("  Failed to create RLM router: {e}");
+            tracing::error!("Failed to create RLM router: {e}");
             return;
         }
     };
@@ -589,8 +605,8 @@ async fn test_rlm_routing() {
                 codex_core::rlm::ProcessedResult::PassThrough { .. } => "passthrough",
                 codex_core::rlm::ProcessedResult::StoredInCorpus { .. } => "corpus",
             };
-            println!(
-                "  Small response ({} bytes): {}",
+            tracing::debug!(
+                "Small response ({} bytes): {}",
                 small_content.len(),
                 routing
             );
@@ -600,7 +616,7 @@ async fn test_rlm_routing() {
             ));
         }
         Err(e) => {
-            println!("  Small response routing failed: {e}");
+            tracing::error!("Small response routing failed: {e}");
         }
     }
 
@@ -615,8 +631,8 @@ async fn test_rlm_routing() {
                 codex_core::rlm::ProcessedResult::PassThrough { .. } => "passthrough",
                 codex_core::rlm::ProcessedResult::StoredInCorpus { .. } => "corpus",
             };
-            println!(
-                "  Large response ({} bytes): {}",
+            tracing::debug!(
+                "Large response ({} bytes): {}",
                 large_content.len(),
                 routing
             );
@@ -626,7 +642,7 @@ async fn test_rlm_routing() {
             ));
         }
         Err(e) => {
-            println!("  Large response routing failed: {e}");
+            tracing::error!("Large response routing failed: {e}");
         }
     }
 }
@@ -637,91 +653,77 @@ async fn test_rlm_routing() {
 
 /// Run three-way evaluation on first 10 tasks (test mode)
 #[tokio::test]
+#[traced_test]
 async fn run_mcp_atlas_three_way_evaluation() {
     if should_skip() {
-        println!("\n");
-        println!("═══════════════════════════════════════════════════════════════");
-        println!("       MCP-Atlas Evaluation - Setup Required");
-        println!("═══════════════════════════════════════════════════════════════");
-        println!();
-        println!("Required environment variables:");
-        println!("  KONTEXT_CLIENT_ID=<your-client-id>");
-        println!("  KONTEXT_CLIENT_SECRET=<your-client-secret>");
-        println!("  KONTEXT_MCP_URL=http://localhost:4000/mcp");
-        println!("  KONTEXT_TOKEN_URL=http://localhost:4000/oauth2/token");
-        println!("  OPENAI_API_KEY=<your-api-key>");
-        println!();
-        println!("Optional configuration:");
-        println!("  EVAL_LIMIT=5                   # Run only N tasks");
-        println!("  EVAL_TASK_PREFIX=task_linear   # Filter by task ID prefix");
-        println!("  EVAL_MODEL=gpt-4o              # Model for tool-calling client");
-        println!("  EVAL_GATEWAY_TASK_CSV=v1       # gateway_tasks.csv");
-        println!("  EVAL_GATEWAY_TASK_CSV=v2       # gateway_tasks_v2.csv (default)");
-        println!("  EVAL_GATEWAY_TASK_CSV=/path/to/gateway_tasks.csv  # Custom CSV path");
-        println!("  EVAL_DATASET_PATH=/path/to/dataset.csv            # Legacy override");
-        println!();
-        println!("Tool-calling client modes:");
-        println!(
-            "  EVAL_TOOL_MODES=baseline,codemode  # Comma-separated (baseline,codemode,rlm,codemoderlm,all)"
+        tracing::trace!("MCP-Atlas Evaluation - Setup Required");
+        tracing::trace!("Required environment variables:");
+        tracing::trace!("KONTEXT_CLIENT_ID=<your-client-id>");
+        tracing::trace!("KONTEXT_CLIENT_SECRET=<your-client-secret>");
+        tracing::trace!("KONTEXT_MCP_URL=http://localhost:4000/mcp");
+        tracing::trace!("KONTEXT_TOKEN_URL=http://localhost:4000/oauth2/token");
+        tracing::trace!("OPENAI_API_KEY=<your-api-key>");
+        tracing::trace!("Optional configuration:");
+        tracing::trace!("EVAL_LIMIT=5                   # Run only N tasks");
+        tracing::trace!("EVAL_TASK_PREFIX=task_linear   # Filter by task ID prefix");
+        tracing::trace!("EVAL_MODEL=gpt-4o              # Model for tool-calling client");
+        tracing::trace!("EVAL_GATEWAY_TASK_CSV=v1       # gateway_tasks.csv");
+        tracing::trace!("EVAL_GATEWAY_TASK_CSV=v2       # gateway_tasks_v2.csv (default)");
+        tracing::trace!("EVAL_GATEWAY_TASK_CSV=/path/to/gateway_tasks.csv  # Custom CSV path");
+        tracing::trace!("EVAL_DATASET_PATH=/path/to/dataset.csv            # Legacy override");
+        tracing::trace!("Tool-calling client modes:");
+        tracing::trace!(
+            "EVAL_TOOL_MODES=baseline,codemode  # Comma-separated (baseline,codemode,rlm,codemoderlm,all)"
         );
-        println!();
-        println!("Codex client:");
-        println!("  EVAL_USE_CODEX=true            # Enable Codex client");
-        println!(
-            "  EVAL_CODEX_MODEL=gpt-4-turbo   # Independent model for Codex (defaults to EVAL_MODEL)"
+        tracing::trace!("Codex client:");
+        tracing::trace!("EVAL_USE_CODEX=true            # Enable Codex client");
+        tracing::trace!(
+            "EVAL_CODEX_MODEL=gpt-4-turbo   # Independent model for Codex (defaults to EVAL_MODEL)"
         );
-        println!();
-        println!("Run with:");
-        println!("  source .env");
-        println!(
-            "  cargo test -p codex-core --test mcp_atlas_eval run_mcp_atlas_three_way_evaluation -- --nocapture"
+        tracing::trace!("Run with:");
+        tracing::trace!("source .env");
+        tracing::trace!(
+            "cargo test -p codex-core --test mcp_atlas_eval run_mcp_atlas_three_way_evaluation -- --nocapture"
         );
-        println!();
-        println!("Examples:");
-        println!("  # Run only tool-calling modes:");
-        println!("  EVAL_TOOL_MODES=baseline,codemode cargo test ...");
-        println!();
-        println!("  # Run only Codex client:");
-        println!("  EVAL_TOOL_MODES= EVAL_USE_CODEX=true cargo test ...");
-        println!();
-        println!("  # Run both with different models:");
-        println!(
-            "  EVAL_TOOL_MODES=baseline EVAL_USE_CODEX=true EVAL_MODEL=gpt-4o EVAL_CODEX_MODEL=gpt-4-turbo cargo test ..."
+        tracing::trace!("Examples:");
+        tracing::trace!("# Run only tool-calling modes:");
+        tracing::trace!("EVAL_TOOL_MODES=baseline,codemode cargo test ...");
+        tracing::trace!("# Run only Codex client:");
+        tracing::trace!("EVAL_TOOL_MODES= EVAL_USE_CODEX=true cargo test ...");
+        tracing::trace!("# Run both with different models:");
+        tracing::trace!(
+            "EVAL_TOOL_MODES=baseline EVAL_USE_CODEX=true EVAL_MODEL=gpt-4o EVAL_CODEX_MODEL=gpt-4-turbo cargo test ..."
         );
-        println!();
         return;
     }
 
-    println!("\n");
-    println!("═══════════════════════════════════════════════════════════════════════════════");
-    println!("       MCP-Atlas Three-Way Evaluation");
-    println!("═══════════════════════════════════════════════════════════════════════════════");
-    println!();
+    tracing::trace!("MCP-Atlas Three-Way Evaluation");
 
     // Step 1: Load FULL dataset (filter comes later)
     let dataset_path = get_dataset_path();
-    println!("Loading dataset from {dataset_path:?}...");
+    tracing::debug!("Loading dataset from {:?}...", dataset_path);
 
     let tasks = match codex_core::eval::load_dataset(&dataset_path) {
         Ok(t) => t,
         Err(e) => {
-            println!("Failed to load dataset: {e}");
-            return;
+            tracing::error!("Failed to load dataset: {e}");
+            panic!("Failed to load dataset: {e}");
         }
     };
 
-    println!("Loaded {} tasks from dataset\n", tasks.len());
+    tracing::debug!("Loaded {} tasks from dataset", tasks.len());
 
     // Step 2: Setup Gateway connection
     let config = gateway_auth::build_kontext_config().expect("Config should be valid");
-    println!("Connecting to Gateway...");
+    tracing::debug!("Connecting to Gateway...");
 
     let token = match gateway_auth::authenticate(&config).await {
         Ok(t) => t,
-        Err(e) => {
-            println!("Gateway authentication failed: {e}");
+        Err(e) if e.to_string().contains("onnection refused") => {
+            tracing::warn!("Skipping: gateway not running");
             return;
         }
+        Err(e) => panic!("Auth failed (credentials configured): {e}"),
     };
 
     let mcp_url = build_mcp_url(&config, &token.access_token).expect("Failed to build MCP URL");
@@ -737,10 +739,11 @@ async fn run_mcp_atlas_three_way_evaluation() {
     .await
     {
         Ok(c) => Arc::new(c),
-        Err(e) => {
-            println!("Failed to create MCP client: {e}");
+        Err(e) if e.to_string().contains("onnection refused") => {
+            tracing::warn!("Skipping: gateway not running");
             return;
         }
+        Err(e) => panic!("MCP client creation failed (credentials configured): {e}"),
     };
 
     if let Err(e) = client
@@ -751,10 +754,13 @@ async fn run_mcp_atlas_three_way_evaluation() {
         )
         .await
     {
-        println!("MCP initialization failed: {e}");
-        return;
+        if e.to_string().contains("onnection refused") {
+            tracing::warn!("Skipping: gateway not running");
+            return;
+        }
+        panic!("MCP initialization failed: {e}");
     }
-    println!("Gateway connected\n");
+    tracing::debug!("Gateway connected");
 
     // Step 3: Setup RLM infrastructure
     let temp_dir = TempDir::new().unwrap();
@@ -762,7 +768,7 @@ async fn run_mcp_atlas_three_way_evaluation() {
         match create_rlm_router(temp_dir.path()).await {
             Ok(r) => Some(Arc::new(r)),
             Err(e) => {
-                println!("Warning: RLM router creation failed: {e}");
+                tracing::warn!("RLM router creation failed: {e}");
                 None
             }
         };
@@ -771,35 +777,34 @@ async fn run_mcp_atlas_three_way_evaluation() {
     let judge = match ClaimJudge::new() {
         Ok(j) => j,
         Err(e) => {
-            println!("Failed to create claim judge: {e}");
-            return;
+            tracing::error!("Failed to create claim judge: {e}");
+            panic!("Failed to create claim judge: {e}");
         }
     };
 
     // Step 5: Create runner and discover tools
-    println!("Discovering available Gateway tools...");
+    tracing::debug!("Discovering available Gateway tools...");
     let agent_model = std::env::var("EVAL_MODEL").unwrap_or_else(|_| "gpt-4o".to_string());
     let runner = match ToolCallingRunner::new(client.clone(), rlm_router.clone()).await {
         Ok(r) => r.with_model(&agent_model),
         Err(e) => {
-            println!("Failed to create runner: {e}");
-            return;
+            tracing::error!("Failed to create runner: {e}");
+            panic!("Failed to create runner: {e}");
         }
     };
-    println!("Using model: {agent_model}");
+    tracing::debug!("Using model: {agent_model}");
 
     // Print discovered tools
     let tools = runner.available_tools();
-    println!("Found {} tools:\n", tools.len());
+    tracing::info!("Found {} tools:", tools.len());
     let mut by_server: std::collections::HashMap<&str, Vec<&str>> =
         std::collections::HashMap::new();
     for tool in tools {
         by_server.entry(&tool.server).or_default().push(&tool.name);
     }
     for (server, tool_names) in &by_server {
-        println!("  {}: {}", server, tool_names.join(", "));
+        tracing::debug!("{}: {}", server, tool_names.join(", "));
     }
-    println!();
 
     // Step 6: Use all tasks from the gateway dataset (already filtered to available tools)
     // Filter out tasks with 0 coverage (tools that don't match)
@@ -816,27 +821,24 @@ async fn run_mcp_atlas_three_way_evaluation() {
         })
         .collect();
 
-    println!(
-        "Tasks with resolvable tools: {}/{}\n",
+    tracing::info!(
+        "Tasks with resolvable tools: {}/{}",
         eval_tasks.len(),
         tasks.len()
     );
 
-    if eval_tasks.is_empty() {
-        println!("No tasks meet the minimum coverage threshold. Exiting.");
-        return;
-    }
+    assert!(!eval_tasks.is_empty(), "eval_tasks should not be empty -- tool resolution may have regressed");
 
     // Show the solvable tasks with their coverage
-    println!("Solvable tasks:\n");
+    tracing::debug!("Solvable tasks:");
     for task in eval_tasks.iter().take(20) {
         let coverage = runner.get_tool_coverage(task);
         let matches = runner.get_matching_tools(task);
-        println!(
-            "═══ Task: {} ═══",
+        tracing::debug!(
+            "Task: {}",
             &task.task_id[..task.task_id.len().min(15)]
         );
-        println!(
+        tracing::debug!(
             "Coverage: {:.0}% ({} tools matched)",
             coverage * 100.0,
             matches.len()
@@ -848,27 +850,27 @@ async fn run_mcp_atlas_three_way_evaluation() {
         } else {
             task.prompt.replace('\n', " ")
         };
-        println!("Prompt: {prompt_preview}");
+        tracing::debug!("Prompt: {prompt_preview}");
 
         // Show claims
-        println!("Claims ({}):", task.claims.len());
+        tracing::debug!("Claims ({}):", task.claims.len());
         for (i, claim) in task.claims.iter().enumerate().take(3) {
-            println!("  {}. {}", i + 1, &claim[..claim.len().min(80)]);
+            tracing::debug!("{}. {}", i + 1, &claim[..claim.len().min(80)]);
         }
         if task.claims.len() > 3 {
-            println!("  ... and {} more claims", task.claims.len() - 3);
+            tracing::debug!("... and {} more claims", task.claims.len() - 3);
         }
 
         // Show tool mapping
-        println!("Tools:");
+        tracing::debug!("Tools:");
         for (dataset_tool, gateway_tool) in matches.iter().take(3) {
-            println!(
-                "  {} → {} ({})",
+            tracing::debug!(
+                "{} -> {} ({})",
                 dataset_tool, gateway_tool.name, gateway_tool.server
             );
         }
         if matches.len() > 3 {
-            println!("  ... and {} more tools", matches.len() - 3);
+            tracing::debug!("... and {} more tools", matches.len() - 3);
         }
 
         // Show missing tools
@@ -878,11 +880,9 @@ async fn run_mcp_atlas_three_way_evaluation() {
             .filter(|t| runner.resolve_tool(t).is_none())
             .collect();
         if !missing.is_empty() {
-            println!("Missing tools: {missing:?}");
+            tracing::debug!("Missing tools: {:?}", missing);
         }
-        println!();
     }
-    println!();
 
     // Apply subset filters from environment variables
     // EVAL_LIMIT: max number of tasks (default: all)
@@ -912,26 +912,27 @@ async fn run_mcp_atlas_three_way_evaluation() {
         .collect();
 
     if eval_tasks.is_empty() {
-        println!("No tasks match the filter criteria.");
+        tracing::warn!("No tasks match the filter criteria.");
         if let Some(ref prefixes) = task_prefixes {
-            println!("  EVAL_TASK_PREFIX={}", prefixes.join(","));
+            tracing::warn!("EVAL_TASK_PREFIX={}", prefixes.join(","));
         }
         return;
     }
 
-    println!("Running evaluation on {} tasks", eval_tasks.len());
+    tracing::info!("Running evaluation on {} tasks", eval_tasks.len());
     if let Some(ref prefixes) = task_prefixes {
-        println!("  (filtered by prefixes: {})", prefixes.join(", "));
+        tracing::info!("(filtered by prefixes: {})", prefixes.join(", "));
     }
     if limit < usize::MAX {
-        println!("  (limited to {limit} tasks)");
+        tracing::info!("(limited to {limit} tasks)");
     }
-    println!();
 
     // Step 7: Parse tool-calling modes from EVAL_TOOL_MODES (comma-separated)
-    // Options: baseline, codemode, rlm, codemoderlm. Default: baseline,codemode
+    // Options: baseline, codemode, rlm, codemoderlm. Default: baseline,codemode,rlm
     let tool_modes: Vec<ToolCallingMode> = env::var("EVAL_TOOL_MODES")
-        .unwrap_or_else(|_| "baseline,codemode".to_string())
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "baseline,codemode,rlm".to_string())
         .split(',')
         .filter_map(|s| match s.trim().to_lowercase().as_str() {
             "baseline" => Some(ToolCallingMode::Baseline),
@@ -958,6 +959,8 @@ async fn run_mcp_atlas_three_way_evaluation() {
         tool_modes
     };
 
+    assert!(!tool_modes.is_empty(), "At least one tool mode should be configured");
+
     // Step 7b: Parse codex flag from EVAL_USE_CODEX (boolean)
     let use_codex = env::var("EVAL_USE_CODEX")
         .map(|s| s.eq_ignore_ascii_case("true") || s == "1")
@@ -966,18 +969,17 @@ async fn run_mcp_atlas_three_way_evaluation() {
     // Parse independent codex model (defaults to EVAL_MODEL)
     let codex_model = env::var("EVAL_CODEX_MODEL").unwrap_or_else(|_| agent_model.clone());
 
-    println!(
+    tracing::info!(
         "Running tool-calling modes: {:?}",
         tool_modes
             .iter()
             .map(std::string::ToString::to_string)
             .collect::<Vec<_>>()
     );
-    println!("Use Codex client: {use_codex}");
+    tracing::info!("Use Codex client: {use_codex}");
     if use_codex {
-        println!("Codex model: {codex_model}");
+        tracing::info!("Codex model: {codex_model}");
     }
-    println!();
 
     // CodexRunner has been removed (depends on deeply-coupled codex internals).
     // The 4 benchmark modes (Baseline, CodeMode, BaselineRlm, CodeModeRlm) work
@@ -991,13 +993,13 @@ async fn run_mcp_atlas_three_way_evaluation() {
     // Run tool-calling modes
     for mode in &tool_modes {
         let mode_name = mode.to_string();
-        println!("\n═══ Running {mode_name} mode (ToolCalling) ═══\n");
+        tracing::info!("Running {mode_name} mode (ToolCalling)");
 
         let mut results = Vec::new();
 
         for (i, task) in eval_tasks.iter().enumerate() {
-            println!(
-                "  Task {}/{}: {}...",
+            tracing::info!(
+                "Task {}/{}: {}...",
                 i + 1,
                 eval_tasks.len(),
                 &task.task_id[..task.task_id.len().min(20)]
@@ -1013,7 +1015,7 @@ async fn run_mcp_atlas_three_way_evaluation() {
                     .iter()
                     .map(|t| t.name.as_str())
                     .collect();
-                println!("    Tools used: {}", tool_names.join(", "));
+                tracing::debug!("Tools used: {}", tool_names.join(", "));
             }
 
             // Judge the answer
@@ -1023,7 +1025,7 @@ async fn run_mcp_atlas_three_way_evaluation() {
             {
                 Ok(v) => v,
                 Err(e) => {
-                    println!("    Verification failed: {e}");
+                    tracing::error!("Verification failed: {e}");
                     ClaimVerificationResult {
                         scores: vec![],
                         coverage: 0.0,
@@ -1035,12 +1037,12 @@ async fn run_mcp_atlas_three_way_evaluation() {
 
             let status = if verification.passed { "PASS" } else { "FAIL" };
             let latency_secs = task_result.latency_ms as f64 / 1000.0;
-            println!(
-                "    Coverage: {:.2}, Status: {}, Tokens: {}, Latency: {:.1}s",
+            tracing::info!(
+                "Coverage: {:.2}, Status: {}, Tokens: {}, Latency: {:.1}s",
                 verification.coverage, status, task_result.context_tokens, latency_secs
             );
             if let Some(ref err) = task_result.error {
-                println!("    ERROR: {err}");
+                tracing::error!("ERROR: {err}");
             }
 
             results.push(EvalResult {
@@ -1055,6 +1057,22 @@ async fn run_mcp_atlas_three_way_evaluation() {
 
     // CodexRunner has been removed; skip Codex client mode.
     let _ = codex_runner;
+
+    // Assert each requested mode produced results
+    for mode in &tool_modes {
+        let mode_name = mode.to_string();
+        assert!(
+            all_results.contains_key(&mode_name),
+            "Mode {mode_name} was requested but produced no results -- it may have been silently skipped"
+        );
+    }
+    // Assert at least one mode has pass_rate > 0%
+    let any_passes = all_results.values().any(|results| {
+        results.iter().any(|r| r.verification.passed)
+    });
+    if !any_passes {
+        tracing::warn!("No mode achieved any passes -- possible systemic failure");
+    }
 
     // Step 8: Print results
     print_comparison(&all_results);
@@ -1074,11 +1092,7 @@ async fn run_mcp_atlas_three_way_evaluation() {
 
 /// Print comparative results (uses mode_name strings as keys)
 fn print_comparison(results: &HashMap<String, Vec<EvalResult>>) {
-    println!("\n");
-    println!("═══════════════════════════════════════════════════════════════════════════════");
-    println!("                    MCP-Atlas Evaluation Results");
-    println!("═══════════════════════════════════════════════════════════════════════════════");
-    println!();
+    tracing::trace!("MCP-Atlas Evaluation Results");
 
     // Define the order of modes for display
     let mode_order = [
@@ -1113,27 +1127,25 @@ fn print_comparison(results: &HashMap<String, Vec<EvalResult>>) {
                 / mode_results.len().max(1) as u64;
             let avg_latency_secs = avg_latency_ms as f64 / 1000.0;
 
-            println!("## {mode_name} Mode");
-            println!();
-            println!("| Metric | Value |");
-            println!("|--------|-------|");
-            println!(
+            tracing::info!("## {} Mode", mode_name);
+            tracing::info!("| Metric | Value |");
+            tracing::info!("|--------|-------|");
+            tracing::info!(
                 "| Pass Rate | {:.1}% ({}/{}) |",
                 pass_count as f64 / mode_results.len().max(1) as f64 * 100.0,
                 pass_count,
                 mode_results.len()
             );
-            println!("| Avg Coverage | {avg_coverage:.3} |");
-            println!("| Avg Context Tokens | {avg_tokens} |");
-            println!("| Avg Latency | {avg_latency_secs:.1}s |");
-            println!();
+            tracing::info!("| Avg Coverage | {:.3} |", avg_coverage);
+            tracing::info!("| Avg Context Tokens | {} |", avg_tokens);
+            tracing::info!("| Avg Latency | {:.1}s |", avg_latency_secs);
         }
     }
 
     // Comparative table
-    println!("## Comparison\n");
-    println!("| Mode | Pass Rate | Avg Coverage | Avg Tokens | Token Reduction | Avg Latency |");
-    println!("|------|-----------|--------------|------------|-----------------|-------------|");
+    tracing::info!("## Comparison");
+    tracing::info!("| Mode | Pass Rate | Avg Coverage | Avg Tokens | Token Reduction | Avg Latency |");
+    tracing::info!("|------|-----------|--------------|------------|-----------------|-------------|");
 
     let baseline_tokens = results
         .get("Baseline")
@@ -1177,7 +1189,7 @@ fn print_comparison(results: &HashMap<String, Vec<EvalResult>>) {
                 format!("-{reduction:.0}%")
             };
 
-            println!(
+            tracing::info!(
                 "| {} | {:.1}% | {:.3} | {} | {} | {:.1}s |",
                 mode_name,
                 pass_rate,
@@ -1189,12 +1201,10 @@ fn print_comparison(results: &HashMap<String, Vec<EvalResult>>) {
         }
     }
 
-    println!();
-
     // Per-task comparison
-    println!("## Per-Task Comparison\n");
-    println!("| Task | Baseline | CodeMode | Baseline+RLM | CodeMode+RLM | Codex | Winner |");
-    println!("|------|----------|----------|--------------|--------------|-------|--------|");
+    tracing::info!("## Per-Task Comparison");
+    tracing::info!("| Task | Baseline | CodeMode | Baseline+RLM | CodeMode+RLM | Codex | Winner |");
+    tracing::info!("|------|----------|----------|--------------|--------------|-------|--------|");
 
     let baseline_results = results.get("Baseline");
     let codemode_results = results.get("CodeMode");
@@ -1233,29 +1243,29 @@ fn print_comparison(results: &HashMap<String, Vec<EvalResult>>) {
                 .unwrap_or(0.0);
 
             let b_status = if b_cov >= PASS_THRESHOLD {
-                "✓"
+                "PASS"
             } else {
-                "✗"
+                "FAIL"
             };
             let c_status = if c_cov >= PASS_THRESHOLD {
-                "✓"
+                "PASS"
             } else {
-                "✗"
+                "FAIL"
             };
             let r_status = if r_cov >= PASS_THRESHOLD {
-                "✓"
+                "PASS"
             } else {
-                "✗"
+                "FAIL"
             };
             let cr_status = if cr_cov >= PASS_THRESHOLD {
-                "✓"
+                "PASS"
             } else {
-                "✗"
+                "FAIL"
             };
             let codex_status = if codex_cov >= PASS_THRESHOLD {
-                "✓"
+                "PASS"
             } else {
-                "✗"
+                "FAIL"
             };
 
             // Determine winner based on highest coverage
@@ -1281,7 +1291,7 @@ fn print_comparison(results: &HashMap<String, Vec<EvalResult>>) {
                 "CodeMode"
             };
 
-            println!(
+            tracing::info!(
                 "| {} | {:.2} {} | {:.2} {} | {:.2} {} | {:.2} {} | {:.2} {} | {} |",
                 &result.task_id[..result.task_id.len().min(15)],
                 b_cov,
@@ -1299,11 +1309,10 @@ fn print_comparison(results: &HashMap<String, Vec<EvalResult>>) {
         }
     }
 
-    println!();
-    println!("## Key Insight\n");
-    println!("RLM modes aim to achieve significant token reduction while maintaining quality.");
-    println!("CodeMode+RLM combines code generation with RLM routing for best of both worlds.");
-    println!("Codex client uses the full Codex system prompts and agent loop.");
+    tracing::info!("Key Insight");
+    tracing::info!("RLM modes aim to achieve significant token reduction while maintaining quality.");
+    tracing::info!("CodeMode+RLM combines code generation with RLM routing for best of both worlds.");
+    tracing::info!("Codex client uses the full Codex system prompts and agent loop.");
 }
 
 /// Save evaluation results to a JSON file compatible with `scripts/plot_results.py`.
@@ -1323,7 +1332,7 @@ fn save_results(
         .join("../mcp-atlas/services/mcp_eval/results");
 
     if let Err(e) = std::fs::create_dir_all(&results_dir) {
-        println!("Warning: could not create results dir {results_dir:?}: {e}");
+        tracing::warn!("Could not create results dir {:?}: {}", results_dir, e);
         return;
     }
 
@@ -1416,75 +1425,70 @@ fn save_results(
             let pretty =
                 serde_json::to_string_pretty(&output).unwrap_or_else(|_| output.to_string());
             if let Err(e) = f.write_all(pretty.as_bytes()) {
-                println!("Warning: failed to write results to {path:?}: {e}");
+                tracing::warn!("Failed to write results to {:?}: {}", path, e);
             } else {
-                println!("\nResults saved to {path:?}");
-                println!(
-                    "  Plot with: python3 scripts/plot_results.py {}",
+                tracing::info!("Results saved to {:?}", path);
+                tracing::info!(
+                    "Plot with: python3 scripts/plot_results.py {}",
                     path.display()
                 );
             }
         }
         Err(e) => {
-            println!("Warning: could not create results file {path:?}: {e}");
+            tracing::warn!("Could not create results file {:?}: {}", path, e);
         }
     }
 }
 
 /// Full evaluation on all 500 tasks (ignored by default - run with --ignored)
 #[tokio::test]
+#[traced_test]
 #[ignore]
 async fn run_full_mcp_atlas_evaluation() {
     if should_skip() {
-        println!("Skipping full evaluation - credentials not set");
+        tracing::warn!("Skipping full evaluation - credentials not set");
         return;
     }
 
-    println!("\n");
-    println!("═══════════════════════════════════════════════════════════════════════════════");
-    println!("       MCP-Atlas FULL Evaluation (500 tasks × 3 modes = 1500 runs)");
-    println!("═══════════════════════════════════════════════════════════════════════════════");
-    println!();
+    tracing::trace!("MCP-Atlas FULL Evaluation (500 tasks x 3 modes = 1500 runs)");
 
     // Same as above but without the .take(10)
     // This would run all 500 tasks
-    println!("Full evaluation would run here...");
-    println!("This is a placeholder - implement the same logic as test mode but with all tasks.");
+    tracing::info!("Full evaluation would run here...");
+    tracing::info!("This is a placeholder - implement the same logic as test mode but with all tasks.");
 }
 
 /// Analyze dataset to find tasks solvable with available Gateway tools
 #[tokio::test]
+#[traced_test]
 async fn analyze_solvable_tasks() {
     if should_skip() {
-        println!("\n⏭️  Skipping: credentials not set\n");
+        tracing::warn!("Skipping: credentials not set");
         return;
     }
 
-    println!("\n");
-    println!("═══════════════════════════════════════════════════════════════════════════════");
-    println!("       MCP-Atlas Dataset Analysis: Which Tasks Can Be Solved?");
-    println!("═══════════════════════════════════════════════════════════════════════════════");
-    println!();
+    tracing::trace!("MCP-Atlas Dataset Analysis: Which Tasks Can Be Solved?");
 
     // Load dataset
     let dataset_path = get_dataset_path();
     let tasks = match codex_core::eval::load_dataset(&dataset_path) {
         Ok(t) => t,
         Err(e) => {
-            println!("Failed to load dataset: {e}");
-            return;
+            tracing::error!("Failed to load dataset: {e}");
+            panic!("Failed to load dataset: {e}");
         }
     };
-    println!("Loaded {} tasks from dataset\n", tasks.len());
+    tracing::debug!("Loaded {} tasks from dataset", tasks.len());
 
     // Connect to Gateway and discover tools
     let config = gateway_auth::build_kontext_config().expect("Config should be valid");
     let token = match gateway_auth::authenticate(&config).await {
         Ok(t) => t,
-        Err(e) => {
-            println!("Gateway authentication failed: {e}");
+        Err(e) if e.to_string().contains("onnection refused") => {
+            tracing::warn!("Skipping: gateway not running");
             return;
         }
+        Err(e) => panic!("Auth failed (credentials configured): {e}"),
     };
 
     let mcp_url = build_mcp_url(&config, &token.access_token).expect("Failed to build MCP URL");
@@ -1499,10 +1503,11 @@ async fn analyze_solvable_tasks() {
     .await
     {
         Ok(c) => Arc::new(c),
-        Err(e) => {
-            println!("Failed to create MCP client: {e}");
+        Err(e) if e.to_string().contains("onnection refused") => {
+            tracing::warn!("Skipping: gateway not running");
             return;
         }
+        Err(e) => panic!("MCP client creation failed (credentials configured): {e}"),
     };
 
     if let Err(e) = client
@@ -1513,22 +1518,25 @@ async fn analyze_solvable_tasks() {
         )
         .await
     {
-        println!("MCP initialization failed: {e}");
-        return;
+        if e.to_string().contains("onnection refused") {
+            tracing::warn!("Skipping: gateway not running");
+            return;
+        }
+        panic!("MCP initialization failed: {e}");
     }
 
     // Create runner to discover tools
     let runner = match ToolCallingRunner::new(client.clone(), None).await {
         Ok(r) => r,
         Err(e) => {
-            println!("Failed to create runner: {e}");
-            return;
+            tracing::error!("Failed to create runner: {e}");
+            panic!("Failed to create runner: {e}");
         }
     };
 
     // Print available Gateway tools
     let gateway_tools = runner.available_tools();
-    println!("Available Gateway tools ({} total):\n", gateway_tools.len());
+    tracing::info!("Available Gateway tools ({} total):", gateway_tools.len());
 
     let mut by_server: std::collections::HashMap<&str, Vec<&str>> =
         std::collections::HashMap::new();
@@ -1536,12 +1544,11 @@ async fn analyze_solvable_tasks() {
         by_server.entry(&tool.server).or_default().push(&tool.name);
     }
     for (server, tool_names) in &by_server {
-        println!("  {}: {}", server, tool_names.join(", "));
+        tracing::debug!("{}: {}", server, tool_names.join(", "));
     }
-    println!();
 
     // Analyze each task
-    println!("═══ Task Analysis ═══\n");
+    tracing::info!("Task Analysis");
 
     // Target servers
     let target_servers = ["git", "CLI", "Code Executor"];
@@ -1591,33 +1598,32 @@ async fn analyze_solvable_tasks() {
     partially_matched.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
     // Report
-    println!("## Summary\n");
-    println!("| Category | Count | Percentage |");
-    println!("|----------|-------|------------|");
-    println!(
-        "| Fully Matched (≥80% tools available) | {} | {:.1}% |",
+    tracing::info!("## Summary");
+    tracing::info!("| Category | Count | Percentage |");
+    tracing::info!("|----------|-------|------------|");
+    tracing::info!(
+        "| Fully Matched (>=80% tools available) | {} | {:.1}% |",
         fully_matched.len(),
         fully_matched.len() as f64 / tasks.len() as f64 * 100.0
     );
-    println!(
+    tracing::info!(
         "| Partially Matched (<80% but >0% tools) | {} | {:.1}% |",
         partially_matched.len(),
         partially_matched.len() as f64 / tasks.len() as f64 * 100.0
     );
-    println!(
+    tracing::info!(
         "| No Match (0% tools available) | {} | {:.1}% |",
         no_match.len(),
         no_match.len() as f64 / tasks.len() as f64 * 100.0
     );
-    println!();
 
     // Show best candidates
-    println!("## Best Candidate Tasks (≥80% tool coverage)\n");
+    tracing::info!("## Best Candidate Tasks (>=80% tool coverage)");
     if fully_matched.is_empty() {
-        println!("No tasks have ≥80% tool coverage with target servers.\n");
+        tracing::info!("No tasks have >=80% tool coverage with target servers.");
     } else {
-        println!("| Task ID | Match % | Prompt Preview | Tools |");
-        println!("|---------|---------|----------------|-------|");
+        tracing::info!("| Task ID | Match % | Prompt Preview | Tools |");
+        tracing::info!("|---------|---------|----------------|-------|");
         for (task, ratio) in fully_matched.iter().take(20) {
             let prompt_preview = if task.prompt.len() > 50 {
                 format!("{}...", &task.prompt[..50].replace('\n', " "))
@@ -1625,7 +1631,7 @@ async fn analyze_solvable_tasks() {
                 task.prompt.replace('\n', " ")
             };
             let tool_count = task.enabled_tools.len();
-            println!(
+            tracing::info!(
                 "| {} | {:.0}% | {} | {} |",
                 &task.task_id[..task.task_id.len().min(15)],
                 ratio * 100.0,
@@ -1633,16 +1639,15 @@ async fn analyze_solvable_tasks() {
                 tool_count
             );
         }
-        println!();
     }
 
     // Show partially matched with missing tools
-    println!("## Partially Matched Tasks (with missing tools)\n");
+    tracing::info!("## Partially Matched Tasks (with missing tools)");
     if partially_matched.is_empty() {
-        println!("No partially matched tasks.\n");
+        tracing::info!("No partially matched tasks.");
     } else {
-        println!("| Task ID | Match % | Missing Tools |");
-        println!("|---------|---------|---------------|");
+        tracing::info!("| Task ID | Match % | Missing Tools |");
+        tracing::info!("|---------|---------|---------------|");
         for (task, ratio, missing) in partially_matched.iter().take(10) {
             let missing_preview: String = missing
                 .iter()
@@ -1655,7 +1660,7 @@ async fn analyze_solvable_tasks() {
             } else {
                 String::new()
             };
-            println!(
+            tracing::info!(
                 "| {} | {:.0}% | {}{} |",
                 &task.task_id[..task.task_id.len().min(15)],
                 ratio * 100.0,
@@ -1663,11 +1668,10 @@ async fn analyze_solvable_tasks() {
                 more
             );
         }
-        println!();
     }
 
     // Common missing tool patterns
-    println!("## Common Missing Tools (blocking task solvability)\n");
+    tracing::info!("## Common Missing Tools (blocking task solvability)");
     let mut missing_tool_counts: std::collections::HashMap<String, usize> =
         std::collections::HashMap::new();
     for task in &tasks {
@@ -1684,49 +1688,45 @@ async fn analyze_solvable_tasks() {
     let mut missing_sorted: Vec<_> = missing_tool_counts.into_iter().collect();
     missing_sorted.sort_by(|a, b| b.1.cmp(&a.1));
 
-    println!("| Tool Name | Tasks Affected |");
-    println!("|-----------|----------------|");
+    tracing::info!("| Tool Name | Tasks Affected |");
+    tracing::info!("|-----------|----------------|");
     for (tool, count) in missing_sorted.iter().take(15) {
-        println!("| {tool} | {count} |");
+        tracing::info!("| {} | {} |", tool, count);
     }
-    println!();
 
     // Recommendations
-    println!("## Recommendations\n");
-    println!(
-        "1. **Best tasks for evaluation**: {} tasks have ≥80% tool coverage",
+    tracing::info!("## Recommendations");
+    tracing::info!(
+        "1. Best tasks for evaluation: {} tasks have >=80% tool coverage",
         fully_matched.len()
     );
     if !fully_matched.is_empty() {
-        println!("   - These are most likely to succeed with current Gateway tools");
+        tracing::info!("- These are most likely to succeed with current Gateway tools");
     }
-    println!();
-    println!("2. **To increase coverage, add support for**:");
+    tracing::info!("2. To increase coverage, add support for:");
     for (tool, count) in missing_sorted.iter().take(5) {
-        println!("   - `{tool}` (would unlock {count} tasks)");
+        tracing::info!("- `{}` (would unlock {} tasks)", tool, count);
     }
-    println!();
 
     // Show sample fully matched task details
     if let Some((task, ratio)) = fully_matched.first() {
-        println!("## Sample Fully Matched Task\n");
-        println!("**Task ID**: {}\n", task.task_id);
-        println!("**Match Ratio**: {:.0}%\n", ratio * 100.0);
-        println!("**Prompt**:\n```\n{}\n```\n", task.prompt);
-        println!("**Enabled Tools**: {:?}\n", task.enabled_tools);
-        println!("**Claims to verify**:");
+        tracing::info!("## Sample Fully Matched Task");
+        tracing::info!("Task ID: {}", task.task_id);
+        tracing::info!("Match Ratio: {:.0}%", ratio * 100.0);
+        tracing::debug!("Prompt: {}", task.prompt);
+        tracing::debug!("Enabled Tools: {:?}", task.enabled_tools);
+        tracing::info!("Claims to verify:");
         for (i, claim) in task.claims.iter().enumerate().take(5) {
-            println!("  {}. {}", i + 1, claim);
+            tracing::info!("{}. {}", i + 1, claim);
         }
         if task.claims.len() > 5 {
-            println!("  ... ({} more claims)", task.claims.len() - 5);
+            tracing::info!("... ({} more claims)", task.claims.len() - 5);
         }
-        println!();
 
         // Show tool mapping
-        println!("**Tool Mapping**:");
+        tracing::debug!("Tool Mapping:");
         for (dt, gt) in runner.get_matching_tools(task) {
-            println!("  {} → {} ({})", dt, gt.name, gt.server);
+            tracing::debug!("{} -> {} ({})", dt, gt.name, gt.server);
         }
     }
 }
@@ -1734,48 +1734,46 @@ async fn analyze_solvable_tasks() {
 /// Verbose debug evaluation on 5 random tasks
 /// This test logs EVERY step to help debug why tasks fail
 #[tokio::test]
+#[traced_test]
 async fn run_verbose_debug_evaluation() {
     if should_skip() {
-        println!("\n⏭️  Skipping: credentials not set\n");
+        tracing::warn!("Skipping: credentials not set");
         return;
     }
 
-    println!("\n");
-    println!("═══════════════════════════════════════════════════════════════════════════════");
-    println!("       VERBOSE DEBUG EVALUATION - 5 Random Tasks");
-    println!("═══════════════════════════════════════════════════════════════════════════════");
-    println!();
+    tracing::trace!("VERBOSE DEBUG EVALUATION - 5 Random Tasks");
 
     // Step 1: Load dataset
     let dataset_path = get_dataset_path();
-    println!("[STEP 1] Loading dataset from {dataset_path:?}...");
+    tracing::debug!("[STEP 1] Loading dataset from {:?}...", dataset_path);
 
     let tasks = match codex_core::eval::load_dataset(&dataset_path) {
         Ok(t) => {
-            println!("  ✓ Loaded {} tasks\n", t.len());
+            tracing::debug!("Loaded {} tasks", t.len());
             t
         }
         Err(e) => {
-            println!("  ✗ Failed to load dataset: {e}\n");
-            return;
+            tracing::error!("Failed to load dataset: {e}");
+            panic!("Failed to load dataset: {e}");
         }
     };
 
     // Step 2: Connect to Gateway
-    println!("[STEP 2] Connecting to Gateway...");
+    tracing::debug!("[STEP 2] Connecting to Gateway...");
     let config = gateway_auth::build_kontext_config().expect("Config should be valid");
-    println!("  Token URL: {:?}", config.token_url);
-    println!("  MCP URL: {:?}", config.mcp_url);
+    tracing::debug!("Token URL: {:?}", config.token_url);
+    tracing::debug!("MCP URL: {:?}", config.mcp_url);
 
     let token = match gateway_auth::authenticate(&config).await {
         Ok(t) => {
-            println!("  ✓ Authentication successful\n");
+            tracing::debug!("Authentication successful");
             t
         }
-        Err(e) => {
-            println!("  ✗ Authentication failed: {e}\n");
+        Err(e) if e.to_string().contains("onnection refused") => {
+            tracing::warn!("Skipping: gateway not running");
             return;
         }
+        Err(e) => panic!("Auth failed (credentials configured): {e}"),
     };
 
     let mcp_url = build_mcp_url(&config, &token.access_token).expect("Failed to build MCP URL");
@@ -1790,13 +1788,14 @@ async fn run_verbose_debug_evaluation() {
     .await
     {
         Ok(c) => {
-            println!("  ✓ MCP client created\n");
+            tracing::debug!("MCP client created");
             Arc::new(c)
         }
-        Err(e) => {
-            println!("  ✗ Failed to create MCP client: {e}\n");
+        Err(e) if e.to_string().contains("onnection refused") => {
+            tracing::warn!("Skipping: gateway not running");
             return;
         }
+        Err(e) => panic!("MCP client creation failed (credentials configured): {e}"),
     };
 
     if let Err(e) = client
@@ -1807,63 +1806,65 @@ async fn run_verbose_debug_evaluation() {
         )
         .await
     {
-        println!("  ✗ MCP initialization failed: {e}\n");
-        return;
+        if e.to_string().contains("onnection refused") {
+            tracing::warn!("Skipping: gateway not running");
+            return;
+        }
+        panic!("MCP initialization failed: {e}");
     }
-    println!("  ✓ MCP initialized\n");
+    tracing::debug!("MCP initialized");
 
     // Step 3: Setup RLM
-    println!("[STEP 3] Setting up RLM router...");
+    tracing::debug!("[STEP 3] Setting up RLM router...");
     let temp_dir = TempDir::new().unwrap();
     let rlm_router: Option<Arc<GatewayResultRouter>> =
         match create_rlm_router(temp_dir.path()).await {
             Ok(r) => {
-                println!("  ✓ RLM router created\n");
+                tracing::debug!("RLM router created");
                 Some(Arc::new(r))
             }
             Err(e) => {
-                println!("  ⚠ RLM router creation failed (will skip RLM mode): {e}\n");
+                tracing::warn!("RLM router creation failed (will skip RLM mode): {e}");
                 None
             }
         };
 
     // Step 4: Setup judge
-    println!("[STEP 4] Setting up claim judge...");
+    tracing::debug!("[STEP 4] Setting up claim judge...");
     let judge = match ClaimJudge::new() {
         Ok(j) => {
-            println!("  ✓ Claim judge created\n");
+            tracing::debug!("Claim judge created");
             j
         }
         Err(e) => {
-            println!("  ✗ Failed to create claim judge: {e}\n");
-            return;
+            tracing::error!("Failed to create claim judge: {e}");
+            panic!("Failed to create claim judge: {e}");
         }
     };
 
     // Step 5: Discover tools
-    println!("[STEP 5] Discovering Gateway tools...");
+    tracing::debug!("[STEP 5] Discovering Gateway tools...");
     let runner = match ToolCallingRunner::new(client.clone(), rlm_router.clone()).await {
         Ok(r) => r,
         Err(e) => {
-            println!("  ✗ Failed to create runner: {e}\n");
-            return;
+            tracing::error!("Failed to create runner: {e}");
+            panic!("Failed to create runner: {e}");
         }
     };
 
     let tools = runner.available_tools();
-    println!("  Found {} tools:\n", tools.len());
+    tracing::debug!("Found {} tools:", tools.len());
     for tool in tools {
-        println!(
-            "    - {} ({}): {}",
+        tracing::debug!(
+            "- {} ({}): {}",
             tool.name,
             tool.server,
             &tool.description[..tool.description.len().min(60)]
         );
     }
-    println!();
 
     // Step 6: Select 5 random tasks with at least one resolvable tool
-    println!("[STEP 6] Selecting 5 random tasks...");
+    tracing::debug!("[STEP 6] Selecting 5 random tasks...");
     let eligible_tasks: Vec<_> = tasks
         .iter()
         .filter(|task| {
@@ -1875,8 +1876,8 @@ async fn run_verbose_debug_evaluation() {
         })
         .collect();
 
-    println!(
-        "  Eligible tasks (with resolvable tools): {}/{}\n",
+    tracing::debug!(
+        "Eligible tasks (with resolvable tools): {}/{}",
         eligible_tasks.len(),
         tasks.len()
     );
@@ -1899,134 +1900,108 @@ async fn run_verbose_debug_evaluation() {
         .filter_map(|&i| eligible_tasks.get(i).copied())
         .collect();
 
-    println!(
-        "  Selected {} tasks for verbose evaluation:\n",
+    tracing::debug!(
+        "Selected {} tasks for verbose evaluation:",
         selected_tasks.len()
     );
     for (i, task) in selected_tasks.iter().enumerate() {
-        println!(
-            "    {}. {} - {}",
+        tracing::debug!(
+            "{}. {} - {}",
             i + 1,
             task.task_id,
             &task.prompt[..task.prompt.len().min(50)]
         );
     }
-    println!();
 
     // Step 7: Run verbose evaluation on each task
     for (task_num, task) in selected_tasks.iter().enumerate() {
-        println!("\n");
-        println!(
-            "╔═══════════════════════════════════════════════════════════════════════════════╗"
-        );
-        println!(
-            "║  TASK {}/{}: {}  ",
+        tracing::info!(
+            "TASK {}/{}: {}",
             task_num + 1,
             selected_tasks.len(),
             task.task_id
         );
-        println!(
-            "╚═══════════════════════════════════════════════════════════════════════════════╝"
-        );
-        println!();
 
         // Show task details
-        println!(
-            "┌─ TASK DETAILS ─────────────────────────────────────────────────────────────────┐"
-        );
-        println!("│ Prompt:");
+        tracing::trace!("TASK DETAILS");
+        tracing::trace!("Prompt:");
         for line in task.prompt.lines() {
-            println!("│   {line}");
+            tracing::trace!("{line}");
         }
-        println!("│");
-        println!("│ Enabled Tools: {:?}", task.enabled_tools);
-        println!("│");
-        println!("│ Tool Resolution:");
+        tracing::trace!("Enabled Tools: {:?}", task.enabled_tools);
+        tracing::trace!("Tool Resolution:");
         for tool_name in &task.enabled_tools {
             if let Some(gateway_tool) = runner.resolve_tool(tool_name) {
-                println!(
-                    "│   ✓ {} → {} ({})",
+                tracing::debug!(
+                    "{} -> {} ({})",
                     tool_name, gateway_tool.name, gateway_tool.server
                 );
             } else {
-                println!("│   ✗ {tool_name} → NOT FOUND");
+                tracing::debug!("{} -> NOT FOUND", tool_name);
             }
         }
-        println!("│");
-        println!("│ Claims to verify ({}):", task.claims.len());
+        tracing::trace!("Claims to verify ({}):", task.claims.len());
         for (i, claim) in task.claims.iter().enumerate() {
-            println!("│   {}. {}", i + 1, claim);
+            tracing::trace!("{}. {}", i + 1, claim);
         }
-        println!("│");
-        println!("│ Expected Trajectory ({} steps):", task.trajectory.len());
+        tracing::trace!("Expected Trajectory ({} steps):", task.trajectory.len());
         for (i, step) in task.trajectory.iter().enumerate() {
-            println!("│   {}. {} with args: {}", i + 1, step.tool, step.args);
+            tracing::trace!("{}. {} with args: {}", i + 1, step.tool, step.args);
         }
-        println!(
-            "└────────────────────────────────────────────────────────────────────────────────┘"
-        );
-        println!();
 
         // Run in RLM mode only (the mode that had best results)
         let mode = ToolCallingMode::BaselineRlm;
 
-        println!(
-            "┌─ EXECUTION ({mode}) ────────────────────────────────────────────────────────────┐"
-        );
-        println!("│");
-        println!("│ Sending prompt to agent (GPT-4o)...");
+        tracing::trace!("EXECUTION ({})", mode);
+        tracing::debug!("Sending prompt to agent (GPT-4o)...");
 
         let start = Instant::now();
         let task_result = runner.run_task(task, mode).await;
         let elapsed = start.elapsed();
 
-        println!("│ Execution completed in {elapsed:?}");
-        println!("│");
+        tracing::debug!("Execution completed in {:?}", elapsed);
 
         // Show tool calls
         if task_result.tool_calls.is_empty() {
-            println!("│ ⚠ NO TOOL CALLS MADE!");
-            println!("│ The agent did not use any tools.");
+            tracing::warn!("NO TOOL CALLS MADE!");
+            tracing::warn!("The agent did not use any tools.");
         } else {
-            println!("│ Tool Calls Made ({}):", task_result.tool_calls.len());
+            tracing::debug!("Tool Calls Made ({}):", task_result.tool_calls.len());
             for (i, call) in task_result.tool_calls.iter().enumerate() {
-                println!("│   ── Call {} ──", i + 1);
-                println!("│   Tool: {}", call.name);
-                println!(
-                    "│   Arguments: {}",
+                tracing::trace!("Call {}", i + 1);
+                tracing::trace!("Tool: {}", call.name);
+                tracing::trace!(
+                    "Arguments: {}",
                     serde_json::to_string_pretty(&call.arguments)
                         .unwrap_or_default()
-                        .replace('\n', "\n│   ")
                 );
-                println!("│   Result tokens: {}", call.result_tokens);
-                println!("│   Stored in corpus: {}", call.stored_in_corpus);
+                tracing::trace!("Result tokens: {}", call.result_tokens);
+                tracing::trace!("Stored in corpus: {}", call.stored_in_corpus);
 
                 // Truncate result for display
                 let result_preview = if call.result.len() > 500 {
                     format!(
-                        "{}...\n│   [TRUNCATED: {} more chars]",
+                        "{}... [TRUNCATED: {} more chars]",
                         &call.result[..500],
                         call.result.len() - 500
                     )
                 } else {
                     call.result.clone()
                 };
-                println!("│   Result: {}", result_preview.replace('\n', "\n│   "));
+                tracing::trace!("Result: {}", result_preview);
             }
         }
-        println!("│");
 
         // Show error if any
         if let Some(ref error) = task_result.error {
-            println!("│ ✗ ERROR: {error}");
-            println!("│");
+            tracing::error!("ERROR: {error}");
         }
 
         // Show final answer
-        println!("│ Final Answer:");
+        tracing::trace!("Final Answer:");
         let answer_preview = if task_result.final_answer.len() > 1000 {
             format!(
-                "{}...\n│   [TRUNCATED: {} more chars]",
+                "{}... [TRUNCATED: {} more chars]",
                 &task_result.final_answer[..1000],
                 task_result.final_answer.len() - 1000
             )
@@ -2036,21 +2011,13 @@ async fn run_verbose_debug_evaluation() {
             task_result.final_answer.clone()
         };
         for line in answer_preview.lines() {
-            println!("│   {line}");
+            tracing::trace!("{line}");
         }
-        println!("│");
-        println!("│ Context tokens used: {}", task_result.context_tokens);
-        println!(
-            "└────────────────────────────────────────────────────────────────────────────────┘"
-        );
-        println!();
+        tracing::debug!("Context tokens used: {}", task_result.context_tokens);
 
         // Show claim verification
-        println!(
-            "┌─ CLAIM VERIFICATION ───────────────────────────────────────────────────────────┐"
-        );
-        println!("│");
-        println!("│ Sending to judge (GPT-4o)...");
+        tracing::trace!("CLAIM VERIFICATION");
+        tracing::debug!("Sending to judge (GPT-4o)...");
 
         let verify_start = Instant::now();
         let verification = match judge
@@ -2058,11 +2025,11 @@ async fn run_verbose_debug_evaluation() {
             .await
         {
             Ok(v) => {
-                println!("│ Verification completed in {:?}", verify_start.elapsed());
+                tracing::debug!("Verification completed in {:?}", verify_start.elapsed());
                 v
             }
             Err(e) => {
-                println!("│ ✗ Verification FAILED: {e}");
+                tracing::error!("Verification FAILED: {e}");
                 ClaimVerificationResult {
                     scores: vec![],
                     coverage: 0.0,
@@ -2072,164 +2039,138 @@ async fn run_verbose_debug_evaluation() {
             }
         };
 
-        println!("│");
-        println!("│ Per-claim results:");
+        tracing::debug!("Per-claim results:");
         for (claim, score) in &verification.scores {
-            let (score_str, symbol) = match score {
-                ClaimScore::Fulfilled => ("FULFILLED", "✓"),
-                ClaimScore::PartiallyFulfilled => ("PARTIAL  ", "~"),
-                ClaimScore::NotFulfilled => ("NOT_MET  ", "✗"),
+            let score_str = match score {
+                ClaimScore::Fulfilled => "FULFILLED",
+                ClaimScore::PartiallyFulfilled => "PARTIAL",
+                ClaimScore::NotFulfilled => "NOT_MET",
             };
-            println!(
-                "│   {} {} {}",
-                symbol,
+            tracing::debug!(
+                "{} {}",
                 score_str,
                 &claim[..claim.len().min(60)]
             );
         }
-        println!("│");
-        println!("│ Coverage: {:.2}", verification.coverage);
-        println!("│ Threshold: {PASS_THRESHOLD:.2}");
-        println!(
-            "│ Status: {}",
+        tracing::info!("Coverage: {:.2}", verification.coverage);
+        tracing::debug!("Threshold: {}", PASS_THRESHOLD);
+        tracing::info!(
+            "Status: {}",
             if verification.passed {
-                "✓ PASS"
+                "PASS"
             } else {
-                "✗ FAIL"
+                "FAIL"
             }
         );
-        println!("│");
 
         // Show raw judge response for debugging
         if !verification.raw_response.is_empty() && !verification.passed {
-            println!("│ Judge Raw Response (for debugging):");
+            tracing::trace!("Judge Raw Response (for debugging):");
             let raw_preview = if verification.raw_response.len() > 500 {
                 format!("{}...", &verification.raw_response[..500])
             } else {
                 verification.raw_response.clone()
             };
             for line in raw_preview.lines() {
-                println!("│   {line}");
+                tracing::trace!("{line}");
             }
         }
-        println!(
-            "└────────────────────────────────────────────────────────────────────────────────┘"
-        );
 
         // Summary
-        println!();
-        println!(
-            "┌─ TASK SUMMARY ─────────────────────────────────────────────────────────────────┐"
-        );
-        println!("│ Task: {}", task.task_id);
-        println!("│ Tool calls: {}", task_result.tool_calls.len());
-        println!("│ Expected trajectory steps: {}", task.trajectory.len());
-        println!("│ Coverage: {:.2}", verification.coverage);
-        println!(
-            "│ Result: {}",
+        tracing::debug!("TASK SUMMARY");
+        tracing::debug!("Task: {}", task.task_id);
+        tracing::debug!("Tool calls: {}", task_result.tool_calls.len());
+        tracing::debug!("Expected trajectory steps: {}", task.trajectory.len());
+        tracing::debug!("Coverage: {:.2}", verification.coverage);
+        tracing::debug!(
+            "Result: {}",
             if verification.passed {
-                "✓ PASS"
+                "PASS"
             } else {
-                "✗ FAIL"
+                "FAIL"
             }
         );
 
         // Diagnosis
-        println!("│");
-        println!("│ DIAGNOSIS:");
+        tracing::debug!("DIAGNOSIS:");
         if task_result.tool_calls.is_empty() {
-            println!(
-                "│   - Agent made NO tool calls (expected {})",
+            tracing::debug!(
+                "Agent made NO tool calls (expected {})",
                 task.trajectory.len()
             );
-            println!("│   - Check: Is the system prompt telling agent to use tools?");
-            println!("│   - Check: Are tool definitions correctly formatted?");
+            tracing::debug!("Check: Is the system prompt telling agent to use tools?");
+            tracing::debug!("Check: Are tool definitions correctly formatted?");
         } else if task_result.tool_calls.len() != task.trajectory.len() {
-            println!(
-                "│   - Agent made {} calls, expected {}",
+            tracing::debug!(
+                "Agent made {} calls, expected {}",
                 task_result.tool_calls.len(),
                 task.trajectory.len()
             );
         }
 
         if let Some(ref error) = task_result.error {
-            println!("│   - Execution error: {error}");
+            tracing::debug!("Execution error: {error}");
         }
 
         if !verification.passed && task_result.final_answer.is_empty() {
-            println!("│   - Final answer is EMPTY!");
+            tracing::debug!("Final answer is EMPTY!");
         }
 
         // Check if tool calls match expected trajectory
         let expected_tools: Vec<_> = task.trajectory.iter().map(|s| &s.tool).collect();
         let actual_tools: Vec<_> = task_result.tool_calls.iter().map(|c| &c.name).collect();
-        if expected_tools != actual_tools {
-            println!("│   - Tool sequence mismatch:");
-            println!("│     Expected: {expected_tools:?}");
-            println!("│     Actual:   {actual_tools:?}");
+        let tools_match = expected_tools.len() == actual_tools.len()
+            && expected_tools.iter().zip(actual_tools.iter()).all(|(expected, actual)| {
+                let e = expected.to_lowercase();
+                let a = actual.to_lowercase();
+                e == a || e.contains(&a) || a.contains(&e)
+            });
+        if !tools_match {
+            tracing::debug!("Tool sequence mismatch:");
+            tracing::debug!("Expected: {:?}", expected_tools);
+            tracing::debug!("Actual:   {:?}", actual_tools);
         }
-
-        println!(
-            "└────────────────────────────────────────────────────────────────────────────────┘"
-        );
     }
 
-    println!("\n");
-    println!("═══════════════════════════════════════════════════════════════════════════════");
-    println!("       VERBOSE DEBUG EVALUATION COMPLETE");
-    println!("═══════════════════════════════════════════════════════════════════════════════");
+    tracing::trace!("VERBOSE DEBUG EVALUATION COMPLETE");
 }
 
 /// Print setup instructions
 #[tokio::test]
+#[traced_test]
 async fn print_setup_instructions() {
     if !should_skip() {
         return;
     }
 
-    println!("\n");
-    println!("═══════════════════════════════════════════════════════════════");
-    println!("           MCP-Atlas Evaluation - Setup Instructions");
-    println!("═══════════════════════════════════════════════════════════════");
-    println!();
-    println!("This evaluation requires:");
-    println!();
-    println!("  1. Kontext Gateway credentials");
-    println!("  2. OpenAI API key (for agent and judge)");
-    println!("  3. MCP-Atlas dataset");
-    println!();
-    println!("Setup:");
-    println!();
-    println!("  # Create .env file:");
-    println!("  KONTEXT_CLIENT_ID=<your-client-id>");
-    println!("  KONTEXT_CLIENT_SECRET=<your-client-secret>");
-    println!("  KONTEXT_MCP_URL=http://localhost:4000/mcp");
-    println!("  KONTEXT_TOKEN_URL=http://localhost:4000/oauth2/token");
-    println!("  OPENAI_API_KEY=<your-openai-key>");
-    println!("  EVAL_GATEWAY_TASK_CSV=v2");
-    println!();
-    println!("  # Optional alternate dataset:");
-    println!(
-        "  # EVAL_GATEWAY_TASK_CSV=v1  (maps to ../mcp-atlas/services/mcp_eval/gateway_tasks.csv)"
+    tracing::trace!("MCP-Atlas Evaluation - Setup Instructions");
+    tracing::trace!("This evaluation requires:");
+    tracing::trace!("1. Kontext Gateway credentials");
+    tracing::trace!("2. OpenAI API key (for agent and judge)");
+    tracing::trace!("3. MCP-Atlas dataset");
+    tracing::trace!("Setup:");
+    tracing::trace!("# Create .env file:");
+    tracing::trace!("KONTEXT_CLIENT_ID=<your-client-id>");
+    tracing::trace!("KONTEXT_CLIENT_SECRET=<your-client-secret>");
+    tracing::trace!("KONTEXT_MCP_URL=http://localhost:4000/mcp");
+    tracing::trace!("KONTEXT_TOKEN_URL=http://localhost:4000/oauth2/token");
+    tracing::trace!("OPENAI_API_KEY=<your-openai-key>");
+    tracing::trace!("EVAL_GATEWAY_TASK_CSV=v2");
+    tracing::trace!("# Optional alternate dataset:");
+    tracing::trace!(
+        "# EVAL_GATEWAY_TASK_CSV=v1  (maps to ../mcp-atlas/services/mcp_eval/gateway_tasks.csv)"
     );
-    println!("  # EVAL_GATEWAY_TASK_CSV=/path/to/custom_gateway_tasks.csv");
-    println!();
-    println!("Run tests:");
-    println!();
-    println!("  # Verification tests:");
-    println!("  source .env");
-    println!("  cargo test -p codex-core --test mcp_atlas_eval -- --nocapture");
-    println!();
-    println!("  # Three-way evaluation (10 tasks):");
-    println!(
-        "  cargo test -p codex-core --test mcp_atlas_eval run_mcp_atlas_three_way_evaluation -- --nocapture"
+    tracing::trace!("# EVAL_GATEWAY_TASK_CSV=/path/to/custom_gateway_tasks.csv");
+    tracing::trace!("Run tests:");
+    tracing::trace!("# Verification tests:");
+    tracing::trace!("source .env");
+    tracing::trace!("cargo test -p codex-core --test mcp_atlas_eval -- --nocapture");
+    tracing::trace!("# Three-way evaluation (10 tasks):");
+    tracing::trace!(
+        "cargo test -p codex-core --test mcp_atlas_eval run_mcp_atlas_three_way_evaluation -- --nocapture"
     );
-    println!();
-    println!("  # Full evaluation (500 tasks - takes a long time):");
-    println!(
-        "  cargo test -p codex-core --test mcp_atlas_eval run_full_mcp_atlas_evaluation -- --nocapture --ignored"
+    tracing::trace!("# Full evaluation (500 tasks - takes a long time):");
+    tracing::trace!(
+        "cargo test -p codex-core --test mcp_atlas_eval run_full_mcp_atlas_evaluation -- --nocapture --ignored"
     );
-    println!();
-    println!("═══════════════════════════════════════════════════════════════");
-    println!();
 }

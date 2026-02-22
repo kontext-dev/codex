@@ -23,6 +23,7 @@ use codex_core::rlm::RlmConfig;
 use codex_core::rlm::RlmCorpus;
 use tempfile::TempDir;
 use tokio::sync::RwLock;
+use tracing_test::traced_test;
 
 /// Simulated tool result sizes based on real Linear API responses
 struct SimulatedToolResult {
@@ -319,20 +320,20 @@ fn estimate_cost(context_tokens: i64, completion_tokens: i64) -> f64 {
 
 /// Print benchmark results in a table format
 fn print_results(scenario: &BenchmarkScenario, results: &[ModeResult]) {
-    println!("\n{}", "═".repeat(80));
-    println!("Scenario: {}", scenario.id);
-    println!("   \"{}\"", scenario.prompt);
-    println!("   Description: {}", scenario.description);
-    println!("   Tools: {:?}", scenario.tools);
-    println!("{}\n", "═".repeat(80));
+    tracing::trace!("\n{}", "═".repeat(80));
+    tracing::info!("Scenario: {}", scenario.id);
+    tracing::info!("   \"{}\"", scenario.prompt);
+    tracing::info!("   Description: {}", scenario.description);
+    tracing::info!("   Tools: {:?}", scenario.tools);
+    tracing::trace!("{}\n", "═".repeat(80));
 
-    println!(
+    tracing::trace!(
         "┌────────────┬──────────┬──────────┬──────────┬────────┬──────────┬──────────┬─────────┐"
     );
-    println!(
+    tracing::trace!(
         "│   Mode     │ ctx_tok  │ cmp_tok  │ total_tok│  cost  │ latency  │ evidence │ quality │"
     );
-    println!(
+    tracing::trace!(
         "├────────────┼──────────┼──────────┼──────────┼────────┼──────────┼──────────┼─────────┤"
     );
 
@@ -340,7 +341,7 @@ fn print_results(scenario: &BenchmarkScenario, results: &[ModeResult]) {
         let total_tokens = result.context_tokens + result.completion_tokens;
         let cost = estimate_cost(result.context_tokens, result.completion_tokens);
 
-        println!(
+        tracing::debug!(
             "│ {:10} │ {:>8} │ {:>8} │ {:>8} │ ${:.4} │ {:>6}ms │ {:>8} │ {:>6}% │",
             result.mode,
             result.context_tokens,
@@ -353,7 +354,7 @@ fn print_results(scenario: &BenchmarkScenario, results: &[ModeResult]) {
         );
     }
 
-    println!(
+    tracing::trace!(
         "└────────────┴──────────┴──────────┴──────────┴────────┴──────────┴──────────┴─────────┘"
     );
 
@@ -367,15 +368,15 @@ fn print_results(scenario: &BenchmarkScenario, results: &[ModeResult]) {
         let codemode_total = codemode.context_tokens + codemode.completion_tokens;
         let rlm_total = rlm.context_tokens + rlm.completion_tokens;
 
-        println!("\nComparison vs Baseline:");
-        println!(
+        tracing::info!("\nComparison vs Baseline:");
+        tracing::info!(
             "  Code Mode: {:+.1}% tokens, {:+.1}% latency, {}% quality",
             (codemode_total as f64 - baseline_total as f64) / baseline_total as f64 * 100.0,
             (codemode.latency_ms as f64 - baseline.latency_ms as f64) / baseline.latency_ms as f64
                 * 100.0,
             codemode.quality_score as i32 - baseline.quality_score as i32,
         );
-        println!(
+        tracing::info!(
             "  RLM Mode:  {:+.1}% tokens, {:+.1}% latency, {}% quality",
             (rlm_total as f64 - baseline_total as f64) / baseline_total as f64 * 100.0,
             (rlm.latency_ms as f64 - baseline.latency_ms as f64) / baseline.latency_ms as f64
@@ -387,17 +388,17 @@ fn print_results(scenario: &BenchmarkScenario, results: &[ModeResult]) {
 
 /// Print summary table across all scenarios
 fn print_summary(all_results: &[(BenchmarkScenario, Vec<ModeResult>)]) {
-    println!("\n\n{}", "═".repeat(100));
-    println!("                              SUMMARY: THREE-WAY COMPARISON");
-    println!("{}\n", "═".repeat(100));
+    tracing::trace!("\n\n{}", "═".repeat(100));
+    tracing::info!("                              SUMMARY: THREE-WAY COMPARISON");
+    tracing::trace!("{}\n", "═".repeat(100));
 
-    println!(
+    tracing::trace!(
         "┌─────────────────────┬──────────┬─────────┬───────┬──────────┬──────────┬─────────┐"
     );
-    println!(
+    tracing::trace!(
         "│ Scenario            │   Mode   │ tokens  │ turns │ evidence │ quality  │ status  │"
     );
-    println!(
+    tracing::trace!(
         "├─────────────────────┼──────────┼─────────┼───────┼──────────┼──────────┼─────────┤"
     );
 
@@ -414,46 +415,71 @@ fn print_summary(all_results: &[(BenchmarkScenario, Vec<ModeResult>)]) {
 
             let scenario_name = if i == 0 { scenario.id } else { "" };
 
-            println!(
-                "│ {:19} │ {:>8} │ {:>7} │ {:>5} │ {:>8} │ {:>7}% │ {:>7} │",
-                scenario_name,
-                result.mode,
-                total,
-                result.round_trips,
-                result.evidence_count,
-                result.quality_score,
-                status,
-            );
+            if result.quality_score == 100 {
+                tracing::debug!(
+                    "│ {:19} │ {:>8} │ {:>7} │ {:>5} │ {:>8} │ {:>7}% │ {:>7} │",
+                    scenario_name,
+                    result.mode,
+                    total,
+                    result.round_trips,
+                    result.evidence_count,
+                    result.quality_score,
+                    status,
+                );
+            } else if result.quality_score == 0 {
+                tracing::error!(
+                    "│ {:19} │ {:>8} │ {:>7} │ {:>5} │ {:>8} │ {:>7}% │ {:>7} │",
+                    scenario_name,
+                    result.mode,
+                    total,
+                    result.round_trips,
+                    result.evidence_count,
+                    result.quality_score,
+                    status,
+                );
+            } else {
+                tracing::debug!(
+                    "│ {:19} │ {:>8} │ {:>7} │ {:>5} │ {:>8} │ {:>7}% │ {:>7} │",
+                    scenario_name,
+                    result.mode,
+                    total,
+                    result.round_trips,
+                    result.evidence_count,
+                    result.quality_score,
+                    status,
+                );
+            }
         }
-        println!(
+        tracing::trace!(
             "├─────────────────────┼──────────┼─────────┼───────┼──────────┼──────────┼─────────┤"
         );
     }
 
-    println!(
+    tracing::trace!(
         "└─────────────────────┴──────────┴─────────┴───────┴──────────┴──────────┴─────────┘"
     );
 
     // Trade-offs summary
-    println!("\n## Trade-offs Summary\n");
-    println!("┌─────────────────┬───────────────┬───────────────┬───────────────┐");
-    println!("│ Dimension       │   Baseline    │   Code Mode   │      RLM      │");
-    println!("├─────────────────┼───────────────┼───────────────┼───────────────┤");
-    println!("│ Token Usage     │ Highest       │ Lowest        │ Medium        │");
-    println!("│ Quality         │ High*         │ Low-Medium    │ High          │");
-    println!("│ Latency         │ High          │ Lowest        │ Medium        │");
-    println!("│ Provenance      │ None          │ None          │ Full DAG      │");
-    println!("│ Max Data Size   │ ~128K context │ Unlimited**   │ Unlimited     │");
-    println!("│ LLM Reasoning   │ Full          │ None          │ Per sub-LM    │");
-    println!("└─────────────────┴───────────────┴───────────────┴───────────────┘");
-    println!("\n*Baseline quality degrades to FAIL on context overflow");
-    println!("**Code Mode unlimited but with lossy summarization");
+    tracing::trace!("\n## Trade-offs Summary\n");
+    tracing::trace!("┌─────────────────┬───────────────┬───────────────┬───────────────┐");
+    tracing::trace!("│ Dimension       │   Baseline    │   Code Mode   │      RLM      │");
+    tracing::trace!("├─────────────────┼───────────────┼───────────────┼───────────────┤");
+    tracing::trace!("│ Token Usage     │ Highest       │ Lowest        │ Medium        │");
+    tracing::trace!("│ Quality         │ High*         │ Low-Medium    │ High          │");
+    tracing::trace!("│ Latency         │ High          │ Lowest        │ Medium        │");
+    tracing::trace!("│ Provenance      │ None          │ None          │ Full DAG      │");
+    tracing::trace!("│ Max Data Size   │ ~128K context │ Unlimited**   │ Unlimited     │");
+    tracing::trace!("│ LLM Reasoning   │ Full          │ None          │ Per sub-LM    │");
+    tracing::trace!("└─────────────────┴───────────────┴───────────────┴───────────────┘");
+    tracing::trace!("\n*Baseline quality degrades to FAIL on context overflow");
+    tracing::trace!("**Code Mode unlimited but with lossy summarization");
 }
 
 #[tokio::test]
+#[traced_test]
 async fn benchmark_three_way_comparison() {
-    println!("\n# RLM vs Baseline vs Code Mode Benchmark\n");
-    println!(
+    tracing::info!("\n# RLM vs Baseline vs Code Mode Benchmark\n");
+    tracing::info!(
         "Generated: {}\n",
         chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC")
     );
@@ -475,15 +501,16 @@ async fn benchmark_three_way_comparison() {
 
 /// Benchmark RLM infrastructure overhead
 #[tokio::test]
+#[traced_test]
 async fn benchmark_rlm_infrastructure_overhead() {
-    println!("\n# RLM Infrastructure Overhead Benchmark\n");
+    tracing::info!("\n# RLM Infrastructure Overhead Benchmark\n");
 
     let iterations = 10;
 
     // Test corpus append performance
-    println!("## Corpus Append Performance\n");
-    println!("| Content Size | Iterations | Min | Avg | Max |");
-    println!("|--------------|------------|-----|-----|-----|");
+    tracing::info!("## Corpus Append Performance\n");
+    tracing::debug!("| Content Size | Iterations | Min | Avg | Max |");
+    tracing::debug!("|--------------|------------|-----|-----|-----|");
 
     for &size in &[1000i64, 5000, 10000, 50000] {
         let temp_dir = TempDir::new().unwrap();
@@ -514,7 +541,7 @@ async fn benchmark_rlm_infrastructure_overhead() {
             / times.len() as f64
             * 1000.0;
 
-        println!(
+        tracing::debug!(
             "| {}KB | {} | {:.3}ms | {:.3}ms | {:.3}ms |",
             size / 250, // Convert tokens to KB
             iterations,
@@ -525,9 +552,9 @@ async fn benchmark_rlm_infrastructure_overhead() {
     }
 
     // Test gateway router performance
-    println!("\n## Gateway Router Performance\n");
-    println!("| Result Size | Threshold | Routed To | Min | Avg | Max |");
-    println!("|-------------|-----------|-----------|-----|-----|-----|");
+    tracing::info!("\n## Gateway Router Performance\n");
+    tracing::debug!("| Result Size | Threshold | Routed To | Min | Avg | Max |");
+    tracing::debug!("|-------------|-----------|-----------|-----|-----|-----|");
 
     for &size in &[500i64, 2000, 5000, 20000] {
         let temp_dir = TempDir::new().unwrap();
@@ -570,16 +597,26 @@ async fn benchmark_rlm_infrastructure_overhead() {
             / times.len() as f64
             * 1000.0;
 
-        println!(
-            "| {size} tokens | 2000 | {routed_to:10} | {min:.3}ms | {avg:.3}ms | {max:.3}ms |"
+        tracing::debug!(
+            "| {} tokens | 2000 | {:10} | {:.3}ms | {:.3}ms | {:.3}ms |",
+            size, routed_to, min, avg, max
         );
+
+        // Assertions for routing performance
+        if size == 500 {
+            assert!(avg < 1.0, "RLM passthrough routing should take <1ms, took {avg:.3}ms");
+        }
+        if size == 20000 {
+            assert!(avg < 100.0, "RLM corpus storage should take <100ms, took {avg:.3}ms");
+        }
     }
 }
 
 /// Test evidence summary generation
 #[tokio::test]
+#[traced_test]
 async fn benchmark_evidence_summary_generation() {
-    println!("\n# Evidence Summary Generation Benchmark\n");
+    tracing::info!("\n# Evidence Summary Generation Benchmark\n");
 
     let temp_dir = TempDir::new().unwrap();
     let config = RlmConfig::default();
@@ -622,41 +659,43 @@ async fn benchmark_evidence_summary_generation() {
         / times.len() as f64
         * 1000.0;
 
-    println!("| Operation | Iterations | Min | Avg | Max |");
-    println!("|-----------|------------|-----|-----|-----|");
-    println!(
-        "| generate_evidence_summary (10 items) | {iterations} | {min:.3}ms | {avg:.3}ms | {max:.3}ms |"
+    tracing::debug!("| Operation | Iterations | Min | Avg | Max |");
+    tracing::debug!("|-----------|------------|-----|-----|-----|");
+    tracing::debug!(
+        "| generate_evidence_summary (10 items) | {} | {:.3}ms | {:.3}ms | {:.3}ms |",
+        iterations, min, avg, max
     );
 
     // Print sample summary
     let summary = router.generate_evidence_summary().await;
-    println!("\n## Sample Evidence Summary\n");
-    println!("```");
-    println!("{summary}");
-    println!("```");
+    tracing::info!("\n## Sample Evidence Summary\n");
+    tracing::debug!("```");
+    tracing::debug!("{}", summary);
+    tracing::debug!("```");
 }
 
 /// Print final benchmark results in markdown format
 #[tokio::test]
+#[traced_test]
 async fn print_benchmark_results_md() {
-    println!("# RLM + Gateway Benchmark Results\n");
-    println!(
+    tracing::info!("# RLM + Gateway Benchmark Results\n");
+    tracing::info!(
         "Generated: {}\n",
         chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC")
     );
 
-    println!("## System Information\n");
-    println!("- Platform: {}", std::env::consts::OS);
-    println!("- Architecture: {}", std::env::consts::ARCH);
-    println!("- RLM Corpus Threshold: 2000 tokens");
-    println!("- Default Chunk Size: 8000 tokens\n");
+    tracing::info!("## System Information\n");
+    tracing::info!("- Platform: {}", std::env::consts::OS);
+    tracing::info!("- Architecture: {}", std::env::consts::ARCH);
+    tracing::info!("- RLM Corpus Threshold: 2000 tokens");
+    tracing::info!("- Default Chunk Size: 8000 tokens\n");
 
-    println!("---\n");
-    println!("## Methodology\n");
-    println!("This benchmark compares three approaches:\n");
-    println!("1. **Baseline (EXECUTE_TOOL)**: Each tool call adds full result to context");
-    println!("2. **Code Mode (EXECUTE_CODE)**: Batched execution, summarized results");
-    println!("3. **RLM Mode**: Results stored in corpus, bounded access via tools\n");
+    tracing::trace!("---\n");
+    tracing::trace!("## Methodology\n");
+    tracing::trace!("This benchmark compares three approaches:\n");
+    tracing::trace!("1. **Baseline (EXECUTE_TOOL)**: Each tool call adds full result to context");
+    tracing::trace!("2. **Code Mode (EXECUTE_CODE)**: Batched execution, summarized results");
+    tracing::trace!("3. **RLM Mode**: Results stored in corpus, bounded access via tools\n");
 
-    println!("---\n");
+    tracing::trace!("---\n");
 }

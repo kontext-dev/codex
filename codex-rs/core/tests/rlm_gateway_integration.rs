@@ -43,6 +43,7 @@ use kontext_dev::build_mcp_url;
 use serde_json::json;
 use tempfile::TempDir;
 use tokio::sync::RwLock;
+use tracing_test::traced_test;
 
 /// Check if integration tests should be skipped
 fn should_skip() -> bool {
@@ -51,20 +52,21 @@ fn should_skip() -> bool {
 
 /// Test: Gateway OAuth authentication
 #[tokio::test]
+#[traced_test]
 async fn test_gateway_authentication() {
     if should_skip() {
-        println!("⏭️  Skipping: KONTEXT credentials not set");
-        println!("   Set KONTEXT_CLIENT_ID and KONTEXT_CLIENT_SECRET to run");
+        tracing::warn!("Skipping: KONTEXT credentials not set");
+        tracing::warn!("Set KONTEXT_CLIENT_ID and KONTEXT_CLIENT_SECRET to run");
         return;
     }
 
-    println!("\n# Gateway Authentication Test\n");
+    tracing::info!("Gateway Authentication Test");
 
     let config = gateway_auth::build_kontext_config().expect("Config should be valid");
 
-    println!("  MCP URL: {}", config.mcp_url.as_deref().unwrap_or("(not set)"));
-    println!("  Token URL: {}", config.token_url.as_deref().unwrap_or("(not set)"));
-    println!("  Client ID: {}...", &config.client_id[..8]);
+    tracing::debug!("MCP URL: {}", config.mcp_url.as_deref().unwrap_or("(not set)"));
+    tracing::debug!("Token URL: {}", config.token_url.as_deref().unwrap_or("(not set)"));
+    tracing::debug!("Client ID: {}...", &config.client_id[..8]);
 
     let start = Instant::now();
     let token = gateway_auth::authenticate(&config).await;
@@ -77,35 +79,31 @@ async fn test_gateway_authentication() {
                 "Access token should not be empty"
             );
 
-            println!("✓ Gateway authentication successful");
-            println!("  Auth latency: {auth_time:?}");
-            println!("  Token length: {} chars", token.access_token.len());
-            println!("  Expires in: {} seconds", token.expires_in.unwrap_or(0));
+            tracing::debug!("Gateway authentication successful");
+            tracing::debug!("Auth latency: {auth_time:?}");
+            tracing::debug!("Token length: {} chars", token.access_token.len());
+            tracing::debug!("Expires in: {} seconds", token.expires_in.unwrap_or(0));
         }
         Err(e) => {
             // Check if this is a connection error vs auth error
             let err_str = format!("{e}");
             if err_str.contains("token request failed") || err_str.contains("connection") {
-                println!("⚠️  Gateway server not reachable: {e}");
-                println!();
-                println!(
-                    "  The Gateway server is not running at {}",
+                tracing::warn!("Gateway server not reachable: {}", e);
+                tracing::warn!(
+                    "The Gateway server is not running at {}",
                     config.token_url.as_deref().unwrap_or("(not set)")
                 );
-                println!("  Start your local Gateway server to run this test:");
-                println!("    cd <gateway-dir> && npm start");
-                println!();
-                println!("  Skipping test gracefully.");
+                tracing::warn!("Start your local Gateway server to run this test:");
+                tracing::warn!("cd <gateway-dir> && npm start");
+                tracing::warn!("Skipping test gracefully.");
                 return;
             }
 
             // Real auth error - fail the test
-            eprintln!("✗ Gateway authentication failed: {e}");
-            eprintln!();
-            eprintln!("  Possible causes:");
-            eprintln!("  1. Invalid client credentials");
-            eprintln!("  2. Token URL path is incorrect");
-            eprintln!();
+            tracing::error!("Gateway authentication failed: {}", e);
+            tracing::error!("Possible causes:");
+            tracing::error!("1. Invalid client credentials");
+            tracing::error!("2. Token URL path is incorrect");
             panic!("Gateway authentication failed: {e}");
         }
     }
@@ -113,32 +111,33 @@ async fn test_gateway_authentication() {
 
 /// Test: Build MCP URL from config
 #[tokio::test]
+#[traced_test]
 async fn test_build_mcp_url() {
     if should_skip() {
-        println!("⏭️  Skipping: KONTEXT credentials not set");
+        tracing::warn!("Skipping: KONTEXT credentials not set");
         return;
     }
 
-    println!("\n# Build MCP URL Test\n");
+    tracing::info!("Build MCP URL Test");
 
     let config = gateway_auth::build_kontext_config().expect("Config should be valid");
 
     // Try to authenticate - if server is not running, skip gracefully
     let token = match gateway_auth::authenticate(&config).await {
-        Ok(token) => token,
-        Err(e) => {
-            println!("⚠️  Gateway server not reachable: {e}");
-            println!("   Skipping test - start your local Gateway server to run this test");
+        Ok(t) => t,
+        Err(e) if e.to_string().contains("onnection refused") => {
+            tracing::warn!("Skipping: gateway not running");
             return;
         }
+        Err(e) => panic!("Auth failed (credentials configured): {e}"),
     };
 
     let url = build_mcp_url(&config, &token.access_token);
 
     match url {
         Ok(url) => {
-            println!("✓ MCP URL built successfully");
-            println!("  URL: {url}");
+            tracing::debug!("MCP URL built successfully");
+            tracing::debug!("URL: {url}");
             assert!(url.starts_with("https://") || url.starts_with("http://"));
         }
         Err(e) => {
@@ -150,9 +149,10 @@ async fn test_build_mcp_url() {
 /// Test: RLM infrastructure with simulated Gateway response
 /// This test doesn't require actual Gateway authentication - it tests the RLM routing logic
 #[tokio::test]
+#[traced_test]
 async fn test_rlm_routing_with_simulated_response() {
     // This test works without credentials - it tests RLM routing with simulated data
-    println!("\n# RLM Routing Test (Simulated)\n");
+    tracing::info!("RLM Routing Test (Simulated)");
 
     // Setup RLM infrastructure
     let temp_dir = TempDir::new().unwrap();
@@ -169,7 +169,7 @@ async fn test_rlm_routing_with_simulated_response() {
         rlm_config,
     );
 
-    println!("✓ RLM infrastructure initialized");
+    tracing::debug!("RLM infrastructure initialized");
 
     // Simulate a small Gateway response (< 2000 tokens)
     let small_response = r#"{"projects": [{"id": "1", "name": "Test Project"}]}"#;
@@ -183,9 +183,9 @@ async fn test_rlm_routing_with_simulated_response() {
 
     match result {
         ProcessedResult::PassThrough { content } => {
-            println!("✓ Small response passed through");
-            println!("  Content length: {} chars", content.len());
-            println!("  Routing time: {routing_time:?}");
+            tracing::debug!("Small response passed through");
+            tracing::debug!("Content length: {} chars", content.len());
+            tracing::debug!("Routing time: {routing_time:?}");
         }
         ProcessedResult::StoredInCorpus { .. } => {
             panic!("Small response should pass through, not be stored");
@@ -217,12 +217,12 @@ async fn test_rlm_routing_with_simulated_response() {
             summary,
             total_tokens,
         } => {
-            println!("✓ Large response stored in corpus");
-            println!("  Evidence ID: {evidence_id}");
-            println!("  Chunks: {}", chunk_ids.len());
-            println!("  Total tokens: {total_tokens}");
-            println!("  Routing time: {routing_time:?}");
-            println!("  Summary: {summary}");
+            tracing::debug!("Large response stored in corpus");
+            tracing::debug!("Evidence ID: {evidence_id}");
+            tracing::debug!("Chunks: {}", chunk_ids.len());
+            tracing::debug!("Total tokens: {total_tokens}");
+            tracing::debug!("Routing time: {routing_time:?}");
+            tracing::debug!("Summary: {summary}");
         }
         ProcessedResult::PassThrough { .. } => {
             panic!("Large response should be stored in corpus, not passed through");
@@ -232,25 +232,30 @@ async fn test_rlm_routing_with_simulated_response() {
 
 /// Benchmark: Real Gateway authentication and RLM routing
 #[tokio::test]
+#[traced_test]
 async fn benchmark_gateway_with_rlm() {
     if should_skip() {
-        println!("⏭️  Skipping: KONTEXT credentials not set");
+        tracing::warn!("Skipping: KONTEXT credentials not set");
         return;
     }
 
-    println!("\n# Real Gateway + RLM Benchmark\n");
+    tracing::info!("Real Gateway + RLM Benchmark");
 
     let config = gateway_auth::build_kontext_config().expect("Config should be valid");
 
-    println!("  Connecting to: {}", config.token_url.as_deref().unwrap_or("(not set)"));
+    tracing::debug!("Connecting to: {}", config.token_url.as_deref().unwrap_or("(not set)"));
 
     // Try to authenticate - if server is not running, skip gracefully
-    let first_auth = gateway_auth::authenticate(&config).await;
-    if first_auth.is_err() {
-        println!("⚠️  Gateway server not reachable at {}", config.token_url.as_deref().unwrap_or("(not set)"));
-        println!("   Skipping benchmark - start your local Gateway server to run this test");
-        return;
-    }
+    let token = match gateway_auth::authenticate(&config).await {
+        Ok(t) => t,
+        Err(e) if e.to_string().contains("onnection refused") => {
+            tracing::warn!("Skipping: gateway not running");
+            return;
+        }
+        Err(e) => panic!("Auth failed (credentials configured): {e}"),
+    };
+    // Use the token to confirm auth succeeded (suppress unused warning)
+    let _ = &token;
 
     // Measure authentication
     let auth_times: Vec<_> = {
@@ -266,6 +271,8 @@ async fn benchmark_gateway_with_rlm() {
         }
         times
     };
+
+    assert!(!auth_times.is_empty(), "Should have auth timing measurements");
 
     let auth_avg = auth_times
         .iter()
@@ -296,18 +303,18 @@ async fn benchmark_gateway_with_rlm() {
         ("XLarge (20000 tokens)", 80000),
     ];
 
-    println!("| Metric | Value |");
-    println!("|--------|-------|");
-    println!("| Auth latency (avg of 3) | {auth_avg}ms |");
-    println!(
+    tracing::debug!("| Metric | Value |");
+    tracing::debug!("|--------|-------|");
+    tracing::debug!("| Auth latency (avg of 3) | {auth_avg}ms |");
+    tracing::debug!(
         "| Auth latency (min) | {:?} |",
         auth_times.iter().min().unwrap()
     );
-    println!(
+    tracing::debug!(
         "| Auth latency (max) | {:?} |",
         auth_times.iter().max().unwrap()
     );
-    println!("|--------|-------|");
+    tracing::debug!("|--------|-------|");
 
     for (name, chars) in sizes {
         let content = "x".repeat(chars);
@@ -324,22 +331,23 @@ async fn benchmark_gateway_with_rlm() {
             ProcessedResult::StoredInCorpus { .. } => "corpus",
         };
 
-        println!("| {name} | {time:?} → {routed_to} |");
+        tracing::debug!("| {name} | {time:?} -> {routed_to} |");
     }
 
-    println!("\n## Summary\n");
-    println!("- Gateway authentication: ~{auth_avg}ms average");
-    println!("- RLM pass-through: <1ms");
-    println!("- RLM corpus storage: ~5-15ms depending on size");
-    println!("- Threshold: 2000 tokens (~8000 chars)");
+    tracing::info!("Summary");
+    tracing::debug!("Gateway authentication: ~{auth_avg}ms average");
+    tracing::debug!("RLM pass-through: <1ms");
+    tracing::debug!("RLM corpus storage: ~5-15ms depending on size");
+    tracing::debug!("Threshold: 2000 tokens (~8000 chars)");
 }
 
 /// Test: Evidence summary generation after Gateway calls
 /// This test doesn't require actual Gateway authentication - it tests evidence tracking
 #[tokio::test]
+#[traced_test]
 async fn test_evidence_summary_with_simulated_calls() {
     // This test works without credentials - it tests evidence tracking with simulated data
-    println!("\n# Evidence Summary Test (Simulated)\n");
+    tracing::info!("Evidence Summary Test (Simulated)");
 
     let temp_dir = TempDir::new().unwrap();
     let rlm_config = RlmConfig::default();
@@ -380,48 +388,41 @@ async fn test_evidence_summary_with_simulated_calls() {
     // Generate summary
     let summary = router.generate_evidence_summary().await;
 
-    println!("## Evidence Summary\n");
-    println!("{summary}");
+    tracing::info!("Evidence Summary");
+    tracing::debug!("{summary}");
 
     assert!(summary.contains("kontext-dev"));
     assert!(summary.contains("list_projects"));
     assert!(summary.contains("list_issues"));
 
-    println!("\n✓ Evidence summary generated successfully");
+    tracing::debug!("Evidence summary generated successfully");
 }
 
 /// Print test instructions when run without credentials
 #[tokio::test]
+#[traced_test]
 async fn print_setup_instructions() {
     if !should_skip() {
         // Credentials are set, don't print instructions
         return;
     }
 
-    println!("\n");
-    println!("═══════════════════════════════════════════════════════════════");
-    println!("           RLM Gateway Integration Tests - Setup Required       ");
-    println!("═══════════════════════════════════════════════════════════════");
-    println!();
-    println!("These tests require Kontext Gateway credentials.");
-    println!();
-    println!("To run the tests:");
-    println!();
-    println!("  1. Copy .env.example to .env:");
-    println!("     cp .env.example .env");
-    println!();
-    println!("  2. Edit .env with your credentials:");
-    println!("     KONTEXT_CLIENT_ID=<your-client-id>");
-    println!("     KONTEXT_CLIENT_SECRET=<your-client-secret>");
-    println!("     KONTEXT_MCP_URL=http://localhost:4000/mcp");
-    println!("     KONTEXT_TOKEN_URL=http://localhost:4000/oauth2/token");
-    println!();
-    println!("  3. Source the env file and run:");
-    println!("     source .env");
-    println!("     cargo test -p codex-core --test rlm_gateway_integration -- --nocapture");
-    println!();
-    println!("═══════════════════════════════════════════════════════════════");
-    println!();
+    tracing::trace!("===================================================================");
+    tracing::trace!("           RLM Gateway Integration Tests - Setup Required           ");
+    tracing::trace!("===================================================================");
+    tracing::trace!("These tests require Kontext Gateway credentials.");
+    tracing::trace!("To run the tests:");
+    tracing::trace!("1. Copy .env.example to .env:");
+    tracing::trace!("   cp .env.example .env");
+    tracing::trace!("2. Edit .env with your credentials:");
+    tracing::trace!("   KONTEXT_CLIENT_ID=<your-client-id>");
+    tracing::trace!("   KONTEXT_CLIENT_SECRET=<your-client-secret>");
+    tracing::trace!("   KONTEXT_MCP_URL=http://localhost:4000/mcp");
+    tracing::trace!("   KONTEXT_TOKEN_URL=http://localhost:4000/oauth2/token");
+    tracing::trace!("3. Source the env file and run:");
+    tracing::trace!("   source .env");
+    tracing::trace!("   cargo test -p codex-core --test rlm_gateway_integration -- --nocapture");
+    tracing::trace!("===================================================================");
 }
 
 // =============================================================================
@@ -431,36 +432,37 @@ async fn print_setup_instructions() {
 /// Test: Real MCP tool calls routed through RLM
 /// This test makes actual MCP calls to the Gateway and routes responses through RLM
 #[tokio::test]
+#[traced_test]
 async fn test_real_mcp_tool_calls_with_rlm() {
     if should_skip() {
-        println!("⏭️  Skipping: KONTEXT credentials not set");
+        tracing::warn!("Skipping: KONTEXT credentials not set");
         return;
     }
 
-    println!("\n# Real MCP Tool Calls with RLM Routing\n");
+    tracing::info!("Real MCP Tool Calls with RLM Routing");
 
     // Step 1: Authenticate and get MCP URL
     let config = gateway_auth::build_kontext_config().expect("Config should be valid");
-    println!("  Authenticating with Gateway...");
+    tracing::debug!("Authenticating with Gateway...");
 
     let token = match gateway_auth::authenticate(&config).await {
-        Ok(token) => token,
-        Err(e) => {
-            println!("⚠️  Gateway not reachable: {e}");
-            println!("   Skipping test - ensure Gateway and OAuth servers are running");
+        Ok(t) => t,
+        Err(e) if e.to_string().contains("onnection refused") => {
+            tracing::warn!("Skipping: gateway not running");
             return;
         }
+        Err(e) => panic!("Auth failed (credentials configured): {e}"),
     };
 
     let mcp_url = build_mcp_url(&config, &token.access_token).expect("Failed to build MCP URL");
-    println!("  ✓ Authenticated");
-    println!(
-        "  MCP URL: {}",
+    tracing::debug!("Authenticated");
+    tracing::debug!(
+        "MCP URL: {}",
         &mcp_url[..mcp_url.find('?').unwrap_or(mcp_url.len())]
     );
 
     // Step 2: Create MCP client
-    println!("\n  Connecting to MCP server...");
+    tracing::debug!("Connecting to MCP server...");
     let client = match RmcpClient::new_streamable_http_client(
         &config.server_name,
         &mcp_url,
@@ -472,10 +474,11 @@ async fn test_real_mcp_tool_calls_with_rlm() {
     .await
     {
         Ok(client) => client,
-        Err(e) => {
-            println!("⚠️  Failed to create MCP client: {e}");
+        Err(e) if e.to_string().contains("onnection refused") => {
+            tracing::warn!("Skipping: MCP server connection refused");
             return;
         }
+        Err(e) => panic!("Failed to create MCP client (auth succeeded): {e}"),
     };
 
     // Step 3: Initialize the connection
@@ -491,47 +494,52 @@ async fn test_real_mcp_tool_calls_with_rlm() {
         .await
     {
         Ok(result) => {
-            println!("  ✓ MCP initialized in {:?}", init_start.elapsed());
-            println!(
-                "  Server: {} v{}",
-                result.server_info.name, result.server_info.version
+            tracing::debug!("MCP initialized in {:?}", init_start.elapsed());
+            tracing::debug!(
+                "Server: {} v{}",
+                result.server_info.name,
+                result.server_info.version
             );
         }
-        Err(e) => {
-            println!("⚠️  Failed to initialize MCP: {e}");
+        Err(e) if e.to_string().contains("onnection refused") => {
+            tracing::warn!("Skipping: MCP initialization connection refused");
             return;
         }
+        Err(e) => panic!("Failed to initialize MCP (auth succeeded): {e}"),
     };
 
     // Step 4: List available tools
-    println!("\n  Discovering tools...");
+    tracing::debug!("Discovering tools...");
     let tools_start = Instant::now();
     let tools = match client.list_tools(None, Some(Duration::from_secs(30))).await {
         Ok(result) => {
-            println!(
-                "  ✓ Found {} tools in {:?}",
+            tracing::debug!(
+                "Found {} tools in {:?}",
                 result.tools.len(),
                 tools_start.elapsed()
             );
             result.tools
         }
-        Err(e) => {
-            println!("⚠️  Failed to list tools: {e}");
+        Err(e) if e.to_string().contains("onnection refused") => {
+            tracing::warn!("Skipping: list_tools connection refused");
             return;
         }
+        Err(e) => panic!("Failed to list tools (connection established): {e}"),
     };
 
+    assert!(!tools.is_empty(), "Should discover tools from gateway");
+
     // Print first 10 tools
-    println!("\n  Available tools (first 10):");
+    tracing::debug!("Available tools (first 10):");
     for tool in tools.iter().take(10) {
-        println!("    - {}", tool.name);
+        tracing::debug!("- {}", tool.name);
     }
     if tools.len() > 10 {
-        println!("    ... and {} more", tools.len() - 10);
+        tracing::debug!("... and {} more", tools.len() - 10);
     }
 
     // Step 5: Setup RLM infrastructure
-    println!("\n  Setting up RLM infrastructure...");
+    tracing::debug!("Setting up RLM infrastructure...");
     let temp_dir = TempDir::new().unwrap();
     let rlm_config = RlmConfig::default();
 
@@ -548,12 +556,12 @@ async fn test_real_mcp_tool_calls_with_rlm() {
         Arc::new(RwLock::new(EvidenceStore::new())),
         rlm_config,
     );
-    println!("  ✓ RLM infrastructure ready");
+    tracing::debug!("RLM infrastructure ready");
 
     // Step 6: Call real tools and route through RLM
-    println!("\n## Real Tool Call Results\n");
-    println!("| Tool | Latency | Response Size | Tokens | RLM Routing |");
-    println!("|------|---------|---------------|--------|-------------|");
+    tracing::info!("Real Tool Call Results");
+    tracing::debug!("| Tool | Latency | Response Size | Tokens | RLM Routing |");
+    tracing::debug!("|------|---------|---------------|--------|-------------|");
 
     // Try to call SEARCH_TOOLS first (should always exist)
     let search_tools_result = call_tool_with_rlm(
@@ -588,11 +596,13 @@ async fn test_real_mcp_tool_calls_with_rlm() {
     }
 
     // Generate evidence summary
-    println!("\n## Evidence Summary\n");
+    tracing::info!("Evidence Summary");
     let summary = router.generate_evidence_summary().await;
-    println!("{summary}");
+    tracing::debug!("{summary}");
 
-    println!("\n✓ Real MCP tool call test completed");
+    assert!(!summary.is_empty(), "Evidence summary should not be empty");
+
+    tracing::debug!("Real MCP tool call test completed");
 }
 
 /// Helper struct for tool call results
@@ -685,14 +695,14 @@ fn estimate_tokens(content: &str) -> i64 {
 /// Print tool result as table row
 fn print_tool_result(tool_name: &str, result: &ToolCallResult) {
     if let Some(ref error) = result.error {
-        println!(
-            "| {} | {:?} | - | - | ❌ {} |",
+        tracing::debug!(
+            "| {} | {:?} | - | - | {} |",
             truncate_name(tool_name, 20),
             result.latency,
             truncate_name(error, 30)
         );
     } else {
-        println!(
+        tracing::debug!(
             "| {} | {:?} | {} bytes | {} | {} |",
             truncate_name(tool_name, 20),
             result.latency,
@@ -714,22 +724,24 @@ fn truncate_name(s: &str, max: usize) -> String {
 
 /// Benchmark: Real MCP tool calls with RLM - detailed metrics
 #[tokio::test]
+#[traced_test]
 async fn benchmark_real_mcp_with_rlm() {
     if should_skip() {
-        println!("⏭️  Skipping: KONTEXT credentials not set");
+        tracing::warn!("Skipping: KONTEXT credentials not set");
         return;
     }
 
-    println!("\n# Real MCP + RLM Benchmark\n");
+    tracing::info!("Real MCP + RLM Benchmark");
 
     // Authenticate
     let config = gateway_auth::build_kontext_config().expect("Config should be valid");
     let token = match gateway_auth::authenticate(&config).await {
-        Ok(token) => token,
-        Err(e) => {
-            println!("⚠️  Gateway not reachable: {e}");
+        Ok(t) => t,
+        Err(e) if e.to_string().contains("onnection refused") => {
+            tracing::warn!("Skipping: gateway not running");
             return;
         }
+        Err(e) => panic!("Auth failed (credentials configured): {e}"),
     };
 
     let mcp_url = build_mcp_url(&config, &token.access_token).expect("Failed to build MCP URL");
@@ -746,10 +758,11 @@ async fn benchmark_real_mcp_with_rlm() {
     .await
     {
         Ok(client) => client,
-        Err(e) => {
-            println!("⚠️  Failed to create MCP client: {e}");
+        Err(e) if e.to_string().contains("onnection refused") => {
+            tracing::warn!("Skipping: MCP server connection refused");
             return;
         }
+        Err(e) => panic!("Failed to create MCP client (auth succeeded): {e}"),
     };
 
     let init_params = gateway_auth::create_init_params("rlm-integration-test");
@@ -762,8 +775,11 @@ async fn benchmark_real_mcp_with_rlm() {
         )
         .await
     {
-        println!("⚠️  Failed to initialize: {e}");
-        return;
+        if e.to_string().contains("onnection refused") {
+            tracing::warn!("Skipping: MCP initialization connection refused");
+            return;
+        }
+        panic!("Failed to initialize MCP (auth succeeded): {e}");
     }
 
     // Setup RLM
@@ -783,8 +799,10 @@ async fn benchmark_real_mcp_with_rlm() {
     // Run multiple iterations for each tool
     let test_tools = [("SEARCH_TOOLS", serde_json::json!({"query": "issues"}))];
 
-    println!("| Tool | Iterations | Avg Latency | Avg Size | Avg Tokens | Routing |");
-    println!("|------|------------|-------------|----------|------------|---------|");
+    tracing::debug!("| Tool | Iterations | Avg Latency | Avg Size | Avg Tokens | Routing |");
+    tracing::debug!("|------|------------|-------------|----------|------------|---------|");
+
+    let mut all_latencies: Vec<u64> = Vec::new();
 
     for (tool_name, args) in &test_tools {
         let mut latencies = Vec::new();
@@ -806,7 +824,7 @@ async fn benchmark_real_mcp_with_rlm() {
             let avg_latency = latencies.iter().sum::<u64>() / latencies.len() as u64;
             let avg_size = sizes.iter().sum::<usize>() / sizes.len();
             let avg_tokens = tokens.iter().sum::<i64>() / tokens.len() as i64;
-            println!(
+            tracing::debug!(
                 "| {} | {} | {}ms | {} bytes | {} | {} |",
                 tool_name,
                 latencies.len(),
@@ -816,12 +834,16 @@ async fn benchmark_real_mcp_with_rlm() {
                 routing
             );
         }
+
+        all_latencies.extend(&latencies);
     }
+
+    assert!(!all_latencies.is_empty(), "At least one tool call should succeed");
 
     // Summary
     let summary = router.generate_evidence_summary().await;
-    println!("\n## Evidence Summary\n");
-    println!("{summary}");
+    tracing::info!("Evidence Summary");
+    tracing::debug!("{summary}");
 }
 
 // =============================================================================
@@ -850,28 +872,28 @@ struct ModeResult {
 
 /// Benchmark: Compare EXECUTE_TOOL vs EXECUTE_CODE vs EXECUTE_TOOL+RLM
 #[tokio::test]
+#[traced_test]
 async fn benchmark_three_execution_modes() {
     if should_skip() {
-        println!("⏭️  Skipping: KONTEXT credentials not set");
+        tracing::warn!("Skipping: KONTEXT credentials not set");
         return;
     }
 
-    println!("\n");
-    println!("═══════════════════════════════════════════════════════════════════════════════");
-    println!("       THREE-WAY EXECUTION MODE BENCHMARK: Real Gateway Data");
-    println!("═══════════════════════════════════════════════════════════════════════════════");
-    println!();
+    tracing::trace!("===================================================================");
+    tracing::trace!("       THREE-WAY EXECUTION MODE BENCHMARK: Real Gateway Data");
+    tracing::trace!("===================================================================");
 
     // Step 1: Setup - Connect to Gateway
     let config = gateway_auth::build_kontext_config().expect("Config should be valid");
-    println!("  Connecting to Gateway...");
+    tracing::debug!("Connecting to Gateway...");
 
     let token = match gateway_auth::authenticate(&config).await {
-        Ok(token) => token,
-        Err(e) => {
-            println!("⚠️  Gateway not reachable: {e}");
+        Ok(t) => t,
+        Err(e) if e.to_string().contains("onnection refused") => {
+            tracing::warn!("Skipping: gateway not running");
             return;
         }
+        Err(e) => panic!("Auth failed (credentials configured): {e}"),
     };
 
     let mcp_url = build_mcp_url(&config, &token.access_token).expect("Failed to build MCP URL");
@@ -887,10 +909,11 @@ async fn benchmark_three_execution_modes() {
     .await
     {
         Ok(client) => client,
-        Err(e) => {
-            println!("⚠️  Failed to create MCP client: {e}");
+        Err(e) if e.to_string().contains("onnection refused") => {
+            tracing::warn!("Skipping: MCP server connection refused");
             return;
         }
+        Err(e) => panic!("Failed to create MCP client (auth succeeded): {e}"),
     };
 
     let init_params = gateway_auth::create_init_params("rlm-integration-test");
@@ -902,10 +925,13 @@ async fn benchmark_three_execution_modes() {
         )
         .await
     {
-        println!("⚠️  Failed to initialize: {e}");
-        return;
+        if e.to_string().contains("onnection refused") {
+            tracing::warn!("Skipping: MCP initialization connection refused");
+            return;
+        }
+        panic!("Failed to initialize MCP (auth succeeded): {e}");
     }
-    println!("  ✓ Connected to Gateway");
+    tracing::debug!("Connected to Gateway");
 
     // Step 2: Setup RLM infrastructure
     let temp_dir = TempDir::new().unwrap();
@@ -920,7 +946,7 @@ async fn benchmark_three_execution_modes() {
         Arc::new(RwLock::new(EvidenceStore::new())),
         rlm_config,
     );
-    println!("  ✓ RLM infrastructure ready");
+    tracing::debug!("RLM infrastructure ready");
 
     // Step 3: Define test scenarios using EXECUTE_TOOL and EXECUTE_CODE
     // These call real underlying tools via the Gateway's meta-tools
@@ -953,15 +979,15 @@ async fn benchmark_three_execution_modes() {
 
     // Step 4: Run benchmark for each scenario
     for scenario in &scenarios {
-        println!();
-        println!("───────────────────────────────────────────────────────────────────────────────");
-        println!("Scenario: {} - \"{}\"", scenario.name, scenario.description);
-        println!("Tool: {}, Args: {}", scenario.tool, scenario.args);
-        println!("───────────────────────────────────────────────────────────────────────────────");
-        println!();
+        tracing::trace!("-----------------------------------------------------------------------");
+        tracing::debug!("Scenario: {} - \"{}\"", scenario.name, scenario.description);
+        tracing::debug!("Tool: {}, Args: {}", scenario.tool, scenario.args);
+        tracing::trace!("-----------------------------------------------------------------------");
 
         // Mode 1: EXECUTE_TOOL (Baseline)
         let baseline = execute_tool_baseline(&client, scenario).await;
+
+        assert!(baseline.error.is_none(), "Baseline should not error: {:?}", baseline.error);
 
         // Mode 2: EXECUTE_CODE
         let codemode = execute_code_mode(&client, scenario).await;
@@ -970,53 +996,51 @@ async fn benchmark_three_execution_modes() {
         let rlm = execute_tool_with_rlm(&client, &router, scenario).await;
 
         // Print comparison table
-        println!("| Mode | Response Size | Context Tokens | Quality | Latency |");
-        println!("|------|---------------|----------------|---------|---------|");
+        tracing::debug!("| Mode | Response Size | Context Tokens | Quality | Latency |");
+        tracing::debug!("|------|---------------|----------------|---------|---------|");
         print_mode_result(&baseline);
         print_mode_result(&codemode);
         print_mode_result(&rlm);
 
         // Calculate reductions
         if baseline.error.is_none() && baseline.context_tokens > 0 {
-            println!();
-            println!("Token Reduction vs Baseline:");
+            tracing::info!("Token Reduction vs Baseline:");
             if codemode.error.is_none() {
                 let reduction = 100.0
                     - (codemode.context_tokens as f64 / baseline.context_tokens as f64 * 100.0);
-                println!(
-                    "  - EXECUTE_CODE: -{:.1}% (quality: {}%)",
-                    reduction, codemode.quality
+                tracing::debug!(
+                    "- EXECUTE_CODE: -{:.1}% (quality: {}%)",
+                    reduction,
+                    codemode.quality
                 );
             }
             if rlm.error.is_none() {
                 let reduction =
                     100.0 - (rlm.context_tokens as f64 / baseline.context_tokens as f64 * 100.0);
-                println!(
-                    "  - EXECUTE_TOOL + RLM: -{:.1}% (quality: {}%)",
-                    reduction, rlm.quality
+                tracing::debug!(
+                    "- EXECUTE_TOOL + RLM: -{:.1}% (quality: {}%)",
+                    reduction,
+                    rlm.quality
                 );
             }
         }
     }
 
     // Step 5: Summary
-    println!();
-    println!("═══════════════════════════════════════════════════════════════════════════════");
-    println!("                               SUMMARY");
-    println!("═══════════════════════════════════════════════════════════════════════════════");
-    println!();
-    println!("| Metric                | EXECUTE_TOOL | EXECUTE_CODE | EXECUTE_TOOL + RLM |");
-    println!("|-----------------------|--------------|--------------|---------------------|");
-    println!("| Full data in context  | Yes          | Summarized   | No (in corpus)      |");
-    println!("| Quality preserved     | 100%         | ~30-50%      | 100%                |");
-    println!("| Context overflow risk | HIGH         | LOW          | NONE                |");
-    println!("| Best for              | Small data   | Speed        | Large data          |");
-    println!();
+    tracing::trace!("===================================================================");
+    tracing::info!("SUMMARY");
+    tracing::trace!("===================================================================");
+    tracing::trace!("| Metric                | EXECUTE_TOOL | EXECUTE_CODE | EXECUTE_TOOL + RLM |");
+    tracing::trace!("|-----------------------|--------------|--------------|---------------------|");
+    tracing::trace!("| Full data in context  | Yes          | Summarized   | No (in corpus)      |");
+    tracing::trace!("| Quality preserved     | 100%         | ~30-50%      | 100%                |");
+    tracing::trace!("| Context overflow risk | HIGH         | LOW          | NONE                |");
+    tracing::trace!("| Best for              | Small data   | Speed        | Large data          |");
 
     // Evidence summary
     let summary = router.generate_evidence_summary().await;
-    println!("## RLM Evidence Store\n");
-    println!("{summary}");
+    tracing::info!("RLM Evidence Store");
+    tracing::debug!("{summary}");
 }
 
 /// Execute tool in baseline mode (full response in context)
@@ -1221,13 +1245,13 @@ async fn execute_tool_with_rlm(
 /// Print a mode result as a table row
 fn print_mode_result(result: &ModeResult) {
     if let Some(ref error) = result.error {
-        println!(
-            "| {} | - | - | - | ❌ {} |",
+        tracing::debug!(
+            "| {} | - | - | - | {} |",
             result.mode,
             truncate_name(error, 40)
         );
     } else {
-        println!(
+        tracing::debug!(
             "| {} | {} bytes | {} | {}% | {}ms |",
             result.mode,
             result.response_bytes,

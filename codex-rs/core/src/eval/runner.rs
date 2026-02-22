@@ -278,7 +278,7 @@ Note: Tool calls are executed via a Gateway. Use the exact tool names shown abov
         total_context_tokens += system_tokens;
         total_context_tokens += prompt_tokens;
 
-        eprintln!(
+        tracing::trace!(
             "[TOKEN DEBUG] Task: {}, Mode: {:?}, System: {}, Prompt: {}, ToolDefs: {}",
             task.task_id, mode, system_tokens, prompt_tokens, tool_def_tokens
         );
@@ -369,7 +369,7 @@ Note: Tool calls are executed via a Gateway. Use the exact tool names shown abov
                         total_context_tokens += result.tokens;
                     }
 
-                    eprintln!(
+                    tracing::trace!(
                         "[TOKEN DEBUG] Tool: {}, ResultTokens: {}, StoredInCorpus: {}, TotalNow: {}",
                         call.function.name,
                         result.tokens,

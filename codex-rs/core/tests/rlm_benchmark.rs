@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 use tempfile::TempDir;
+use tracing_test::traced_test;
 
 use codex_core::rlm::BudgetManager;
 use codex_core::rlm::EvidenceItem;
@@ -109,10 +110,11 @@ where
 // ============================================================================
 
 #[tokio::test]
+#[traced_test]
 async fn benchmark_budget_manager() {
-    println!("\n## Budget Manager Benchmarks\n");
-    println!("| Operation | Iterations | Min | Avg | Max |");
-    println!("|-----------|------------|-----|-----|-----|");
+    tracing::info!("\n## Budget Manager Benchmarks\n");
+    tracing::debug!("| Operation | Iterations | Min | Avg | Max |");
+    tracing::debug!("|-----------|------------|-----|-----|-----|");
 
     let config = RlmConfig {
         enabled: true,
@@ -127,7 +129,13 @@ async fn benchmark_budget_manager() {
         let _ = manager.can_proceed(1000).await;
     })
     .await;
-    println!("{}", result.to_markdown_row());
+    tracing::debug!("{}", result.to_markdown_row());
+
+    assert!(
+        result.avg_time < Duration::from_millis(1),
+        "can_proceed should take <1ms, took {:?}",
+        result.avg_time
+    );
 
     // Benchmark: record_usage
     let manager = BudgetManager::new(&config);
@@ -135,7 +143,7 @@ async fn benchmark_budget_manager() {
         manager.record_usage(100).await;
     })
     .await;
-    println!("{}", result.to_markdown_row());
+    tracing::debug!("{}", result.to_markdown_row());
 
     // Benchmark: increment_depth
     let manager = BudgetManager::new(&config);
@@ -144,7 +152,7 @@ async fn benchmark_budget_manager() {
         manager.decrement_depth().await;
     })
     .await;
-    println!("{}", result.to_markdown_row());
+    tracing::debug!("{}", result.to_markdown_row());
 
     // Benchmark: snapshot
     let manager = BudgetManager::new(&config);
@@ -152,7 +160,7 @@ async fn benchmark_budget_manager() {
         let _ = manager.snapshot().await;
     })
     .await;
-    println!("{}", result.to_markdown_row());
+    tracing::debug!("{}", result.to_markdown_row());
 
     // Benchmark: remaining_tokens
     let manager = BudgetManager::new(&config);
@@ -160,7 +168,7 @@ async fn benchmark_budget_manager() {
         let _ = manager.remaining_tokens().await;
     })
     .await;
-    println!("{}", result.to_markdown_row());
+    tracing::debug!("{}", result.to_markdown_row());
 }
 
 // ============================================================================
@@ -168,10 +176,11 @@ async fn benchmark_budget_manager() {
 // ============================================================================
 
 #[tokio::test]
+#[traced_test]
 async fn benchmark_evidence_store() {
-    println!("\n## Evidence Store Benchmarks\n");
-    println!("| Operation | Iterations | Min | Avg | Max |");
-    println!("|-----------|------------|-----|-----|-----|");
+    tracing::info!("\n## Evidence Store Benchmarks\n");
+    tracing::debug!("| Operation | Iterations | Min | Avg | Max |");
+    tracing::debug!("|-----------|------------|-----|-----|-----|");
 
     // Benchmark: record (empty store)
     let result = bench("record (empty)", 1000, || {
@@ -183,7 +192,7 @@ async fn benchmark_evidence_store() {
         );
         store.record(item);
     });
-    println!("{}", result.to_markdown_row());
+    tracing::debug!("{}", result.to_markdown_row());
 
     // Benchmark: record (populated store - 100 items)
     let mut base_store = EvidenceStore::new();
@@ -203,7 +212,7 @@ async fn benchmark_evidence_store() {
         );
         store.record(item);
     });
-    println!("{}", result.to_markdown_row());
+    tracing::debug!("{}", result.to_markdown_row());
 
     // Benchmark: record (populated store - 1000 items)
     let mut base_store = EvidenceStore::new();
@@ -223,7 +232,7 @@ async fn benchmark_evidence_store() {
         );
         store.record(item);
     });
-    println!("{}", result.to_markdown_row());
+    tracing::debug!("{}", result.to_markdown_row());
 
     // Benchmark: build_bundle (100 items)
     let mut store = EvidenceStore::new();
@@ -237,7 +246,7 @@ async fn benchmark_evidence_store() {
     let result = bench("build_bundle (100 items)", 100, || {
         let _ = store.build_bundle(10000);
     });
-    println!("{}", result.to_markdown_row());
+    tracing::debug!("{}", result.to_markdown_row());
 
     // Benchmark: build_bundle (1000 items)
     let mut store = EvidenceStore::new();
@@ -251,7 +260,7 @@ async fn benchmark_evidence_store() {
     let result = bench("build_bundle (1000 items)", 100, || {
         let _ = store.build_bundle(10000);
     });
-    println!("{}", result.to_markdown_row());
+    tracing::debug!("{}", result.to_markdown_row());
 
     // Benchmark: export/restore
     let mut store = EvidenceStore::new();
@@ -265,13 +274,13 @@ async fn benchmark_evidence_store() {
     let result = bench("export (100 items)", 100, || {
         let _ = store.export();
     });
-    println!("{}", result.to_markdown_row());
+    tracing::debug!("{}", result.to_markdown_row());
 
     let exported = store.export();
     let result = bench("restore (100 items)", 100, || {
         let _ = EvidenceStore::restore(exported.clone());
     });
-    println!("{}", result.to_markdown_row());
+    tracing::debug!("{}", result.to_markdown_row());
 }
 
 // ============================================================================
@@ -279,10 +288,11 @@ async fn benchmark_evidence_store() {
 // ============================================================================
 
 #[tokio::test]
+#[traced_test]
 async fn benchmark_corpus() {
-    println!("\n## Corpus Benchmarks\n");
-    println!("| Operation | Iterations | Min | Avg | Max |");
-    println!("|-----------|------------|-----|-----|-----|");
+    tracing::info!("\n## Corpus Benchmarks\n");
+    tracing::debug!("| Operation | Iterations | Min | Avg | Max |");
+    tracing::debug!("|-----------|------------|-----|-----|-----|");
 
     let config = RlmConfig::default();
 
@@ -299,7 +309,7 @@ async fn benchmark_corpus() {
         let _ = ctrl.initialize_with_prompt(&small_content, path).await;
         ingest_results_1k.record(start.elapsed());
     }
-    println!("{}", ingest_results_1k.to_markdown_row());
+    tracing::debug!("{}", ingest_results_1k.to_markdown_row());
 
     // Medium corpus (100KB)
     let medium_content = "word ".repeat(20000); // ~100KB
@@ -311,7 +321,7 @@ async fn benchmark_corpus() {
         let _ = ctrl.initialize_with_prompt(&medium_content, path).await;
         ingest_results_100k.record(start.elapsed());
     }
-    println!("{}", ingest_results_100k.to_markdown_row());
+    tracing::debug!("{}", ingest_results_100k.to_markdown_row());
 
     // Large corpus (1MB)
     let large_content = "word ".repeat(200000); // ~1MB
@@ -323,7 +333,13 @@ async fn benchmark_corpus() {
         let _ = ctrl.initialize_with_prompt(&large_content, path).await;
         ingest_results_1m.record(start.elapsed());
     }
-    println!("{}", ingest_results_1m.to_markdown_row());
+    tracing::debug!("{}", ingest_results_1m.to_markdown_row());
+
+    assert!(
+        ingest_results_1m.avg_time < Duration::from_millis(500),
+        "1MB corpus ingest should take <500ms, took {:?}",
+        ingest_results_1m.avg_time
+    );
 
     // Setup for chunk operations
     let ctrl = Arc::new(RlmController::new(config.clone()));
@@ -341,7 +357,7 @@ async fn benchmark_corpus() {
         }
     })
     .await;
-    println!("{}", result.to_markdown_row());
+    tracing::debug!("{}", result.to_markdown_row());
 
     // Benchmark: get_chunk
     let chunks = ctrl.list_chunks().await.unwrap();
@@ -356,7 +372,7 @@ async fn benchmark_corpus() {
             }
         })
         .await;
-        println!("{}", result.to_markdown_row());
+        tracing::debug!("{}", result.to_markdown_row());
     }
 
     // Benchmark: search
@@ -368,7 +384,7 @@ async fn benchmark_corpus() {
         }
     })
     .await;
-    println!("{}", result.to_markdown_row());
+    tracing::debug!("{}", result.to_markdown_row());
 
     // Benchmark: build_evidence_bundle
     let ctrl_ref = Arc::clone(&ctrl);
@@ -379,7 +395,7 @@ async fn benchmark_corpus() {
         }
     })
     .await;
-    println!("{}", result.to_markdown_row());
+    tracing::debug!("{}", result.to_markdown_row());
 
     // Benchmark: system_prompt generation
     let ctrl_ref = Arc::clone(&ctrl);
@@ -390,7 +406,7 @@ async fn benchmark_corpus() {
         }
     })
     .await;
-    println!("{}", result.to_markdown_row());
+    tracing::debug!("{}", result.to_markdown_row());
 }
 
 // ============================================================================
@@ -398,10 +414,11 @@ async fn benchmark_corpus() {
 // ============================================================================
 
 #[tokio::test]
+#[traced_test]
 async fn benchmark_e2e_workflow() {
-    println!("\n## End-to-End Workflow Benchmarks\n");
-    println!("| Workflow | Corpus Size | Time | Chunks | Evidence Items |");
-    println!("|----------|-------------|------|--------|----------------|");
+    tracing::info!("\n## End-to-End Workflow Benchmarks\n");
+    tracing::debug!("| Workflow | Corpus Size | Time | Chunks | Evidence Items |");
+    tracing::debug!("|----------|-------------|------|--------|----------------|");
 
     let config = RlmConfig {
         enabled: true,
@@ -425,7 +442,7 @@ async fn benchmark_e2e_workflow() {
     }
     let bundle = ctrl.build_evidence_bundle().await;
     let elapsed = start.elapsed();
-    println!(
+    tracing::debug!(
         "| Small (4KB) | 4KB | {:.3}ms | {} | {} |",
         elapsed.as_secs_f64() * 1000.0,
         chunks.len(),
@@ -446,7 +463,7 @@ async fn benchmark_e2e_workflow() {
     }
     let bundle = ctrl.build_evidence_bundle().await;
     let elapsed = start.elapsed();
-    println!(
+    tracing::debug!(
         "| Medium (100KB) | 100KB | {:.3}ms | {} | {} |",
         elapsed.as_secs_f64() * 1000.0,
         chunks.len(),
@@ -467,7 +484,7 @@ async fn benchmark_e2e_workflow() {
     }
     let bundle = ctrl.build_evidence_bundle().await;
     let elapsed = start.elapsed();
-    println!(
+    tracing::debug!(
         "| Large (1MB) | 1MB | {:.3}ms | {} | {} |",
         elapsed.as_secs_f64() * 1000.0,
         chunks.len(),
@@ -480,10 +497,11 @@ async fn benchmark_e2e_workflow() {
 // ============================================================================
 
 #[tokio::test]
+#[traced_test]
 async fn benchmark_memory_scaling() {
-    println!("\n## Memory Scaling (Evidence Store)\n");
-    println!("| Items | Record Time | Bundle Time | Export Size |");
-    println!("|-------|-------------|-------------|-------------|");
+    tracing::info!("\n## Memory Scaling (Evidence Store)\n");
+    tracing::debug!("| Items | Record Time | Bundle Time | Export Size |");
+    tracing::debug!("|-------|-------------|-------------|-------------|");
 
     for count in [100, 500, 1000, 5000, 10000] {
         let mut store = EvidenceStore::new();
@@ -508,7 +526,7 @@ async fn benchmark_memory_scaling() {
         let exported = store.export();
         let export_size = exported.len();
 
-        println!(
+        tracing::debug!(
             "| {} | {:.3}ms | {:.3}ms | {} items |",
             count,
             record_time.as_secs_f64() * 1000.0,
@@ -523,15 +541,15 @@ async fn benchmark_memory_scaling() {
 // ============================================================================
 
 #[tokio::test]
+#[traced_test]
 async fn print_benchmark_summary() {
-    println!("\n# RLM Benchmark Results\n");
-    println!(
+    tracing::info!("\n# RLM Benchmark Results\n");
+    tracing::info!(
         "Generated: {}\n",
         chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC")
     );
-    println!("## System Information\n");
-    println!("- Platform: {}", std::env::consts::OS);
-    println!("- Architecture: {}", std::env::consts::ARCH);
-    println!("- Rust version: {}", env!("CARGO_PKG_RUST_VERSION"));
-    println!();
+    tracing::info!("## System Information\n");
+    tracing::info!("- Platform: {}", std::env::consts::OS);
+    tracing::info!("- Architecture: {}", std::env::consts::ARCH);
+    tracing::info!("- Rust version: {}", env!("CARGO_PKG_RUST_VERSION"));
 }
