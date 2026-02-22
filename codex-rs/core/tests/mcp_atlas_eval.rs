@@ -95,6 +95,8 @@ const ARROW_DATASET_PATH: &str = "../../data/coding_atlas/data-00000-of-00001.ar
 #[derive(Debug)]
 struct EvalResult {
     task_id: String,
+    prompt: String,
+    claims: Vec<String>,
     task_result: TaskResult,
     verification: ClaimVerificationResult,
 }
@@ -1122,6 +1124,8 @@ async fn run_mcp_atlas_three_way_evaluation() {
 
             results.push(EvalResult {
                 task_id: task.task_id.clone(),
+                prompt: task.prompt.clone(),
+                claims: task.claims.clone(),
                 task_result,
                 verification,
             });
@@ -1476,8 +1480,27 @@ fn save_results(
                         })
                         .collect();
 
+                    let tool_calls_json: Vec<serde_json::Value> = r
+                        .task_result
+                        .tool_calls
+                        .iter()
+                        .enumerate()
+                        .map(|(i, tc)| {
+                            json!({
+                                "index": i,
+                                "name": tc.name,
+                                "arguments": tc.arguments,
+                                "result": tc.result,
+                                "result_tokens": tc.result_tokens,
+                                "stored_in_corpus": tc.stored_in_corpus,
+                            })
+                        })
+                        .collect();
+
                     json!({
                         "task_id": r.task_id,
+                        "prompt": r.prompt,
+                        "claims": r.claims,
                         "task_result": {
                             "task_id": r.task_result.task_id,
                             "mode_name": r.task_result.mode_name,
@@ -1486,6 +1509,7 @@ fn save_results(
                             "error": r.task_result.error,
                             "final_answer": r.task_result.final_answer,
                             "num_tool_calls": r.task_result.tool_calls.len(),
+                            "tool_calls": tool_calls_json,
                         },
                         "verification": {
                             "coverage": r.verification.coverage,
