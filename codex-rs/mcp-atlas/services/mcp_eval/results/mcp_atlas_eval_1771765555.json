@@ -1,0 +1,42 @@
+{
+  "agent_model": "gemini-2.5-pro",
+  "codex_model": "gemini-2.5-pro",
+  "dataset_path": "/Users/jens/Documents/01_CoBrowser/02_Repositories/benchmarking/codex/codex-rs/core/../mcp-atlas/services/mcp_eval/gateway_tasks_v2.csv",
+  "eval_limit": 1,
+  "generated_at_unix": 1771765555,
+  "results": {
+    "Baseline": {
+      "summary": {
+        "avg_context_tokens": 12240,
+        "avg_coverage": 0.0,
+        "avg_latency_ms": 14165,
+        "pass_count": 0,
+        "pass_rate": 0.0,
+        "total_tasks": 1
+      },
+      "tasks": [
+        {
+          "task_id": "task_linear_001",
+          "task_result": {
+            "context_tokens": 12240,
+            "error": null,
+            "final_answer": "Of course. Here is a list of all the projects in your Linear account:\n\n* Legal & Admin\n* Standardization Groups\n* Marketing\n* Sales\n* Engineering\n* Commercial\n* Immediate\n* Bugs & Improvements\n\nThere are a total of **8** projects.",
+            "latency_ms": 14165,
+            "mode_name": "Baseline",
+            "num_tool_calls": 1,
+            "task_id": "task_linear_001"
+          },
+          "verification": {
+            "claim_scores": [],
+            "coverage": 0.0,
+            "passed": false
+          }
+        }
+      ]
+    }
+  },
+  "tool_modes": [
+    "Baseline"
+  ],
+  "use_codex": false
+}

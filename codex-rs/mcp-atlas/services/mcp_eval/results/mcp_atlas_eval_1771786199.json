@@ -1,0 +1,70 @@
+{
+  "agent_model": "gemini-2.5-pro",
+  "codex_model": "gemini-2.5-pro",
+  "dataset_path": "/Users/jens/Documents/01_CoBrowser/02_Repositories/benchmarking/codex/codex-rs/core/../mcp-atlas/services/mcp_eval/gateway_tasks_v3.csv",
+  "eval_limit": 1,
+  "generated_at_unix": 1771786199,
+  "results": {
+    "CodeMode": {
+      "summary": {
+        "avg_context_tokens": 9263,
+        "avg_coverage": 0.0,
+        "avg_latency_ms": 14975,
+        "pass_count": 0,
+        "pass_rate": 0.0,
+        "total_tasks": 1
+      },
+      "tasks": [
+        {
+          "claims": [
+            "The response includes the exact total count of projects returned by the tool",
+            "The response names every project by its title"
+          ],
+          "prompt": "List all projects in Linear. Tell me how many there are and name each one.",
+          "task_id": "task_linear_001",
+          "task_result": {
+            "context_tokens": 9263,
+            "error": null,
+            "final_answer": "I was unable to retrieve a list of projects from Linear. This could mean you don't have any projects, or there might be an issue with my connection to your Linear account.",
+            "latency_ms": 14975,
+            "mode_name": "CodeMode",
+            "num_tool_calls": 1,
+            "task_id": "task_linear_001",
+            "tool_calls": [
+              {
+                "arguments": {
+                  "code": "const projects = unwrap(await codemode.Linear_list_projects({}));\nconst projectList = projects.nodes ?? [];\nconst projectNames = projectList.map(p => p.name);\nreturn { count: projectList.length, names: projectNames };"
+                },
+                "index": 0,
+                "name": "EXECUTE_CODE",
+                "result": "null",
+                "result_tokens": 1,
+                "stored_in_corpus": false
+              }
+            ]
+          },
+          "verification": {
+            "claim_scores": [
+              {
+                "claim": "The response includes the exact total count of projects returned by the tool",
+                "score": 0.0,
+                "verdict": "NOT_FULFILLED"
+              },
+              {
+                "claim": "The response names every project by its title",
+                "score": 0.0,
+                "verdict": "NOT_FULFILLED"
+              }
+            ],
+            "coverage": 0.0,
+            "passed": false
+          }
+        }
+      ]
+    }
+  },
+  "tool_modes": [
+    "CodeMode"
+  ],
+  "use_codex": false
+}

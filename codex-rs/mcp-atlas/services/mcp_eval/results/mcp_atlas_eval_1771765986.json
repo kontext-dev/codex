@@ -1,0 +1,456 @@
+{
+  "agent_model": "gemini-2.5-pro",
+  "codex_model": "gemini-2.5-pro",
+  "dataset_path": "/Users/jens/Documents/01_CoBrowser/02_Repositories/benchmarking/codex/codex-rs/core/../mcp-atlas/services/mcp_eval/gateway_tasks_v2.csv",
+  "eval_limit": 5,
+  "generated_at_unix": 1771765986,
+  "results": {
+    "Baseline": {
+      "summary": {
+        "avg_context_tokens": 17023,
+        "avg_coverage": 0.9,
+        "avg_latency_ms": 17406,
+        "pass_count": 5,
+        "pass_rate": 1.0,
+        "total_tasks": 5
+      },
+      "tasks": [
+        {
+          "task_id": "task_linear_001",
+          "task_result": {
+            "context_tokens": 12293,
+            "error": null,
+            "final_answer": "Here are all the projects in Linear:\n\n* Legal & Admin\n* Standardization Groups\n* Marketing\n* Sales\n* Engineering\n\nThere are 5 projects in total.",
+            "latency_ms": 22591,
+            "mode_name": "Baseline",
+            "num_tool_calls": 3,
+            "task_id": "task_linear_001"
+          },
+          "verification": {
+            "claim_scores": [
+              {
+                "claim": "The response lists the Linear projects",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              },
+              {
+                "claim": "The response includes the count of projects",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              }
+            ],
+            "coverage": 1.0,
+            "passed": true
+          }
+        },
+        {
+          "task_id": "task_linear_002",
+          "task_result": {
+            "context_tokens": 42747,
+            "error": null,
+            "final_answer": "The most recently created open issue is **ENG-277: Support multi-organization membership and org switching**.\n\nHere are the details:\n\n*   **Title:** Support multi-organization membership and org switching\n*   **Identifier:** ENG-277\n*   **Status:** Backlog\n*   **Description:** The current organization model is effectively single-org-per-user and causes lock-in. This issue refines the architecture to support multi-organization membership and active organization switching.\n\nI also found several other open issues. Let me know if you'd like to see the rest of them.",
+            "latency_ms": 23855,
+            "mode_name": "Baseline",
+            "num_tool_calls": 2,
+            "task_id": "task_linear_002"
+          },
+          "verification": {
+            "claim_scores": [
+              {
+                "claim": "The response lists open issues",
+                "score": 0.5,
+                "verdict": "PARTIAL"
+              },
+              {
+                "claim": "The response shows details of a specific issue including title and description",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              }
+            ],
+            "coverage": 0.75,
+            "passed": true
+          }
+        },
+        {
+          "task_id": "task_linear_003",
+          "task_result": {
+            "context_tokens": 9821,
+            "error": null,
+            "final_answer": "Here is a list of all the teams in Linear:\n\n**Kontext**\n* **ID:** 50a530fe-ef47-4964-9de8-6c298d1f78fb\n* **Name:** Kontext\n* **Icon:** Gears\n* **Created At:** 2025-10-17T07:46:18.808Z\n* **Updated At:** 2026-02-20T11:43:05.554Z",
+            "latency_ms": 13393,
+            "mode_name": "Baseline",
+            "num_tool_calls": 2,
+            "task_id": "task_linear_003"
+          },
+          "verification": {
+            "claim_scores": [
+              {
+                "claim": "The response lists the teams",
+                "score": 0.5,
+                "verdict": "PARTIAL"
+              },
+              {
+                "claim": "The response shows team details including name",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              }
+            ],
+            "coverage": 0.75,
+            "passed": true
+          }
+        },
+        {
+          "task_id": "task_linear_004",
+          "task_result": {
+            "context_tokens": 9612,
+            "error": null,
+            "final_answer": "Here are all of the issue labels in Linear:\n\n* Feature\n* Improvement\n* Bug",
+            "latency_ms": 13192,
+            "mode_name": "Baseline",
+            "num_tool_calls": 1,
+            "task_id": "task_linear_004"
+          },
+          "verification": {
+            "claim_scores": [
+              {
+                "claim": "The response lists available issue labels",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              }
+            ],
+            "coverage": 1.0,
+            "passed": true
+          }
+        },
+        {
+          "task_id": "task_linear_005",
+          "task_result": {
+            "context_tokens": 10643,
+            "error": null,
+            "final_answer": "Here are all the users in the Linear workspace:\n\n* **vishy@cobrowser.xyz** (vishy)\n* **michel@cobrowser.xyz** (michel)\n* **jens@cobrowser.xyz** (jens)\n\nHere are the details for **vishy@cobrowser.xyz**:\n\n* **ID**: 44db32dd-3231-4cdc-a869-d3d689f3c0b5\n* **Email**: vishy@cobrowser.xyz\n* **Display Name**: vishy\n* **Admin**: No\n* **Guest**: No\n* **Active**: Yes\n* **Created At**: 2026-01-27T08:21:00.970Z\n* **Updated At**: 2026-02-07T10:47:24.803Z\n* **Status**: Offline (last seen 2026-02-16T18:34:14.633Z)",
+            "latency_ms": 14000,
+            "mode_name": "Baseline",
+            "num_tool_calls": 2,
+            "task_id": "task_linear_005"
+          },
+          "verification": {
+            "claim_scores": [
+              {
+                "claim": "The response lists users in the workspace",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              },
+              {
+                "claim": "The response shows details of a specific user",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              }
+            ],
+            "coverage": 1.0,
+            "passed": true
+          }
+        }
+      ]
+    },
+    "Baseline+RLM": {
+      "summary": {
+        "avg_context_tokens": 16853,
+        "avg_coverage": 0.55,
+        "avg_latency_ms": 15085,
+        "pass_count": 2,
+        "pass_rate": 0.4,
+        "total_tasks": 5
+      },
+      "tasks": [
+        {
+          "task_id": "task_linear_001",
+          "task_result": {
+            "context_tokens": 10466,
+            "error": null,
+            "final_answer": "I am unable to list all projects at once due to an API limitation. I can, however, list the 50 most recently updated projects.",
+            "latency_ms": 10820,
+            "mode_name": "Baseline+RLM",
+            "num_tool_calls": 1,
+            "task_id": "task_linear_001"
+          },
+          "verification": {
+            "claim_scores": [
+              {
+                "claim": "The response lists the Linear projects",
+                "score": 0.0,
+                "verdict": "NOT_FULFILLED"
+              },
+              {
+                "claim": "The response includes the count of projects",
+                "score": 0.0,
+                "verdict": "NOT_FULFILLED"
+              }
+            ],
+            "coverage": 0.0,
+            "passed": false
+          }
+        },
+        {
+          "task_id": "task_linear_002",
+          "task_result": {
+            "context_tokens": 43436,
+            "error": null,
+            "final_answer": "The most recently created open issue is \"Support multi-organization membership and org switching\" (ENG-277), created on 2026-02-19. \n\nHere are the details:\n- **Title:** Support multi-organization membership and org switching\n- **Identifier:** ENG-277\n- **Status:** Backlog\n- **Created At:** 2026-02-19T22:11:10.000Z\n- **Description:** Our current organization model is effectively single-org-per-user and causes lock-in.\n\nToday:\n\n* New users are auto-assigned a tenant on first authenticated request.\n* A user can only belong to one tenant at a time (`users.tenantId`).\n* Accepting an invite to another org is blocked (`User belongs to a different tenant`).\n* There is no org-switching UX.\n\nThis issue refines the architecture to support **multi-organization membership + … (truncated, use `get_issue` for full description)\n- **URL:** https://linear.app/cobrowser/issue/ENG-277/support-multi-organization-membership-and-org-switching",
+            "latency_ms": 22472,
+            "mode_name": "Baseline+RLM",
+            "num_tool_calls": 6,
+            "task_id": "task_linear_002"
+          },
+          "verification": {
+            "claim_scores": [
+              {
+                "claim": "The response lists open issues",
+                "score": 0.0,
+                "verdict": "NOT_FULFILLED"
+              },
+              {
+                "claim": "The response shows details of a specific issue including title and description",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              }
+            ],
+            "coverage": 0.5,
+            "passed": false
+          }
+        },
+        {
+          "task_id": "task_linear_003",
+          "task_result": {
+            "context_tokens": 10086,
+            "error": null,
+            "final_answer": "Here are all the teams in Linear:\n\n**Kontext**\n* **ID:** 50a530fe-ef47-4964-9de8-6c298d1f78fb\n* **Icon:** Gears\n* **Name:** Kontext\n* **Created At:** 2025-10-17T07:46:18.808Z\n* **Updated At:** 2026-02-20T11:43:05.554Z",
+            "latency_ms": 17264,
+            "mode_name": "Baseline+RLM",
+            "num_tool_calls": 2,
+            "task_id": "task_linear_003"
+          },
+          "verification": {
+            "claim_scores": [
+              {
+                "claim": "The response lists the teams",
+                "score": 0.5,
+                "verdict": "PARTIAL"
+              },
+              {
+                "claim": "The response shows team details including name",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              }
+            ],
+            "coverage": 0.75,
+            "passed": true
+          }
+        },
+        {
+          "task_id": "task_linear_004",
+          "task_result": {
+            "context_tokens": 9847,
+            "error": null,
+            "final_answer": "The available issue labels in Linear are:\n\n* **Feature** (Color: #BB87FC)\n* **Improvement** (Color: #4EA7FC)\n* **Bug** (Color: #EB5757)",
+            "latency_ms": 12888,
+            "mode_name": "Baseline+RLM",
+            "num_tool_calls": 1,
+            "task_id": "task_linear_004"
+          },
+          "verification": {
+            "claim_scores": [
+              {
+                "claim": "The response lists available issue labels",
+                "score": 0.5,
+                "verdict": "PARTIAL"
+              }
+            ],
+            "coverage": 0.5,
+            "passed": false
+          }
+        },
+        {
+          "task_id": "task_linear_005",
+          "task_result": {
+            "context_tokens": 10431,
+            "error": null,
+            "final_answer": "Here are all the users in the Linear workspace:\n\n* vishy@cobrowser.xyz\n* michel@cobrowser.xyz\n* jens@cobrowser.xyz\n\nHere are the details for vishy@cobrowser.xyz:\n\n* **Name**: vishy@cobrowser.xyz\n* **Email**: vishy@cobrowser.xyz\n* **Display Name**: vishy\n* **Admin**: No\n* **Guest**: No\n* **Active**: Yes\n* **Created At**: 2026-01-27T08:21:00.970Z\n* **Updated At**: 2026-02-07T10:47:24.803Z\n* **Status**: Offline (last seen 2026-02-16T18:34:14.633Z)",
+            "latency_ms": 11981,
+            "mode_name": "Baseline+RLM",
+            "num_tool_calls": 1,
+            "task_id": "task_linear_005"
+          },
+          "verification": {
+            "claim_scores": [
+              {
+                "claim": "The response lists users in the workspace",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              },
+              {
+                "claim": "The response shows details of a specific user",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              }
+            ],
+            "coverage": 1.0,
+            "passed": true
+          }
+        }
+      ]
+    },
+    "CodeMode": {
+      "summary": {
+        "avg_context_tokens": 11990,
+        "avg_coverage": 0.7,
+        "avg_latency_ms": 17658,
+        "pass_count": 2,
+        "pass_rate": 0.4,
+        "total_tasks": 5
+      },
+      "tasks": [
+        {
+          "task_id": "task_linear_001",
+          "task_result": {
+            "context_tokens": 8508,
+            "error": null,
+            "final_answer": "There are a total of 5 projects in your Linear workspace. They are:\n\n*   Legal & Admin\n*   Standardization Groups\n*   Marketing\n*   Sales\n*   Engineering",
+            "latency_ms": 8581,
+            "mode_name": "CodeMode",
+            "num_tool_calls": 1,
+            "task_id": "task_linear_001"
+          },
+          "verification": {
+            "claim_scores": [
+              {
+                "claim": "The response lists the Linear projects",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              },
+              {
+                "claim": "The response includes the count of projects",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              }
+            ],
+            "coverage": 1.0,
+            "passed": true
+          }
+        },
+        {
+          "task_id": "task_linear_002",
+          "task_result": {
+            "context_tokens": 35242,
+            "error": null,
+            "final_answer": "Of course. Here are the details of the most recently created open issue:\n\n**Issue: ENG-277 - Support multi-organization membership and org switching**\n\n*   **Identifier**: ENG-277\n*   **Status**: Backlog\n*   **Team**: Kontext\n*   **Created**: February 19, 2026\n*   **URL**: [https://linear.app/cobrowser/issue/ENG-277/support-multi-organization-membership-and-org-switching](https://linear.app/cobrowser/issue/ENG-277/support-multi-organization-membership-and-org-switching)\n*   **Linked Attachment**: [GitHub Issue #249](https://github.com/kontext-dev/spaces/issues/249)\n\n**Summary:**\nThe current system architecture only allows a user to belong to a single organization, which causes lock-in and prevents standard collaboration flows. This issue proposes a significant refactor to support multi-organization membership and allow users to easily switch between different organizations, similar to the user experience on platforms like GitHub or Clerk. The issue outlines a detailed, multi-phase migration plan to achieve this, including data model changes, API updates, and frontend enhancements.",
+            "latency_ms": 39021,
+            "mode_name": "CodeMode",
+            "num_tool_calls": 2,
+            "task_id": "task_linear_002"
+          },
+          "verification": {
+            "claim_scores": [
+              {
+                "claim": "The response lists open issues",
+                "score": 0.0,
+                "verdict": "NOT_FULFILLED"
+              },
+              {
+                "claim": "The response shows details of a specific issue including title and description",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              }
+            ],
+            "coverage": 0.5,
+            "passed": false
+          }
+        },
+        {
+          "task_id": "task_linear_003",
+          "task_result": {
+            "context_tokens": 5632,
+            "error": null,
+            "final_answer": "There is one team in your Linear workspace:\n\n**Teams:**\n*   Kontext\n\n**Details for the first team, \"Kontext\":**\n*   **ID:** `50a530fe-ef47-4964-9de8-6c298d1f78fb`\n*   **Name:** Kontext\n*   **Icon:** Gears\n*   **Created At:** 2025-10-17T07:46:18.808Z\n*   **Updated At:** 2026-02-20T11:43:05.554Z",
+            "latency_ms": 23757,
+            "mode_name": "CodeMode",
+            "num_tool_calls": 1,
+            "task_id": "task_linear_003"
+          },
+          "verification": {
+            "claim_scores": [
+              {
+                "claim": "The response lists the teams",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              },
+              {
+                "claim": "The response shows team details including name",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              }
+            ],
+            "coverage": 1.0,
+            "passed": true
+          }
+        },
+        {
+          "task_id": "task_linear_004",
+          "task_result": {
+            "context_tokens": 4650,
+            "error": null,
+            "final_answer": "The available issue labels in Linear are:\n\n*   **Feature**: color: `#BB87FC`\n*   **Improvement**: color: `#4EA7FC`\n*   **Bug**: color: `#EB5757`",
+            "latency_ms": 5212,
+            "mode_name": "CodeMode",
+            "num_tool_calls": 1,
+            "task_id": "task_linear_004"
+          },
+          "verification": {
+            "claim_scores": [
+              {
+                "claim": "The response lists available issue labels",
+                "score": 0.5,
+                "verdict": "PARTIAL"
+              }
+            ],
+            "coverage": 0.5,
+            "passed": false
+          }
+        },
+        {
+          "task_id": "task_linear_005",
+          "task_result": {
+            "context_tokens": 5922,
+            "error": null,
+            "final_answer": "Of course. Here is a list of all the users in the workspace:\n\n**Users:**\n*   **vishy@cobrowser.xyz**\n    *   **Display Name:** vishy\n    *   **Email:** vishy@cobrowser.xyz\n*   **michel@cobrowser.xyz**\n    *   **Display Name:** michel\n    *   **Email:** michel@cobrowser.xyz\n*   **jens@cobrowser.xyz**\n    *   **Display Name:** jens\n    *   **Email:** jens@cobrowser.xyz\n\nI was unable to retrieve more detailed information for a specific user at this time.",
+            "latency_ms": 11719,
+            "mode_name": "CodeMode",
+            "num_tool_calls": 1,
+            "task_id": "task_linear_005"
+          },
+          "verification": {
+            "claim_scores": [
+              {
+                "claim": "The response lists users in the workspace",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              },
+              {
+                "claim": "The response shows details of a specific user",
+                "score": 0.0,
+                "verdict": "NOT_FULFILLED"
+              }
+            ],
+            "coverage": 0.5,
+            "passed": false
+          }
+        }
+      ]
+    }
+  },
+  "tool_modes": [
+    "Baseline",
+    "CodeMode",
+    "Baseline+RLM"
+  ],
+  "use_codex": false
+}

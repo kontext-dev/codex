@@ -1,0 +1,68 @@
+{
+  "agent_model": "gemini-2.5-pro",
+  "codex_model": "gemini-2.5-pro",
+  "dataset_path": "/Users/jens/Documents/01_CoBrowser/02_Repositories/benchmarking/codex/codex-rs/core/../mcp-atlas/services/mcp_eval/gateway_tasks_v3.csv",
+  "eval_limit": 1,
+  "generated_at_unix": 1771795825,
+  "results": {
+    "Baseline": {
+      "summary": {
+        "avg_context_tokens": 19836,
+        "avg_coverage": 1.0,
+        "avg_latency_ms": 8726,
+        "pass_count": 1,
+        "pass_rate": 1.0,
+        "total_tasks": 1
+      },
+      "tasks": [
+        {
+          "claims": [
+            "The response includes the exact total count of projects returned by the tool",
+            "The response names every project by its title"
+          ],
+          "prompt": "List all projects in Linear. Tell me how many there are and name each one.",
+          "task_id": "task_linear_001",
+          "task_result": {
+            "context_tokens": 19836,
+            "error": null,
+            "final_answer": "There are 5 projects in Linear. They are:\n- Legal & Admin\n- Standardization Groups\n- Marketing\n- Sales\n- Engineering",
+            "latency_ms": 8726,
+            "mode_name": "Baseline",
+            "num_tool_calls": 1,
+            "task_id": "task_linear_001",
+            "tool_calls": [
+              {
+                "arguments": {},
+                "index": 0,
+                "name": "Linear_list_projects",
+                "result": "{\"content\":[{\"type\":\"resource\",\"resource\":{\"uri\":\"inline://execute-tool\",\"mimeType\":\"application/json\",\"text\":\"{\\\"content\\\":[{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"{\\\\\\\"projects\\\\\\\":[{\\\\\\\"id\\\\\\\":\\\\\\\"ece20b87-24e8-4b29-b44f-ad213603134c\\\\\\\",\\\\\\\"icon\\\\\\\":null,\\\\\\\"color\\\\\\\":\\\\\\\"#bec2c8\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Legal & Admin\\\\\\\",\\\\\\\"summary\\\\\\\":\\\\\\\"Legal and admin work for the Q1 plan.\\\\\\\",\\\\\\\"description\\\\\\\":\\\\\\\"\\\\\\\",\\\\\\\"url\\\\\\\":\\\\\\\"https://linear.app/cobrowser/project/legal-and-admin-e14b71e28c1a\\\\\\\",\\\\\\\"createdAt\\\\\\\":\\\\\\\"2026-01-21T14:10:47.582Z\\\\\\\",\\\\\\\"updatedAt\\\\\\\":\\\\\\\"2026-01-21T15:39:44.252Z\\\\\\\",\\\\\\\"startDate\\\\\\\":null,\\\\\\\"targetDate\\\\\\\":\\\\\\\"2026-04-01\\\\\\\",\\\\\\\"labels\\\\\\\":[],\\\\\\\"initiatives\\\\\\\":[],\\\\\\\"lead\\\\\\\":{},\\\\\\\"status\\\\\\\":{\\\\\\\"id\\\\\\\":\\\\\\\"03be2067-8e60-4beb-af6f-421a75bc9e59\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Backlog\\\\\\\"}},{\\\\\\\"id\\\\\\\":\\\\\\\"9bba1a2d-97da-4696-a73e-95d97f45ca4f\\\\\\\",\\\\\\\"icon\\\\\\\":null,\\\\\\\"color\\\\\\\":\\\\\\\"#bec2c8\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Standardization Groups\\\\\\\",\\\\\\\"summary\\\\\\\":\\\\\\\"Standards and community participation for the Q1 plan.\\\\\\\",\\\\\\\"description\\\\\\\":\\\\\\\"\\\\\\\",\\\\\\\"url\\\\\\\":\\\\\\\"https://linear.app/cobrowser/project/standardization-groups-32e6a2bb3544\\\\\\\",\\\\\\\"createdAt\\\\\\\":\\\\\\\"2026-01-21T14:10:46.735Z\\\\\\\",\\\\\\\"updatedAt\\\\\\\":\\\\\\\"2026-01-21T15:39:44.267Z\\\\\\\",\\\\\\\"startDate\\\\\\\":null,\\\\\\\"targetDate\\\\\\\":\\\\\\\"2026-04-01\\\\\\\",\\\\\\\"labels\\\\\\\":[],\\\\\\\"initiatives\\\\\\\":[],\\\\\\\"lead\\\\\\\":{},\\\\\\\"status\\\\\\\":{\\\\\\\"id\\\\\\\":\\\\\\\"03be2067-8e60-4beb-af6f-421a75bc9e59\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Backlog\\\\\\\"}},{\\\\\\\"id\\\\\\\":\\\\\\\"a612138a-2c5b-476b-bf73-628dd24cdfd0\\\\\\\",\\\\\\\"icon\\\\\\\":null,\\\\\\\"color\\\\\\\":\\\\\\\"#bec2c8\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Marketing\\\\\\\",\\\\\\\"summary\\\\\\\":\\\\\\\"Marketing goals for the Q1 plan.\\\\\\\",\\\\\\\"description\\\\\\\":\\\\\\\"\\\\\\\",\\\\\\\"url\\\\\\\":\\\\\\\"https://linear.app/cobrowser/project/marketing-5946aa1f4564\\\\\\\",\\\\\\\"createdAt\\\\\\\":\\\\\\\"2026-01-21T14:10:45.864Z\\\\\\\",\\\\\\\"updatedAt\\\\\\\":\\\\\\\"2026-01-21T15:39:44.281Z\\\\\\\",\\\\\\\"startDate\\\\\\\":null,\\\\\\\"targetDate\\\\\\\":\\\\\\\"2026-04-01\\\\\\\",\\\\\\\"labels\\\\\\\":[],\\\\\\\"initiatives\\\\\\\":[],\\\\\\\"lead\\\\\\\":{},\\\\\\\"status\\\\\\\":{\\\\\\\"id\\\\\\\":\\\\\\\"03be2067-8e60-4beb-af6f-421a75bc9e59\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Backlog\\\\\\\"}},{\\\\\\\"id\\\\\\\":\\\\\\\"d58e8e0a-3108-4ab3-8c30-c0da5b963e67\\\\\\\",\\\\\\\"icon\\\\\\\":null,\\\\\\\"color\\\\\\\":\\\\\\\"#bec2c8\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Sales\\\\\\\",\\\\\\\"summary\\\\\\\":\\\\\\\"Sales goals for the Q1 plan.\\\\\\\",\\\\\\\"description\\\\\\\":\\\\\\\"\\\\\\\",\\\\\\\"url\\\\\\\":\\\\\\\"https://linear.app/cobrowser/project/sales-b01f4df56c0a\\\\\\\",\\\\\\\"createdAt\\\\\\\":\\\\\\\"2026-01-21T14:10:44.368Z\\\\\\\",\\\\\\\"updatedAt\\\\\\\":\\\\\\\"2026-01-21T15:39:44.300Z\\\\\\\",\\\\\\\"startDate\\\\\\\":null,\\\\\\\"targetDate\\\\\\\":\\\\\\\"2026-04-01\\\\\\\",\\\\\\\"labels\\\\\\\":[],\\\\\\\"initiatives\\\\\\\":[],\\\\\\\"lead\\\\\\\":{},\\\\\\\"status\\\\\\\":{\\\\\\\"id\\\\\\\":\\\\\\\"03be2067-8e60-4beb-af6f-421a75bc9e59\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Backlog\\\\\\\"}},{\\\\\\\"id\\\\\\\":\\\\\\\"4b4dcb10-cab7-4ec9-a7e7-554603a63cf3\\\\\\\",\\\\\\\"icon\\\\\\\":null,\\\\\\\"color\\\\\\\":\\\\\\\"#bec2c8\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Engineering\\\\\\\",\\\\\\\"summary\\\\\\\":\\\\\\\"Engineering deliverables for the Q1 plan.\\\\\\\",\\\\\\\"description\\\\\\\":\\\\\\\"\\\\\\\",\\\\\\\"url\\\\\\\":\\\\\\\"https://linear.app/cobrowser/project/engineering-329049b2b1d3\\\\\\\",\\\\\\\"createdAt\\\\\\\":\\\\\\\"2026-01-21T14:10:42.873Z\\\\\\\",\\\\\\\"updatedAt\\\\\\\":\\\\\\\"2026-01-21T15:39:44.321Z\\\\\\\",\\\\\\\"startDate\\\\\\\":null,\\\\\\\"targetDate\\\\\\\":\\\\\\\"2026-04-01\\\\\\\",\\\\\\\"labels\\\\\\\":[],\\\\\\\"initiatives\\\\\\\":[],\\\\\\\"lead\\\\\\\":{},\\\\\\\"status\\\\\\\":{\\\\\\\"id\\\\\\\":\\\\\\\"03be2067-8e60-4beb-af6f-421a75bc9e59\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Backlog\\\\\\\"}}],\\\\\\\"hasNextPage\\\\\\\":false}\\\"}]}\"}}]}",
+                "result_tokens": 850,
+                "stored_in_corpus": false
+              }
+            ]
+          },
+          "verification": {
+            "claim_scores": [
+              {
+                "claim": "The response includes the exact total count of projects returned by the tool",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              },
+              {
+                "claim": "The response names every project by its title",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              }
+            ],
+            "coverage": 1.0,
+            "passed": true
+          }
+        }
+      ]
+    }
+  },
+  "tool_modes": [
+    "Baseline"
+  ],
+  "use_codex": false
+}

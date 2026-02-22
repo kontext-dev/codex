@@ -1,0 +1,100 @@
+{
+  "agent_model": "gemini-2.5-pro",
+  "codex_model": "gemini-2.5-pro",
+  "dataset_path": "/Users/jens/Documents/01_CoBrowser/02_Repositories/benchmarking/codex/codex-rs/core/../mcp-atlas/services/mcp_eval/gateway_tasks_v3.csv",
+  "eval_limit": 1,
+  "generated_at_unix": 1771794385,
+  "results": {
+    "CodeMode": {
+      "summary": {
+        "avg_context_tokens": 9306,
+        "avg_coverage": 0.0,
+        "avg_latency_ms": 47277,
+        "pass_count": 0,
+        "pass_rate": 0.0,
+        "total_tasks": 1
+      },
+      "tasks": [
+        {
+          "claims": [
+            "The response includes the exact total count of projects returned by the tool",
+            "The response names every project by its title"
+          ],
+          "prompt": "List all projects in Linear. Tell me how many there are and name each one.",
+          "task_id": "task_linear_001",
+          "task_result": {
+            "context_tokens": 9306,
+            "error": null,
+            "final_answer": "I am incredibly sorry, but it appears there is a persistent issue with the code execution environment that is preventing me from successfully running the code to list your Linear projects. Despite several attempts with different and valid JavaScript syntax, I am consistently receiving a syntax error.\n\nThis indicates a problem with the environment in which the code is being run, rather than the code itself. Unfortunately, this means I am unable to fulfill your request at this time. I apologize for the inconvenience.",
+            "latency_ms": 47277,
+            "mode_name": "CodeMode",
+            "num_tool_calls": 4,
+            "task_id": "task_linear_001",
+            "tool_calls": [
+              {
+                "arguments": {
+                  "code": "async () => {\n  const projects = await codemode.Linear_list_projects({});\n  const items = Array.isArray(projects) ? projects : (projects?.nodes ?? []);\n  const names = items.map(i => i.name);\n  return { count: names.length, names };\n}"
+                },
+                "index": 0,
+                "name": "EXECUTE_CODE",
+                "result": "Code execution error: Invalid or unexpected token",
+                "result_tokens": 12,
+                "stored_in_corpus": false
+              },
+              {
+                "arguments": {
+                  "code": "async () => {\n  const result = await codemode.Linear_list_projects({});\n  const projects = result.nodes || [];\n  const names = projects.map(p => p.name);\n  return { \n    count: names.length, \n    names: names \n  };\n}"
+                },
+                "index": 1,
+                "name": "EXECUTE_CODE",
+                "result": "Code execution error: Invalid or unexpected token",
+                "result_tokens": 12,
+                "stored_in_corpus": false
+              },
+              {
+                "arguments": {
+                  "code": "async () => {\n  const result = await codemode.Linear_list_projects({});\n  const items = result.nodes || result || [];\n  const names = items.map(item => item.name);\n  return {\n    count: names.length,\n    names: names\n  };\n}"
+                },
+                "index": 2,
+                "name": "EXECUTE_CODE",
+                "result": "Code execution error: Invalid or unexpected token",
+                "result_tokens": 12,
+                "stored_in_corpus": false
+              },
+              {
+                "arguments": {
+                  "code": "async () => {\n  const result = await codemode.Linear_list_projects({});\n  const projects = result.nodes;\n  const names = [];\n  for (let i = 0; i < projects.length; i++) {\n    names.push(projects[i].name);\n  }\n  return {\n    count: names.length,\n    names: names\n  };\n}"
+                },
+                "index": 3,
+                "name": "EXECUTE_CODE",
+                "result": "Code execution error: Invalid or unexpected token",
+                "result_tokens": 12,
+                "stored_in_corpus": false
+              }
+            ]
+          },
+          "verification": {
+            "claim_scores": [
+              {
+                "claim": "The response includes the exact total count of projects returned by the tool",
+                "score": 0.0,
+                "verdict": "NOT_FULFILLED"
+              },
+              {
+                "claim": "The response names every project by its title",
+                "score": 0.0,
+                "verdict": "NOT_FULFILLED"
+              }
+            ],
+            "coverage": 0.0,
+            "passed": false
+          }
+        }
+      ]
+    }
+  },
+  "tool_modes": [
+    "CodeMode"
+  ],
+  "use_codex": false
+}

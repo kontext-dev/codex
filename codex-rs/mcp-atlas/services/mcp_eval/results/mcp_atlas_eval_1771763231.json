@@ -1,0 +1,330 @@
+{
+  "agent_model": "gpt-4o",
+  "codex_model": "gpt-4o",
+  "dataset_path": "/Users/jens/Documents/01_CoBrowser/02_Repositories/benchmarking/codex/codex-rs/core/../mcp-atlas/services/mcp_eval/gateway_tasks_v2.csv",
+  "eval_limit": 5,
+  "generated_at_unix": 1771763231,
+  "results": {
+    "Baseline": {
+      "summary": {
+        "avg_context_tokens": 762,
+        "avg_coverage": 0.0,
+        "avg_latency_ms": 423,
+        "pass_count": 0,
+        "pass_rate": 0.0,
+        "total_tasks": 5
+      },
+      "tasks": [
+        {
+          "task_id": "task_deepwiki_001",
+          "task_result": {
+            "context_tokens": 765,
+            "error": "Agent LLM call failed: insufficient_quota: You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors. (code: insufficient_quota)",
+            "final_answer": "",
+            "latency_ms": 620,
+            "mode_name": "Baseline",
+            "num_tool_calls": 0,
+            "task_id": "task_deepwiki_001"
+          },
+          "verification": {
+            "claim_scores": [],
+            "coverage": 0.0,
+            "passed": false
+          }
+        },
+        {
+          "task_id": "task_deepwiki_002",
+          "task_result": {
+            "context_tokens": 761,
+            "error": "Agent LLM call failed: insufficient_quota: You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors. (code: insufficient_quota)",
+            "final_answer": "",
+            "latency_ms": 606,
+            "mode_name": "Baseline",
+            "num_tool_calls": 0,
+            "task_id": "task_deepwiki_002"
+          },
+          "verification": {
+            "claim_scores": [],
+            "coverage": 0.0,
+            "passed": false
+          }
+        },
+        {
+          "task_id": "task_deepwiki_003",
+          "task_result": {
+            "context_tokens": 761,
+            "error": "Agent LLM call failed: insufficient_quota: You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors. (code: insufficient_quota)",
+            "final_answer": "",
+            "latency_ms": 241,
+            "mode_name": "Baseline",
+            "num_tool_calls": 0,
+            "task_id": "task_deepwiki_003"
+          },
+          "verification": {
+            "claim_scores": [],
+            "coverage": 0.0,
+            "passed": false
+          }
+        },
+        {
+          "task_id": "task_deepwiki_004",
+          "task_result": {
+            "context_tokens": 761,
+            "error": "Agent LLM call failed: insufficient_quota: You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors. (code: insufficient_quota)",
+            "final_answer": "",
+            "latency_ms": 402,
+            "mode_name": "Baseline",
+            "num_tool_calls": 0,
+            "task_id": "task_deepwiki_004"
+          },
+          "verification": {
+            "claim_scores": [
+              {
+                "claim": "The response explains server-side rendering",
+                "score": 0.0,
+                "verdict": "NOT_FULFILLED"
+              }
+            ],
+            "coverage": 0.0,
+            "passed": false
+          }
+        },
+        {
+          "task_id": "task_deepwiki_005",
+          "task_result": {
+            "context_tokens": 763,
+            "error": "Agent LLM call failed: insufficient_quota: You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors. (code: insufficient_quota)",
+            "final_answer": "",
+            "latency_ms": 249,
+            "mode_name": "Baseline",
+            "num_tool_calls": 0,
+            "task_id": "task_deepwiki_005"
+          },
+          "verification": {
+            "claim_scores": [],
+            "coverage": 0.0,
+            "passed": false
+          }
+        }
+      ]
+    },
+    "Baseline+RLM": {
+      "summary": {
+        "avg_context_tokens": 1420,
+        "avg_coverage": 0.0,
+        "avg_latency_ms": 1822,
+        "pass_count": 0,
+        "pass_rate": 0.0,
+        "total_tasks": 5
+      },
+      "tasks": [
+        {
+          "task_id": "task_deepwiki_001",
+          "task_result": {
+            "context_tokens": 2743,
+            "error": null,
+            "final_answer": "The documentation for the `facebook/react` repository is structured as follows:\n\n1. **Overview**\n   - Repository Structure and Packages\n\n2. **Feature Flags System**\n\n3. **Build System and Package Distribution**\n   - Build Pipeline and Module Forking\n   - Release Channels and Versioning\n   - CI/CD and Artifact Management\n\n4. **React Reconciler**\n   - Fiber Architecture and Data Structures\n   - Work Loop and Rendering Phases\n   - React Hooks System\n   - Lane-Based Scheduling and Priorities\n   - Suspense and Error Boundaries\n   - Host Configuration Abstraction\n   - Profiling and Performance Tracking\n\n5. **Server-Side Rendering**\n   - React Fizz (Streaming SSR)\n   - React Server Components (Flight)\n   - Build Integration for Server Components\n   - Server Actions and Bidirectional Communication\n\n6. **Platform Implementations**\n   - React DOM Implementation\n   - React Native Renderers\n   - Hydration System\n   - View Transitions and Gesture Scheduling\n\n7. **Developer Tools and Debugging**\n   - React DevTools Architecture\n   - DevTools Distribution and Integration\n   - ESLint Plugin for React Hooks",
+            "latency_ms": 3379,
+            "mode_name": "Baseline+RLM",
+            "num_tool_calls": 1,
+            "task_id": "task_deepwiki_001"
+          },
+          "verification": {
+            "claim_scores": [],
+            "coverage": 0.0,
+            "passed": false
+          }
+        },
+        {
+          "task_id": "task_deepwiki_002",
+          "task_result": {
+            "context_tokens": 875,
+            "error": "Agent LLM call failed: insufficient_quota: You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors. (code: insufficient_quota)",
+            "final_answer": "",
+            "latency_ms": 278,
+            "mode_name": "Baseline+RLM",
+            "num_tool_calls": 0,
+            "task_id": "task_deepwiki_002"
+          },
+          "verification": {
+            "claim_scores": [
+              {
+                "claim": "The response provides an explanation of Fiber architecture",
+                "score": 0.0,
+                "verdict": "NOT_FULFILLED"
+              }
+            ],
+            "coverage": 0.0,
+            "passed": false
+          }
+        },
+        {
+          "task_id": "task_deepwiki_003",
+          "task_result": {
+            "context_tokens": 1731,
+            "error": "Agent LLM call failed: insufficient_quota: You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors. (code: insufficient_quota)",
+            "final_answer": "",
+            "latency_ms": 5020,
+            "mode_name": "Baseline+RLM",
+            "num_tool_calls": 1,
+            "task_id": "task_deepwiki_003"
+          },
+          "verification": {
+            "claim_scores": [],
+            "coverage": 0.0,
+            "passed": false
+          }
+        },
+        {
+          "task_id": "task_deepwiki_004",
+          "task_result": {
+            "context_tokens": 875,
+            "error": "Agent LLM call failed: insufficient_quota: You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors. (code: insufficient_quota)",
+            "final_answer": "",
+            "latency_ms": 274,
+            "mode_name": "Baseline+RLM",
+            "num_tool_calls": 0,
+            "task_id": "task_deepwiki_004"
+          },
+          "verification": {
+            "claim_scores": [],
+            "coverage": 0.0,
+            "passed": false
+          }
+        },
+        {
+          "task_id": "task_deepwiki_005",
+          "task_result": {
+            "context_tokens": 877,
+            "error": "Agent LLM call failed: insufficient_quota: You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors. (code: insufficient_quota)",
+            "final_answer": "",
+            "latency_ms": 160,
+            "mode_name": "Baseline+RLM",
+            "num_tool_calls": 0,
+            "task_id": "task_deepwiki_005"
+          },
+          "verification": {
+            "claim_scores": [
+              {
+                "claim": "The response shows the wiki structure for Next.js",
+                "score": 0.0,
+                "verdict": "NOT_FULFILLED"
+              }
+            ],
+            "coverage": 0.0,
+            "passed": false
+          }
+        }
+      ]
+    },
+    "CodeMode": {
+      "summary": {
+        "avg_context_tokens": 874,
+        "avg_coverage": 0.0,
+        "avg_latency_ms": 306,
+        "pass_count": 0,
+        "pass_rate": 0.0,
+        "total_tasks": 5
+      },
+      "tasks": [
+        {
+          "task_id": "task_deepwiki_001",
+          "task_result": {
+            "context_tokens": 880,
+            "error": "Agent LLM call failed: insufficient_quota: You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors. (code: insufficient_quota)",
+            "final_answer": "",
+            "latency_ms": 362,
+            "mode_name": "CodeMode",
+            "num_tool_calls": 0,
+            "task_id": "task_deepwiki_001"
+          },
+          "verification": {
+            "claim_scores": [],
+            "coverage": 0.0,
+            "passed": false
+          }
+        },
+        {
+          "task_id": "task_deepwiki_002",
+          "task_result": {
+            "context_tokens": 864,
+            "error": null,
+            "final_answer": "Let me retrieve information from DeepWiki to explain the Fiber architecture in React.",
+            "latency_ms": 578,
+            "mode_name": "CodeMode",
+            "num_tool_calls": 0,
+            "task_id": "task_deepwiki_002"
+          },
+          "verification": {
+            "claim_scores": [],
+            "coverage": 0.0,
+            "passed": false
+          }
+        },
+        {
+          "task_id": "task_deepwiki_003",
+          "task_result": {
+            "context_tokens": 876,
+            "error": "Agent LLM call failed: insufficient_quota: You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors. (code: insufficient_quota)",
+            "final_answer": "",
+            "latency_ms": 147,
+            "mode_name": "CodeMode",
+            "num_tool_calls": 0,
+            "task_id": "task_deepwiki_003"
+          },
+          "verification": {
+            "claim_scores": [],
+            "coverage": 0.0,
+            "passed": false
+          }
+        },
+        {
+          "task_id": "task_deepwiki_004",
+          "task_result": {
+            "context_tokens": 876,
+            "error": "Agent LLM call failed: insufficient_quota: You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors. (code: insufficient_quota)",
+            "final_answer": "",
+            "latency_ms": 281,
+            "mode_name": "CodeMode",
+            "num_tool_calls": 0,
+            "task_id": "task_deepwiki_004"
+          },
+          "verification": {
+            "claim_scores": [],
+            "coverage": 0.0,
+            "passed": false
+          }
+        },
+        {
+          "task_id": "task_deepwiki_005",
+          "task_result": {
+            "context_tokens": 878,
+            "error": "Agent LLM call failed: insufficient_quota: You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors. (code: insufficient_quota)",
+            "final_answer": "",
+            "latency_ms": 164,
+            "mode_name": "CodeMode",
+            "num_tool_calls": 0,
+            "task_id": "task_deepwiki_005"
+          },
+          "verification": {
+            "claim_scores": [
+              {
+                "claim": "The response shows the wiki structure for Next.js",
+                "score": 0.0,
+                "verdict": "NOT_FULFILLED"
+              }
+            ],
+            "coverage": 0.0,
+            "passed": false
+          }
+        }
+      ]
+    }
+  },
+  "tool_modes": [
+    "Baseline",
+    "CodeMode",
+    "Baseline+RLM"
+  ],
+  "use_codex": false
+}

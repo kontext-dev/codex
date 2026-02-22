@@ -1,0 +1,141 @@
+{
+  "agent_model": "gemini-2.5-pro",
+  "codex_model": "gemini-2.5-pro",
+  "dataset_path": "/Users/jens/Documents/01_CoBrowser/02_Repositories/benchmarking/codex/codex-rs/core/../mcp-atlas/services/mcp_eval/gateway_tasks_v3.csv",
+  "eval_limit": 2,
+  "generated_at_unix": 1771782441,
+  "results": {
+    "RLM": {
+      "summary": {
+        "avg_context_tokens": 10019,
+        "avg_coverage": 0.75,
+        "avg_latency_ms": 14914,
+        "pass_count": 1,
+        "pass_rate": 0.5,
+        "total_tasks": 2
+      },
+      "tasks": [
+        {
+          "claims": [
+            "The response includes the exact total count of projects returned by the tool",
+            "The response names every project by its title"
+          ],
+          "prompt": "List all projects in Linear. Tell me how many there are and name each one.",
+          "task_id": "task_linear_001",
+          "task_result": {
+            "context_tokens": 10722,
+            "error": null,
+            "final_answer": "There are a total of 5 projects in Linear. The project names are:\n- Legal & Admin\n- Standardization Groups\n- Marketing\n- Sales\n- Engineering\n",
+            "latency_ms": 17108,
+            "mode_name": "RLM",
+            "num_tool_calls": 2,
+            "task_id": "task_linear_001",
+            "tool_calls": [
+              {
+                "arguments": {
+                  "code": "projects_data = execute_tool(\"Linear:list_projects\")\nprint(projects_data)"
+                },
+                "index": 0,
+                "name": "repl_execute",
+                "result": "{\"content\":[{\"type\":\"resource\",\"resource\":{\"uri\":\"inline://execute-tool\",\"mimeType\":\"application/json\",\"text\":\"{\\\"content\\\":[{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"{\\\\\\\"projects\\\\\\\":[{\\\\\\\"id\\\\\\\":\\\\\\\"ece20b87-24e8-4b29-b44f-ad213603134c\\\\\\\",\\\\\\\"icon\\\\\\\":null,\\\\\\\"color\\\\\\\":\\\\\\\"#bec2c8\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Legal & Admin\\\\\\\",\\\\\\\"summary\\\\\\\":\\\\\\\"Legal and admin work for the Q1 plan.\\\\\\\",\\\\\\\"description\\\\\\\":\\\\\\\"\\\\\\\",\\\\\\\"url\\\\\\\":\\\\\\\"https://linear.app/cobrowser/project/legal-and-admin-e14b71e28c1a\\\\\\\",\\\\\\\"createdAt\\\\\\\":\\\\\\\"2026-01-21T14:10:47.582Z\\\\\\\",\\\\\\\"updatedAt\\\\\\\":\\\\\\\"2026-01-21T15:39:44.252Z\\\\\\\",\\\\\\\"startDate\\\\\\\":null,\\\\\\\"targetDate\\\\\\\":\\\\\\\"2026-04-01\\\\\\\",\\\\\\\"labels\\\\\\\":[],\\\\\\\"initiatives\\\\\\\":[],\\\\\\\"lead\\\\\\\":{},\\\\\\\"status\\\\\\\":{\\\\\\\"id\\\\\\\":\\\\\\\"03be2067-8e60-4beb-af6f-421a75bc9e59\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Backlog\\\\\\\"}},{\\\\\\\"id\\\\\\\":\\\\\\\"9bba1a2d-97da-4696-a73e-95d97f45ca4f\\\\\\\",\\\\\\\"icon\\\\\\\":null,\\\\\\\"color\\\\\\\":\\\\\\\"#bec2c8\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Standardization Groups\\\\\\\",\\\\\\\"summary\\\\\\\":\\\\\\\"Standards and community participation for the Q1 plan.\\\\\\\",\\\\\\\"description\\\\\\\":\\\\\\\"\\\\\\\",\\\\\\\"url\\\\\\\":\\\\\\\"https://linear.app/cobrowser/project/standardization-groups-32e6a2bb3544\\\\\\\",\\\\\\\"createdAt\\\\\\\":\\\\\\\"2026-01-21T14:10:46.735Z\\\\\\\",\\\\\\\"updatedAt\\\\\\\":\\\\\\\"2026-01-21T15:39:44.267Z\\\\\\\",\\\\\\\"startDate\\\\\\\":null,\\\\\\\"targetDate\\\\\\\":\\\\\\\"2026-04-01\\\\\\\",\\\\\\\"labels\\\\\\\":[],\\\\\\\"initiatives\\\\\\\":[],\\\\\\\"lead\\\\\\\":{},\\\\\\\"status\\\\\\\":{\\\\\\\"id\\\\\\\":\\\\\\\"03be2067-8e60-4beb-af6f-421a75bc9e59\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Backlog\\\\\\\"}},{\\\\\\\"id\\\\\\\":\\\\\\\"a612138a-2c5b-476b-bf73-628dd24cdfd0\\\\\\\",\\\\\\\"icon\\\\\\\":null,\\\\\\\"color\\\\\\\":\\\\\\\"#bec2c8\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Marketing\\\\\\\",\\\\\\\"summary\\\\\\\":\\\\\\\"Marketing goals for the Q1 plan.\\\\\\\",\\\\\\\"description\\\\\\\":\\\\\\\"\\\\\\\",\\\\\\\"url\\\\\\\":\\\\\\\"https://linear.app/cobrowser/project/marketing-5946aa1f4564\\\\\\\",\\\\\\\"createdAt\\\\\\\":\\\\\\\"2026-01-21T14:10:45.864Z\\\\\\\",\\\\\\\"updatedAt\\\\\\\":\\\\\\\"2026-01-21T15:39:44.281Z\\\\\\\",\\\\\\\"startDate\\\\\\\":null,\\\\\\\"targetDate\\\\\\\":\\\\\\\"2026-04-01\\\\\\\",\\\\\\\"labels\\\\\\\":[],\\\\\\\"initiatives\\\\\\\":[],\\\\\\\"lead\\\\\\\":{},\\\\\\\"status\\\\\\\":{\\\\\\\"id\\\\\\\":\\\\\\\"03be2067-8e60-4beb-af6f-421a75bc9e59\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Backlog\\\\\\\"}},{\\\\\\\"id\\\\\\\":\\\\\\\"d58e8e0a-3108-4ab3-8c30-c0da5b963e67\\\\\\\",\\\\\\\"icon\\\\\\\":null,\\\\\\\"color\\\\\\\":\\\\\\\"#bec2c8\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Sales\\\\\\\",\\\\\\\"summary\\\\\\\":\\\\\\\"Sales goals for the Q1 plan.\\\\\\\",\\\\\\\"description\\\\\\\":\\\\\\\"\\\\\\\",\\\\\\\"url\\\\\\\":\\\\\\\"https://linear.app/cobrowser/project/sales-b01f4df56c0a\\\\\\\",\\\\\\\"createdAt\\\\\\\":\\\\\\\"2026-01-21T14:10:44.368Z\\\\\\\",\\\\\\\"updatedAt\\\\\\\":\\\\\\\"2026-01-21T15:39:44.300Z\\\\\\\",\\\\\\\"startDate\\\\\\\":null,\\\\\\\"targetDate\\\\\\\":\\\\\\\"2026-04-01\\\\\\\",\\\\\\\"labels\\\\\\\":[],\\\\\\\"initiatives\\\\\\\":[],\\\\\\\"lead\\\\\\\":{},\\\\\\\"status\\\\\\\":{\\\\\\\"id\\\\\\\":\\\\\\\"03be2067-8e60-4beb-af6f-421a75bc9e59\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Backlog\\\\\\\"}},{\\\\\\\"id\\\\\\\":\\\\\\\"4b4dcb10-cab7-4ec9-a7e7-554603a63cf3\\\\\\\",\\\\\\\"icon\\\\\\\":null,\\\\\\\"color\\\\\\\":\\\\\\\"#bec2c8\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Engineering\\\\\\\",\\\\\\\"summary\\\\\\\":\\\\\\\"Engineering deliverables for the Q1 plan.\\\\\\\",\\\\\\\"description\\\\\\\":\\\\\\\"\\\\\\\",\\\\\\\"url\\\\\\\":\\\\\\\"https://linear.app/cobrowser/project/engineering-329049b2b1d3\\\\\\\",\\\\\\\"createdAt\\\\\\\":\\\\\\\"2026-01-21T14:10:42.873Z\\\\\\\",\\\\\\\"updatedAt\\\\\\\":\\\\\\\"2026-01-21T15:39:44.321Z\\\\\\\",\\\\\\\"startDate\\\\\\\":null,\\\\\\\"targetDate\\\\\\\":\\\\\\\"2026-04-01\\\\\\\",\\\\\\\"labels\\\\\\\":[],\\\\\\\"initiatives\\\\\\\":[],\\\\\\\"lead\\\\\\\":{},\\\\\\\"status\\\\\\\":{\\\\\\\"id\\\\\\\":\\\\\\\"03be2067-8e60-4beb-af6f-421a75bc9e59\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Backlog\\\\\\\"}}],\\\\\\\"hasNextPage\\\\\\\":false}\\\"}]}\"}}]}\n",
+                "result_tokens": 850,
+                "stored_in_corpus": false
+              },
+              {
+                "arguments": {
+                  "code": "import json\n\n# The tool output is a string with nested JSON, so we need to parse it a few times.\n# First parse of the outer structure\nparsed_data = json.loads(projects_data)\n\n# Second parse of the 'text' field\nresource_text = parsed_data['content'][0]['resource']['text']\ninner_data = json.loads(resource_text)\n\n# Third parse to get the final projects list\nprojects_string = inner_data['content'][0]['text']\nfinal_data = json.loads(projects_string)\n\n# Now 'final_data' should be the dictionary containing the list of projects\nprojects_list = final_data.get(\"projects\", [])\n\n# Count the number of projects\nproject_count = len(projects_list)\n\n# Extract the name of each project\nproject_names = [project['name'] for project in projects_list]\n\n# Create the final answer string\nanswer = f\"There are a total of {project_count} projects in Linear. The project names are:\\n\"\nfor name in project_names:\n    answer += f\"- {name}\\n\"\n\nprint(answer)"
+                },
+                "index": 1,
+                "name": "repl_execute",
+                "result": "There are a total of 5 projects in Linear. The project names are:\n- Legal & Admin\n- Standardization Groups\n- Marketing\n- Sales\n- Engineering\n\n",
+                "result_tokens": 35,
+                "stored_in_corpus": false
+              }
+            ]
+          },
+          "verification": {
+            "claim_scores": [
+              {
+                "claim": "The response includes the exact total count of projects returned by the tool",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              },
+              {
+                "claim": "The response names every project by its title",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              }
+            ],
+            "coverage": 1.0,
+            "passed": true
+          }
+        },
+        {
+          "claims": [
+            "The response includes the exact number of teams",
+            "The response lists every team name",
+            "The response includes the key or short identifier for each team"
+          ],
+          "prompt": "List all teams in the Linear workspace. For each team, provide the team name and its key identifier.",
+          "task_id": "task_linear_002",
+          "task_result": {
+            "context_tokens": 9316,
+            "error": null,
+            "final_answer": "Team Name: Kontext, Key Identifier: 50a530fe-ef47-4964-9de8-6c298d1f78fb",
+            "latency_ms": 12720,
+            "mode_name": "RLM",
+            "num_tool_calls": 2,
+            "task_id": "task_linear_002",
+            "tool_calls": [
+              {
+                "arguments": {
+                  "code": "teams_data = execute_tool(\"a7bf0a61-f018-4f75-9375-3e62a100f3df:list_teams\")\nprint(teams_data)"
+                },
+                "index": 0,
+                "name": "repl_execute",
+                "result": "{\"content\":[{\"type\":\"resource\",\"resource\":{\"uri\":\"inline://execute-tool\",\"mimeType\":\"application/json\",\"text\":\"{\\\"content\\\":[{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"{\\\\\\\"teams\\\\\\\":[{\\\\\\\"id\\\\\\\":\\\\\\\"50a530fe-ef47-4964-9de8-6c298d1f78fb\\\\\\\",\\\\\\\"icon\\\\\\\":\\\\\\\"Gears\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Kontext\\\\\\\",\\\\\\\"createdAt\\\\\\\":\\\\\\\"2025-10-17T07:46:18.808Z\\\\\\\",\\\\\\\"updatedAt\\\\\\\":\\\\\\\"2026-02-20T11:43:05.554Z\\\\\\\"}],\\\\\\\"hasNextPage\\\\\\\":false}\\\"}]}\"}}]}\n",
+                "result_tokens": 106,
+                "stored_in_corpus": false
+              },
+              {
+                "arguments": {
+                  "code": "import json\n\n# The raw output is a stringified JSON within a larger structure. \n# Let's parse it step by step.\ndata = json.loads(teams_data)\nresource_text = data['content'][0]['resource']['text']\ncontent_data = json.loads(resource_text)\nactual_data_text = content_data['content'][0]['text']\nteams_list_data = json.loads(actual_data_text)\n\n# Now, extract the team information.\nteams_info = []\nfor team in teams_list_data['teams']:\n    teams_info.append(f\"Team Name: {team['name']}, Key Identifier: {team['id']}\")\n\n# Join the information for a clean output.\nfinal_answer = \"\\n\".join(teams_info)\nprint(final_answer)"
+                },
+                "index": 1,
+                "name": "repl_execute",
+                "result": "Team Name: Kontext, Key Identifier: 50a530fe-ef47-4964-9de8-6c298d1f78fb\n",
+                "result_tokens": 18,
+                "stored_in_corpus": false
+              }
+            ]
+          },
+          "verification": {
+            "claim_scores": [
+              {
+                "claim": "The response includes the exact number of teams",
+                "score": 0.0,
+                "verdict": "NOT_FULFILLED"
+              },
+              {
+                "claim": "The response lists every team name",
+                "score": 0.5,
+                "verdict": "PARTIAL"
+              },
+              {
+                "claim": "The response includes the key or short identifier for each team",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              }
+            ],
+            "coverage": 0.5,
+            "passed": false
+          }
+        }
+      ]
+    }
+  },
+  "tool_modes": [
+    "RLM"
+  ],
+  "use_codex": false
+}

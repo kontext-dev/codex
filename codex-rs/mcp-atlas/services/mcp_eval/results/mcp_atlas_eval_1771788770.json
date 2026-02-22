@@ -1,0 +1,120 @@
+{
+  "agent_model": "gemini-2.5-pro",
+  "codex_model": "gemini-2.5-pro",
+  "dataset_path": "/Users/jens/Documents/01_CoBrowser/02_Repositories/benchmarking/codex/codex-rs/core/../mcp-atlas/services/mcp_eval/gateway_tasks_v3.csv",
+  "eval_limit": 1,
+  "generated_at_unix": 1771788770,
+  "results": {
+    "CodeMode": {
+      "summary": {
+        "avg_context_tokens": 10261,
+        "avg_coverage": 0.0,
+        "avg_latency_ms": 79626,
+        "pass_count": 0,
+        "pass_rate": 0.0,
+        "total_tasks": 1
+      },
+      "tasks": [
+        {
+          "claims": [
+            "The response includes the exact total count of projects returned by the tool",
+            "The response names every project by its title"
+          ],
+          "prompt": "List all projects in Linear. Tell me how many there are and name each one.",
+          "task_id": "task_linear_001",
+          "task_result": {
+            "context_tokens": 10261,
+            "error": null,
+            "final_answer": "I am very sorry, but I am encountering a persistent technical issue that prevents me from running any commands to access your Linear data. Despite multiple attempts with different code formats, the system returns a syntax error, which indicates a problem with the execution environment itself rather than the code.\n\nTherefore, I am unable to list your projects at this time. I apologize for the inconvenience.",
+            "latency_ms": 79626,
+            "mode_name": "CodeMode",
+            "num_tool_calls": 6,
+            "task_id": "task_linear_001",
+            "tool_calls": [
+              {
+                "arguments": {
+                  "code": "async () => {\n  const projects = await codemode.Linear_list_projects({});\n  const items = Array.isArray(projects) ? projects : projects?.nodes ?? [];\n  const names = items.map(i => i.name);\n  return { count: names.length, names };\n}"
+                },
+                "index": 0,
+                "name": "EXECUTE_CODE",
+                "result": "Code execution error: Invalid or unexpected token",
+                "result_tokens": 12,
+                "stored_in_corpus": false
+              },
+              {
+                "arguments": {
+                  "code": "async () => {\n  const result = await codemode.Linear_list_projects({});\n  const items = (result && result.nodes) || [];\n  const names = items.map(item => item.name);\n  return {\n    count: names.length,\n    names: names\n  };\n}"
+                },
+                "index": 1,
+                "name": "EXECUTE_CODE",
+                "result": "Code execution error: Invalid or unexpected token",
+                "result_tokens": 12,
+                "stored_in_corpus": false
+              },
+              {
+                "arguments": {
+                  "code": "async () => {\n  const projectsData = await codemode.Linear_list_projects({});\n  const projectList = projectsData.nodes || [];\n  \n  const projectNames = projectList.map(function(project) {\n    return project.name;\n  });\n\n  return { \n    count: projectNames.length, \n    names: projectNames \n  };\n}"
+                },
+                "index": 2,
+                "name": "EXECUTE_CODE",
+                "result": "Code execution error: Invalid or unexpected token",
+                "result_tokens": 12,
+                "stored_in_corpus": false
+              },
+              {
+                "arguments": {
+                  "code": "async () => {\n  const projectsData = await codemode.Linear_list_projects({});\n  \n  let names = [];\n  if (projectsData && projectsData.nodes) {\n    for (let i = 0; i < projectsData.nodes.length; i++) {\n      names.push(projectsData.nodes[i].name);\n    }\n  }\n\n  return { \n    count: names.length, \n    names: names\n  };\n}"
+                },
+                "index": 3,
+                "name": "EXECUTE_CODE",
+                "result": "Code execution error: Invalid or unexpected token",
+                "result_tokens": 12,
+                "stored_in_corpus": false
+              },
+              {
+                "arguments": {
+                  "code": "async () => {\n  const { nodes } = await codemode.Linear_list_projects({});\n  const names = nodes.map(project => project.name);\n  return { count: names.length, names: names };\n}"
+                },
+                "index": 4,
+                "name": "EXECUTE_CODE",
+                "result": "Code execution error: Invalid or unexpected token",
+                "result_tokens": 12,
+                "stored_in_corpus": false
+              },
+              {
+                "arguments": {
+                  "code": "async () => {\n  var projects = await codemode.Linear_list_projects({});\n  var names = [];\n  \n  if (projects && projects.nodes) {\n    for (var i = 0; i < projects.nodes.length; i++) {\n        names.push(projects.nodes[i].name);\n    }\n  }\n\n  return { \n    count: names.length, \n    names: names \n  };\n}"
+                },
+                "index": 5,
+                "name": "EXECUTE_CODE",
+                "result": "Code execution error: Invalid or unexpected token",
+                "result_tokens": 12,
+                "stored_in_corpus": false
+              }
+            ]
+          },
+          "verification": {
+            "claim_scores": [
+              {
+                "claim": "The response includes the exact total count of projects returned by the tool",
+                "score": 0.0,
+                "verdict": "NOT_FULFILLED"
+              },
+              {
+                "claim": "The response names every project by its title",
+                "score": 0.0,
+                "verdict": "NOT_FULFILLED"
+              }
+            ],
+            "coverage": 0.0,
+            "passed": false
+          }
+        }
+      ]
+    }
+  },
+  "tool_modes": [
+    "CodeMode"
+  ],
+  "use_codex": false
+}

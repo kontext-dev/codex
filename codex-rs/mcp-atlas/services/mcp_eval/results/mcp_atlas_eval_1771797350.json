@@ -1,0 +1,284 @@
+{
+  "agent_model": "gemini-2.5-pro",
+  "codex_model": "gemini-2.5-pro",
+  "dataset_path": "/Users/jens/Documents/01_CoBrowser/02_Repositories/benchmarking/codex/codex-rs/core/../mcp-atlas/services/mcp_eval/gateway_tasks_v3.csv",
+  "eval_limit": 5,
+  "generated_at_unix": 1771797350,
+  "results": {
+    "CodeMode": {
+      "summary": {
+        "avg_context_tokens": 9194,
+        "avg_coverage": 0.6666666666666667,
+        "avg_latency_ms": 13720,
+        "pass_count": 2,
+        "pass_rate": 0.4,
+        "total_tasks": 5
+      },
+      "tasks": [
+        {
+          "claims": [
+            "The response includes the exact total count of projects returned by the tool",
+            "The response names every project by its title"
+          ],
+          "prompt": "List all projects in Linear. Tell me how many there are and name each one.",
+          "task_id": "task_linear_001",
+          "task_result": {
+            "context_tokens": 8866,
+            "error": null,
+            "final_answer": "There are 5 projects in Linear. They are: Legal & Admin, Standardization Groups, Marketing, Sales, and Engineering.",
+            "latency_ms": 8648,
+            "mode_name": "CodeMode",
+            "num_tool_calls": 1,
+            "task_id": "task_linear_001",
+            "tool_calls": [
+              {
+                "arguments": {
+                  "code": "async () => {\n  const projects = await codemode.Linear_list_projects({});\n  const projectNames = projects.map(p => p.name);\n  return {\n    count: projects.length,\n    names: projectNames\n  };\n}"
+                },
+                "index": 0,
+                "name": "EXECUTE_CODE",
+                "result": "{\n  \"count\": 5,\n  \"names\": [\n    \"Legal & Admin\",\n    \"Standardization Groups\",\n    \"Marketing\",\n    \"Sales\",\n    \"Engineering\"\n  ]\n}",
+                "result_tokens": 33,
+                "stored_in_corpus": false
+              }
+            ]
+          },
+          "verification": {
+            "claim_scores": [
+              {
+                "claim": "The response includes the exact total count of projects returned by the tool",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              },
+              {
+                "claim": "The response names every project by its title",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              }
+            ],
+            "coverage": 1.0,
+            "passed": true
+          }
+        },
+        {
+          "claims": [
+            "The response includes the exact number of teams",
+            "The response lists every team name",
+            "The response includes the key or short identifier for each team"
+          ],
+          "prompt": "List all teams in the Linear workspace. For each team, provide the team name and its key identifier.",
+          "task_id": "task_linear_002",
+          "task_result": {
+            "context_tokens": 9546,
+            "error": null,
+            "final_answer": "I apologize, but it seems that I am unable to retrieve the key identifier for the teams using the available tools.\n\nHere is the list of teams in your Linear workspace:\n\n*   **Kontext**",
+            "latency_ms": 22510,
+            "mode_name": "CodeMode",
+            "num_tool_calls": 2,
+            "task_id": "task_linear_002",
+            "tool_calls": [
+              {
+                "arguments": {
+                  "code": "async () => {\n  const teams = await codemode.Linear_list_teams({});\n  const teamInfo = teams.map(team => ({\n    name: team.name,\n    key: team.key,\n  }));\n  return teamInfo;\n}"
+                },
+                "index": 0,
+                "name": "EXECUTE_CODE",
+                "result": "[\n  {\n    \"name\": \"Kontext\"\n  }\n]",
+                "result_tokens": 8,
+                "stored_in_corpus": false
+              },
+              {
+                "arguments": {
+                  "code": "async () => {\n  const team = await codemode.Linear_get_team({ query: \"Kontext\" });\n  return {\n    name: team.name,\n    key: team.key,\n  };\n}"
+                },
+                "index": 1,
+                "name": "EXECUTE_CODE",
+                "result": "{\n  \"name\": \"Kontext\"\n}",
+                "result_tokens": 5,
+                "stored_in_corpus": false
+              }
+            ]
+          },
+          "verification": {
+            "claim_scores": [
+              {
+                "claim": "The response includes the exact number of teams",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              },
+              {
+                "claim": "The response lists every team name",
+                "score": 0.5,
+                "verdict": "PARTIAL"
+              },
+              {
+                "claim": "The response includes the key or short identifier for each team",
+                "score": 0.0,
+                "verdict": "NOT_FULFILLED"
+              }
+            ],
+            "coverage": 0.5,
+            "passed": false
+          }
+        },
+        {
+          "claims": [
+            "The response includes the total count of users in the workspace",
+            "The response lists every user by their display name",
+            "The response includes each user's email address if available"
+          ],
+          "prompt": "List all users in the Linear workspace. Show each user's name and email address.",
+          "task_id": "task_linear_003",
+          "task_result": {
+            "context_tokens": 9314,
+            "error": null,
+            "final_answer": "Here are the users in your Linear workspace:\n\n*   **Name:** vishy@cobrowser.xyz\n    **Email:** vishy@cobrowser.xyz\n*   **Name:** michel@cobrowser.xyz\n    **Email:** michel@cobrowser.xyz\n*   **Name:** jens@cobrowser.xyz\n    **Email:** jens@cobrowser.xyz",
+            "latency_ms": 10495,
+            "mode_name": "CodeMode",
+            "num_tool_calls": 1,
+            "task_id": "task_linear_003",
+            "tool_calls": [
+              {
+                "arguments": {
+                  "code": "async () => {\n  const users = await codemode.Linear_list_users({});\n  return users.map(user => ({\n    name: user.name,\n    email: user.email,\n  }));\n}"
+                },
+                "index": 0,
+                "name": "EXECUTE_CODE",
+                "result": "[\n  {\n    \"email\": \"vishy@cobrowser.xyz\",\n    \"name\": \"vishy@cobrowser.xyz\"\n  },\n  {\n    \"email\": \"michel@cobrowser.xyz\",\n    \"name\": \"michel@cobrowser.xyz\"\n  },\n  {\n    \"email\": \"jens@cobrowser.xyz\",\n    \"name\": \"jens@cobrowser.xyz\"\n  }\n]",
+                "result_tokens": 59,
+                "stored_in_corpus": false
+              }
+            ]
+          },
+          "verification": {
+            "claim_scores": [
+              {
+                "claim": "The response includes the total count of users in the workspace",
+                "score": 0.0,
+                "verdict": "NOT_FULFILLED"
+              },
+              {
+                "claim": "The response lists every user by their display name",
+                "score": 0.0,
+                "verdict": "NOT_FULFILLED"
+              },
+              {
+                "claim": "The response includes each user's email address if available",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              }
+            ],
+            "coverage": 0.3333333333333333,
+            "passed": false
+          }
+        },
+        {
+          "claims": [
+            "The response includes the total number of issue labels",
+            "The response names every issue label",
+            "The response includes the color for each label if available"
+          ],
+          "prompt": "What issue labels are available in Linear? List each label with its name and color.",
+          "task_id": "task_linear_004",
+          "task_result": {
+            "context_tokens": 9054,
+            "error": null,
+            "final_answer": "The available issue labels in Linear are:\n\n*   **Feature**: #BB87FC\n*   **Improvement**: #4EA7FC\n*   **Bug**: #EB5757",
+            "latency_ms": 11526,
+            "mode_name": "CodeMode",
+            "num_tool_calls": 1,
+            "task_id": "task_linear_004",
+            "tool_calls": [
+              {
+                "arguments": {
+                  "code": "async () => {\n  const labels = await codemode.Linear_list_issue_labels({});\n  return labels.map(label => ({ name: label.name, color: label.color }));\n}"
+                },
+                "index": 0,
+                "name": "EXECUTE_CODE",
+                "result": "[\n  {\n    \"color\": \"#BB87FC\",\n    \"name\": \"Feature\"\n  },\n  {\n    \"color\": \"#4EA7FC\",\n    \"name\": \"Improvement\"\n  },\n  {\n    \"color\": \"#EB5757\",\n    \"name\": \"Bug\"\n  }\n]",
+                "result_tokens": 41,
+                "stored_in_corpus": false
+              }
+            ]
+          },
+          "verification": {
+            "claim_scores": [
+              {
+                "claim": "The response includes the total number of issue labels",
+                "score": 0.0,
+                "verdict": "NOT_FULFILLED"
+              },
+              {
+                "claim": "The response names every issue label",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              },
+              {
+                "claim": "The response includes the color for each label if available",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              }
+            ],
+            "coverage": 0.6666666666666666,
+            "passed": false
+          }
+        },
+        {
+          "claims": [
+            "The response includes the exact count of issue statuses",
+            "The response names every status",
+            "The response includes the type or category of each status (e.g., started, completed, canceled)"
+          ],
+          "prompt": "What are all the possible issue statuses in Linear? List each status name and indicate its type or category.",
+          "task_id": "task_linear_005",
+          "task_result": {
+            "context_tokens": 9193,
+            "error": null,
+            "final_answer": "Based on the information from your Linear workspace, here are all the possible issue statuses and their types:\n\n*   **Backlog** (Type: backlog)\n*   **Todo** (Type: unstarted)\n*   **In Progress** (Type: started)\n*   **Done** (Type: completed)\n*   **Canceled** (Type: canceled)",
+            "latency_ms": 15422,
+            "mode_name": "CodeMode",
+            "num_tool_calls": 1,
+            "task_id": "task_linear_005",
+            "tool_calls": [
+              {
+                "arguments": {
+                  "code": "async () => {\n  const teams = await codemode.Linear_list_teams();\n  const allStatuses = new Map();\n\n  for (const team of teams) {\n    const statuses = await codemode.Linear_list_issue_statuses({ team: team.id });\n    for (const status of statuses) {\n      if (!allStatuses.has(status.name)) {\n        allStatuses.set(status.name, status.type);\n      }\n    }\n  }\n\n  return Array.from(allStatuses, ([name, type]) => ({ name, type }));\n}"
+                },
+                "index": 0,
+                "name": "EXECUTE_CODE",
+                "result": "[\n  {\n    \"name\": \"Todo\",\n    \"type\": \"unstarted\"\n  },\n  {\n    \"name\": \"Canceled\",\n    \"type\": \"canceled\"\n  },\n  {\n    \"name\": \"Done\",\n    \"type\": \"completed\"\n  },\n  {\n    \"name\": \"In Progress\",\n    \"type\": \"started\"\n  },\n  {\n    \"name\": \"Backlog\",\n    \"type\": \"backlog\"\n  }\n]",
+                "result_tokens": 69,
+                "stored_in_corpus": false
+              }
+            ]
+          },
+          "verification": {
+            "claim_scores": [
+              {
+                "claim": "The response includes the exact count of issue statuses",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              },
+              {
+                "claim": "The response names every status",
+                "score": 0.5,
+                "verdict": "PARTIAL"
+              },
+              {
+                "claim": "The response includes the type or category of each status (e.g., started, completed, canceled)",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              }
+            ],
+            "coverage": 0.8333333333333334,
+            "passed": true
+          }
+        }
+      ]
+    }
+  },
+  "tool_modes": [
+    "CodeMode"
+  ],
+  "use_codex": false
+}

@@ -1,0 +1,276 @@
+{
+  "agent_model": "gpt-4o",
+  "codex_model": "gpt-4o",
+  "dataset_path": "/Users/jens/Documents/01_CoBrowser/02_Repositories/benchmarking/codex/codex-rs/core/../mcp-atlas/services/mcp_eval/gateway_tasks_v2.csv",
+  "eval_limit": 5,
+  "generated_at_unix": 1771761222,
+  "results": {
+    "Baseline": {
+      "summary": {
+        "avg_context_tokens": 90100,
+        "avg_coverage": 0.3,
+        "avg_latency_ms": 9541,
+        "pass_count": 1,
+        "pass_rate": 0.2,
+        "total_tasks": 5
+      },
+      "tasks": [
+        {
+          "task_id": "task_deepwiki_001",
+          "task_result": {
+            "context_tokens": 2558,
+            "error": null,
+            "final_answer": "The documentation structure for the `facebook/react` repository includes the following topics:\n\n1. **Overview**\n   - Repository Structure and Packages\n\n2. **Feature Flags System**\n\n3. **Build System and Package Distribution**\n   - Build Pipeline and Module Forking\n   - Release Channels and Versioning\n   - CI/CD and Artifact Management\n\n4. **React Reconciler**\n   - Fiber Architecture and Data Structures\n   - Work Loop and Rendering Phases\n   - React Hooks System\n   - Lane-Based Scheduling and Priorities\n   - Suspense and Error Boundaries\n   - Host Configuration Abstraction\n   - Profiling and Performance Tracking\n\n5. **Server-Side Rendering**\n   - React Fizz (Streaming SSR)\n   - React Server Components (Flight)\n   - Build Integration for Server Components\n   - Server Actions and Bidirectional Communication\n\n6. **Platform Implementations**\n   - React DOM Implementation\n   - React Native Renderers\n   - Hydration System\n   - View Transitions and Gesture Scheduling\n\n7. **Developer Tools and Debugging**\n   - React DevTools Architecture\n   - DevTools Distribution and Integration\n   - ESLint Plugin for React Hooks\n\nThis structure provides an organized view of the key components and systems within the React framework, along with developer tools and debugging strategies.",
+            "latency_ms": 3303,
+            "mode_name": "Baseline",
+            "task_id": "task_deepwiki_001"
+          },
+          "verification": {
+            "coverage": 0.0,
+            "passed": false
+          }
+        },
+        {
+          "task_id": "task_deepwiki_002",
+          "task_result": {
+            "context_tokens": 4156,
+            "error": null,
+            "final_answer": "The Fiber architecture in React is the core reconciliation algorithm that manages component lifecycles, schedules work, and handles updates in a platform-agnostic way. It operates through a two-phase render cycle: the render phase and the commit phase.\n\n### Key Aspects of Fiber Architecture\n\n1. **Fiber Data Structure**: The fundamental unit of work in the reconciler is the **Fiber**, which represents a component instance and its work. Each `Fiber` object contains various fields such as `tag`, `stateNode`, `memoizedState`, `updateQueue`, `flags`, `lanes`, and `alternate`.\n\n2. **Work Loop Execution**:\n   - **Render Phase** (interruptible): Walks the Fiber tree to determine necessary changes. Consists of:\n     - **Begin Work**: Processes components and reconciles children.\n     - **Complete Work**: Updates host instances and handles side-effects.\n   - **Commit Phase** (synchronous): Applies changes. Includes:\n     1. **Before Mutation**: Prepares for DOM mutations.\n     2. **Mutation**: Applies DOM changes.\n     3. **Layout**: Handles layout effects.\n     4. **Passive**: Schedules `useEffect` callbacks after painting.\n\n3. **Host Configuration Abstraction**: Allows React to target various platforms like DOM or React Native without altering core logic.\n\n4. **Reconciliation and Diffing**: Updates and mounts components efficiently, using flags to manage changes.\n\n5. **Global State and Double Buffering**: Maintains two Fiber trees, `current` (rendered) and `work-in-progress` (being updated), facilitating seamless updates.\n\n6. **Scheduling Entry Points**: Initiates updates through APIs like `root.render()`, `this.setState()`, or `useState()`.\n\nFor more detailed information, you can explore the related [DeepWiki page](https://deepwiki.com/search/what-is-the-fiber-architecture_59fddc1d-874e-432c-82d8-57b10b352f3e).",
+            "latency_ms": 18328,
+            "mode_name": "Baseline",
+            "task_id": "task_deepwiki_002"
+          },
+          "verification": {
+            "coverage": 1.0,
+            "passed": true
+          }
+        },
+        {
+          "task_id": "task_deepwiki_003",
+          "task_result": {
+            "context_tokens": 437701,
+            "error": "Agent LLM call failed: invalid_request_error: This model's maximum context length is 128000 tokens. However, your messages resulted in 473151 tokens (472294 in the messages, 857 in the functions). Please reduce the length of the messages or functions. (param: messages) (code: context_length_exceeded)",
+            "final_answer": "",
+            "latency_ms": 7230,
+            "mode_name": "Baseline",
+            "task_id": "task_deepwiki_003"
+          },
+          "verification": {
+            "coverage": 0.0,
+            "passed": false
+          }
+        },
+        {
+          "task_id": "task_deepwiki_004",
+          "task_result": {
+            "context_tokens": 3686,
+            "error": null,
+            "final_answer": "React offers two main systems for Server-Side Rendering (SSR): **Fizz** and **Flight**.\n\n### Fizz (HTML Streaming SSR)\n**Fizz** is implemented in `ReactFizzServer` and it progressively renders React components into HTML to stream this output to the client. It supports Suspense boundaries, allowing parts of the UI to load asynchronously, and it embeds JavaScript within the HTML so that client-side React can \"hydrate\" or attach to the server-rendered HTML, making it interactive.\n\nKey functions in Fizz include:\n- `renderToPipeableStream()`: Used for Node.js to stream HTML.\n- `renderToReadableStream()`: Used for the Web Streams API.\n- `renderToString()`: A legacy synchronous method that does not support Suspense.\n- `renderToStaticMarkup()`: Another legacy method for non-interactive HTML.\n\n### Flight (Server Components Serialization)\n**Flight** is implemented in `ReactFlightServer` and serializes Server Component trees into a streaming protocol. These components execute only on the server. It handles module references for Client Components and sends chunks of component tree structure to the client, which reconstructs the React element tree without executing Server Component code.\n\nThe build system integrates with Flight through plugins that analyze modules with `'use client'` and `'use server'` directives, transforming references and generating manifests.\n\n### Integrated SSR with Server Components\nServer Components execute on the server, and Flight serializes these, including references to Client Components. Fizz consumes the Flight stream, rendering Client Components into HTML. The client receives both HTML for display and Flight chunks for interactivity. Client-side React hydrates the HTML and processes these chunks to reconstruct the component tree.\n\nFor more detailed information, you can view SSR documentation for React on [DeepWiki here](https://deepwiki.com/search/explain-serverside-rendering-i_55086b20-0086-4b30-9f29-c6388352f850).",
+            "latency_ms": 16058,
+            "mode_name": "Baseline",
+            "task_id": "task_deepwiki_004"
+          },
+          "verification": {
+            "coverage": 0.5,
+            "passed": false
+          }
+        },
+        {
+          "task_id": "task_deepwiki_005",
+          "task_result": {
+            "context_tokens": 2400,
+            "error": null,
+            "final_answer": "The documentation topics for the **vercel/next.js** repository are as follows:\n\n1. **Next.js Framework Overview**\n   - 1.1 Monorepo Architecture\n   - 1.2 Core Package Ecosystem\n\n2. **Build and Compilation System**\n   - 2.1 Build Orchestration and Configuration\n   - 2.2 Native Compilation and NAPI Bindings\n   - 2.3 Module Resolution and Analysis\n   - 2.4 Tree-Shaking and Code Optimization\n   - 2.5 Project System and Routing\n\n3. **Development Infrastructure**\n   - 3.1 Development Server and Hot Module Replacement\n   - 3.2 TurboTasks Incremental Computation\n\n4. **Server Architecture and Rendering**\n   - 4.1 Configuration and Server Contexts\n   - 4.2 Request Handling and Rendering Pipeline\n\n5. **Testing and CI/CD Infrastructure**\n   - 5.1 Bundler Testing and Manifest System\n   - 5.2 CI/CD Workflows and Release Process\n\n6. **Additional Tools and Integrations**\n   - 6.1 Alternative Bundlers (Rspack)\n   - 6.2 Code Quality and Development Tools\n\nThese topics encompass a wide range of information regarding the Next.js framework, its build systems, development infrastructure, server architecture, and integrations.",
+            "latency_ms": 2790,
+            "mode_name": "Baseline",
+            "task_id": "task_deepwiki_005"
+          },
+          "verification": {
+            "coverage": 0.0,
+            "passed": false
+          }
+        }
+      ]
+    },
+    "Baseline+RLM": {
+      "summary": {
+        "avg_context_tokens": 6816,
+        "avg_coverage": 0.5,
+        "avg_latency_ms": 10483,
+        "pass_count": 2,
+        "pass_rate": 0.4,
+        "total_tasks": 5
+      },
+      "tasks": [
+        {
+          "task_id": "task_deepwiki_001",
+          "task_result": {
+            "context_tokens": 2861,
+            "error": null,
+            "final_answer": "The documentation structure for the [facebook/react](https://github.com/facebook/react) repository includes the following topics:\n\n1. **Overview**\n   - 1.1 Repository Structure and Packages\n\n2. **Feature Flags System**\n\n3. **Build System and Package Distribution**\n   - 3.1 Build Pipeline and Module Forking\n   - 3.2 Release Channels and Versioning\n   - 3.3 CI/CD and Artifact Management\n\n4. **React Reconciler**\n   - 4.1 Fiber Architecture and Data Structures\n   - 4.2 Work Loop and Rendering Phases\n   - 4.3 React Hooks System\n   - 4.4 Lane-Based Scheduling and Priorities\n   - 4.5 Suspense and Error Boundaries\n   - 4.6 Host Configuration Abstraction\n   - 4.7 Profiling and Performance Tracking\n\n5. **Server-Side Rendering**\n   - 5.1 React Fizz (Streaming SSR)\n   - 5.2 React Server Components (Flight)\n   - 5.3 Build Integration for Server Components\n   - 5.4 Server Actions and Bidirectional Communication\n\n6. **Platform Implementations**\n   - 6.1 React DOM Implementation\n   - 6.2 React Native Renderers\n   - 6.3 Hydration System\n   - 6.4 View Transitions and Gesture Scheduling\n\n7. **Developer Tools and Debugging**\n   - 7.1 React DevTools Architecture\n   - 7.2 DevTools Distribution and Integration\n   - 7.3 ESLint Plugin for React Hooks\n\nThis structure outlines the various components and systems within the React project, providing insights into its architecture and implementations.",
+            "latency_ms": 4098,
+            "mode_name": "Baseline+RLM",
+            "task_id": "task_deepwiki_001"
+          },
+          "verification": {
+            "coverage": 0.0,
+            "passed": false
+          }
+        },
+        {
+          "task_id": "task_deepwiki_002",
+          "task_result": {
+            "context_tokens": 4046,
+            "error": null,
+            "final_answer": "The Fiber architecture in React is the core reconciliation algorithm that manages component lifecycles, schedules work, and handles updates in a platform-agnostic manner. It operates through a two-phase render cycle: the render phase and the commit phase. The fundamental unit of work in this architecture is the Fiber, a JavaScript object representing a component instance and its associated work.\n\n### Fiber Data Structure\n\nA Fiber is a JavaScript object representing a unit of work in React's reconciliation process. Each Fiber node contains several fields describing its identity, tree structure, state, effects, and scheduling information. Key fields include:\n- `tag`: Identifies the type of component (e.g., FunctionComponent, ClassComponent, HostComponent).\n- `stateNode`: Reference to the actual DOM node for host components or the class instance for class components.\n- `memoizedState`: The output state from the last render, which for hooks, is a linked list of Hook objects.\n- `updateQueue`: A queue of state updates and effects to be processed for this Fiber.\n- `flags`: A bitfield indicating side-effects that need to be performed (e.g., Placement, Update, Deletion).\n- `lanes`: Represents the priority of pending work on this Fiber.\n- `alternate`: A pointer to the corresponding Fiber in the other Fiber tree, used for double buffering.\n\n### Work Loop and Phases\n\nThe Fiber architecture's core reconciler is the work loop, managing the render and commit phases.\n\n#### Render Phase\n- **Interruptible** and involves walking the Fiber tree to determine changes. It consists of two main sub-phases:\n  - **Begin Work**: Processes the component, reconciles its children, and returns the next child Fiber to process.\n  - **Complete Work**: Creates or updates host instances and bubbles up side-effect flags from children.\n\n#### Commit Phase\n- **Synchronous and uninterruptible**, applying the changes determined during the render phase to the host environment. This phase includes:\n  - **Before Mutation**: Prepares for DOM mutations.\n  - **Mutation**: Applies actual DOM changes (insertions, updates, deletions).\n  - **Layout**: Handles layout effects and ref attachments.\n  - **Passive**: Schedules `useEffect` callbacks after the browser has painted.\n\nFurther exploration can be made on DeepWiki: [React Reconciler (facebook/react)](https://deepwiki.com/search/what-is-the-fiber-architecture_08627ef5-466d-417d-9e72-7af038d17a0e).",
+            "latency_ms": 14845,
+            "mode_name": "Baseline+RLM",
+            "task_id": "task_deepwiki_002"
+          },
+          "verification": {
+            "coverage": 1.0,
+            "passed": true
+          }
+        },
+        {
+          "task_id": "task_deepwiki_003",
+          "task_result": {
+            "context_tokens": 20879,
+            "error": null,
+            "final_answer": "The documentation about React Hooks from DeepWiki is quite extensive. Here are some key points:\n\n1. **Purpose and Scope**:\n   - The React Hooks system is part of the core API provided by the `react` package.\n   - Hooks are designed to manage state and side effects in React function components.\n\n2. **ESLint Plugin for React Hooks**:\n   - The `eslint-plugin-react-hooks` is a static analysis tool that enforces the Rules of Hooks to ensure they are used correctly within React function components.\n   - The plugin offers two primary rules:\n     - `rules-of-hooks`: Ensures that Hooks are called at the top level of React function components or custom Hooks.\n     - `exhaustive-deps`: Checks that all relevant dependencies are declared in effect dependencies.\n\n3. **Integration and Configuration**:\n   - The plugin integrates with ESLint and is distributed as an npm package with all necessary configurations.\n   - It includes setup for TypeScript support and custom linting rules.\n\n4. **Testing and Validation**:\n   - Extensive testing ensures that Hooks are implemented correctly, with test cases covering various scenarios and issues.\n   - TypeScript is used for build and compilation, ensuring type safety.\n\n5. **Development and Contribution Workflow**:\n   - Contributing to the Hooks system involves modifying TypeScript files in the `eslint-plugin-react-hooks` package, running tests, and committing changes.\n\nThese key points together explain how React Hooks are structured and validated within the React ecosystem as captured in the DeepWiki documentation. If you need more detailed information or specific sections, please let me know!",
+            "latency_ms": 12559,
+            "mode_name": "Baseline+RLM",
+            "task_id": "task_deepwiki_003"
+          },
+          "verification": {
+            "coverage": 0.5,
+            "passed": false
+          }
+        },
+        {
+          "task_id": "task_deepwiki_004",
+          "task_result": {
+            "context_tokens": 3741,
+            "error": null,
+            "final_answer": "React's server-side rendering (SSR) capabilities are managed by two main systems: Fizz and Flight.\n\n### Fizz (HTML Streaming SSR)\n- **Purpose**: Renders React components to HTML and streams the output to the client progressively.\n- **Features**: Supports Suspense boundaries for deferred rendering and embeds hydration instructions within `<script>` tags to enable client-side interactivity.\n- **Key APIs**:\n  - `renderToPipeableStream()`: Used for Node.js streams.\n  - `renderToReadableStream()`: For use with Web Streams API.\n  - `renderToStaticMarkup()`: Renders non-interactive HTML.\n  - `renderToString()`: Performs synchronous rendering without Suspense support.\n\n### Flight (Server Components Serialization)\n- **Purpose**: Serializes Server Component trees into a compact protocol (RSC wire format) for efficient client-side reconstruction.\n- **Key API**: \n  - `renderToReadableStream()`: Renders to a Web Stream.\n\n### Integrated SSR with Server Components\n- **Process**: Server Components run on the server, are serialized by Flight, and then consumed by Fizz to render Client Components into HTML. The client receives both the HTML and the serialized Flight data to manage interactivity.\n\nThis integration allows for efficient rendering and hydration of React components on both the server and client, providing a robust SSR solution.",
+            "latency_ms": 17306,
+            "mode_name": "Baseline+RLM",
+            "task_id": "task_deepwiki_004"
+          },
+          "verification": {
+            "coverage": 1.0,
+            "passed": true
+          }
+        },
+        {
+          "task_id": "task_deepwiki_005",
+          "task_result": {
+            "context_tokens": 2554,
+            "error": null,
+            "final_answer": "The documentation topics for the `vercel/next.js` repository include:\n\n1. **Next.js Framework Overview**\n   - Monorepo Architecture\n   - Core Package Ecosystem\n\n2. **Build and Compilation System**\n   - Build Orchestration and Configuration\n   - Native Compilation and NAPI Bindings\n   - Module Resolution and Analysis\n   - Tree-Shaking and Code Optimization\n   - Project System and Routing\n\n3. **Development Infrastructure**\n   - Development Server and Hot Module Replacement\n   - TurboTasks Incremental Computation\n\n4. **Server Architecture and Rendering**\n   - Configuration and Server Contexts\n   - Request Handling and Rendering Pipeline\n\n5. **Testing and CI/CD Infrastructure**\n   - Bundler Testing and Manifest System\n   - CI/CD Workflows and Release Process\n\n6. **Additional Tools and Integrations**\n   - Alternative Bundlers (Rspack)\n   - Code Quality and Development Tools\n\nThese topics cover a comprehensive range of areas related to the Next.js framework, including its architecture, build system, development tools, server rendering, and more.",
+            "latency_ms": 3607,
+            "mode_name": "Baseline+RLM",
+            "task_id": "task_deepwiki_005"
+          },
+          "verification": {
+            "coverage": 0.0,
+            "passed": false
+          }
+        }
+      ]
+    },
+    "CodeMode": {
+      "summary": {
+        "avg_context_tokens": 2466,
+        "avg_coverage": 0.4,
+        "avg_latency_ms": 3829,
+        "pass_count": 2,
+        "pass_rate": 0.4,
+        "total_tasks": 5
+      },
+      "tasks": [
+        {
+          "task_id": "task_deepwiki_001",
+          "task_result": {
+            "context_tokens": 3500,
+            "error": null,
+            "final_answer": "The documentation structure for the `facebook/react` repository is organized into a series of sections and subsections:\n\n1. **Overview**\n   - Repository Structure and Packages\n\n2. **Feature Flags System**\n\n3. **Build System and Package Distribution**\n   - Build Pipeline and Module Forking\n   - Release Channels and Versioning\n   - CI/CD and Artifact Management\n\n4. **React Reconciler**\n   - Fiber Architecture and Data Structures\n   - Work Loop and Rendering Phases\n   - React Hooks System\n   - Lane-Based Scheduling and Priorities\n   - Suspense and Error Boundaries\n   - Host Configuration Abstraction\n   - Profiling and Performance Tracking\n\n5. **Server-Side Rendering**\n   - React Fizz (Streaming SSR)\n   - React Server Components (Flight)\n   - Build Integration for Server Components\n   - Server Actions and Bidirectional Communication\n\n6. **Platform Implementations**\n   - React DOM Implementation\n   - React Native Renderers\n   - Hydration System\n   - View Transitions and Gesture Scheduling\n\n7. **Developer Tools and Debugging**\n   - React DevTools Architecture\n   - DevTools Distribution and Integration\n   - ESLint Plugin for React Hooks\n\nThis structure provides a comprehensive view of the various components and systems within the React ecosystem, from the basics of the repository to the advanced topics like server-side rendering and developer tools.",
+            "latency_ms": 4111,
+            "mode_name": "CodeMode",
+            "task_id": "task_deepwiki_001"
+          },
+          "verification": {
+            "coverage": 0.0,
+            "passed": false
+          }
+        },
+        {
+          "task_id": "task_deepwiki_002",
+          "task_result": {
+            "context_tokens": 1187,
+            "error": null,
+            "final_answer": "It seems there was an error executing the function to get information from DeepWiki. However, I can provide an explanation based on general knowledge.\n\nThe Fiber architecture in React is an internal algorithm used in React 16 and onwards. It was designed to improve the performance of complex user interfaces by breaking rendering work into incremental parts, allowing React to make updates asynchronously. This makes the UI more responsive during complex updates and helps prioritize more important updates like animations or inputs over others. Essentially, Fiber enhances the efficiency of rendered output, especially when dealing with multiple updates that could block the user interface.",
+            "latency_ms": 3634,
+            "mode_name": "CodeMode",
+            "task_id": "task_deepwiki_002"
+          },
+          "verification": {
+            "coverage": 1.0,
+            "passed": true
+          }
+        },
+        {
+          "task_id": "task_deepwiki_003",
+          "task_result": {
+            "context_tokens": 3375,
+            "error": null,
+            "final_answer": "The documentation topics for the React GitHub repository include a section specifically dedicated to the \"React Hooks System.\" To learn more about React hooks from the DeepWiki documentation, you can explore this section, which is part of the React Reconciler documentation. This section likely provides details about how hooks are used, their implementation, and other relevant insights specific to React's architecture and runtime behavior.\n\nIf you wish to access the full content of this section, you would generally need to view it directly on the DeepWiki platform or relevant documentation sources provided by React.",
+            "latency_ms": 4201,
+            "mode_name": "CodeMode",
+            "task_id": "task_deepwiki_003"
+          },
+          "verification": {
+            "coverage": 0.0,
+            "passed": false
+          }
+        },
+        {
+          "task_id": "task_deepwiki_004",
+          "task_result": {
+            "context_tokens": 1225,
+            "error": null,
+            "final_answer": "It seems there was an issue executing the request with the tool, as the function `ask_question` is not recognized. However, I can provide information based on my knowledge.\n\n**Server-Side Rendering (SSR) in React** refers to the process of rendering web pages on the server instead of in the client's browser. This approach is particularly valuable because it improves performance and SEO (Search Engine Optimization) by delivering fully formed HTML pages directly to users and search engines.\n\nIn SSR, the React components are rendered to HTML strings on the server, which is then sent to the client's browser. The browser receives this fully-formed HTML page that renders quickly on the screen. Once the JavaScript loads, React takes over again and makes the page interactive, a process called \"hydration\".\n\nReact has built-in support for SSR through frameworks such as Next.js, which simplifies the implementation of server-side rendering by managing the rendering process and setting up a Node.js server or serverless functions.\n\nOverall, SSR can significantly enhance the user experience with faster load times and better indexing by search engines.",
+            "latency_ms": 3998,
+            "mode_name": "CodeMode",
+            "task_id": "task_deepwiki_004"
+          },
+          "verification": {
+            "coverage": 1.0,
+            "passed": true
+          }
+        },
+        {
+          "task_id": "task_deepwiki_005",
+          "task_result": {
+            "context_tokens": 3043,
+            "error": null,
+            "final_answer": "The documentation topics for the vercel/next.js repository are as follows:\n\n1. **Next.js Framework Overview**\n   - Monorepo Architecture\n   - Core Package Ecosystem\n\n2. **Build and Compilation System**\n   - Build Orchestration and Configuration\n   - Native Compilation and NAPI Bindings\n   - Module Resolution and Analysis\n   - Tree-Shaking and Code Optimization\n   - Project System and Routing\n\n3. **Development Infrastructure**\n   - Development Server and Hot Module Replacement\n   - TurboTasks Incremental Computation\n\n4. **Server Architecture and Rendering**\n   - Configuration and Server Contexts\n   - Request Handling and Rendering Pipeline\n\n5. **Testing and CI/CD Infrastructure**\n   - Bundler Testing and Manifest System\n   - CI/CD Workflows and Release Process\n\n6. **Additional Tools and Integrations**\n   - Alternative Bundlers (Rspack)\n   - Code Quality and Development Tools\n\nThese topics give an overview of the structure and content available for understanding and working with Next.js.",
+            "latency_ms": 3205,
+            "mode_name": "CodeMode",
+            "task_id": "task_deepwiki_005"
+          },
+          "verification": {
+            "coverage": 0.0,
+            "passed": false
+          }
+        }
+      ]
+    }
+  },
+  "tool_modes": [
+    "Baseline",
+    "CodeMode",
+    "Baseline+RLM"
+  ],
+  "use_codex": false
+}

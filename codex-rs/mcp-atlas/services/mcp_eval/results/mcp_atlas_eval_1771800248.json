@@ -1,0 +1,1084 @@
+{
+  "agent_model": "gemini-2.5-pro",
+  "codex_model": "gemini-2.5-pro",
+  "dataset_path": "/Users/jens/Documents/01_CoBrowser/02_Repositories/benchmarking/codex/codex-rs/core/../mcp-atlas/services/mcp_eval/gateway_tasks_v3.csv",
+  "eval_limit": 5,
+  "generated_at_unix": 1771800248,
+  "results": {
+    "Baseline": {
+      "summary": {
+        "avg_context_tokens": 18901,
+        "avg_coverage": 0.8,
+        "avg_latency_ms": 12930,
+        "pass_count": 4,
+        "pass_rate": 0.8,
+        "total_tasks": 5
+      },
+      "tasks": [
+        {
+          "claims": [
+            "The response includes the exact total count of projects returned by the tool",
+            "The response names every project by its title"
+          ],
+          "prompt": "List all projects in Linear. Tell me how many there are and name each one.",
+          "task_id": "task_linear_001",
+          "task_result": {
+            "context_tokens": 19783,
+            "error": null,
+            "final_answer": "There are a total of 5 projects in Linear. They are:\n\n* Legal & Admin\n* Standardization Groups\n* Marketing\n* Sales\n* Engineering",
+            "latency_ms": 7380,
+            "mode_name": "Baseline",
+            "num_tool_calls": 1,
+            "task_id": "task_linear_001",
+            "tool_calls": [
+              {
+                "arguments": {},
+                "index": 0,
+                "name": "Linear_list_projects",
+                "result": "{\"content\":[{\"type\":\"resource\",\"resource\":{\"uri\":\"inline://execute-tool\",\"mimeType\":\"application/json\",\"text\":\"{\\\"content\\\":[{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"{\\\\\\\"projects\\\\\\\":[{\\\\\\\"id\\\\\\\":\\\\\\\"ece20b87-24e8-4b29-b44f-ad213603134c\\\\\\\",\\\\\\\"icon\\\\\\\":null,\\\\\\\"color\\\\\\\":\\\\\\\"#bec2c8\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Legal & Admin\\\\\\\",\\\\\\\"summary\\\\\\\":\\\\\\\"Legal and admin work for the Q1 plan.\\\\\\\",\\\\\\\"description\\\\\\\":\\\\\\\"\\\\\\\",\\\\\\\"url\\\\\\\":\\\\\\\"https://linear.app/cobrowser/project/legal-and-admin-e14b71e28c1a\\\\\\\",\\\\\\\"createdAt\\\\\\\":\\\\\\\"2026-01-21T14:10:47.582Z\\\\\\\",\\\\\\\"updatedAt\\\\\\\":\\\\\\\"2026-01-21T15:39:44.252Z\\\\\\\",\\\\\\\"startDate\\\\\\\":null,\\\\\\\"targetDate\\\\\\\":\\\\\\\"2026-04-01\\\\\\\",\\\\\\\"labels\\\\\\\":[],\\\\\\\"initiatives\\\\\\\":[],\\\\\\\"lead\\\\\\\":{},\\\\\\\"status\\\\\\\":{\\\\\\\"id\\\\\\\":\\\\\\\"03be2067-8e60-4beb-af6f-421a75bc9e59\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Backlog\\\\\\\"}},{\\\\\\\"id\\\\\\\":\\\\\\\"9bba1a2d-97da-4696-a73e-95d97f45ca4f\\\\\\\",\\\\\\\"icon\\\\\\\":null,\\\\\\\"color\\\\\\\":\\\\\\\"#bec2c8\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Standardization Groups\\\\\\\",\\\\\\\"summary\\\\\\\":\\\\\\\"Standards and community participation for the Q1 plan.\\\\\\\",\\\\\\\"description\\\\\\\":\\\\\\\"\\\\\\\",\\\\\\\"url\\\\\\\":\\\\\\\"https://linear.app/cobrowser/project/standardization-groups-32e6a2bb3544\\\\\\\",\\\\\\\"createdAt\\\\\\\":\\\\\\\"2026-01-21T14:10:46.735Z\\\\\\\",\\\\\\\"updatedAt\\\\\\\":\\\\\\\"2026-01-21T15:39:44.267Z\\\\\\\",\\\\\\\"startDate\\\\\\\":null,\\\\\\\"targetDate\\\\\\\":\\\\\\\"2026-04-01\\\\\\\",\\\\\\\"labels\\\\\\\":[],\\\\\\\"initiatives\\\\\\\":[],\\\\\\\"lead\\\\\\\":{},\\\\\\\"status\\\\\\\":{\\\\\\\"id\\\\\\\":\\\\\\\"03be2067-8e60-4beb-af6f-421a75bc9e59\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Backlog\\\\\\\"}},{\\\\\\\"id\\\\\\\":\\\\\\\"a612138a-2c5b-476b-bf73-628dd24cdfd0\\\\\\\",\\\\\\\"icon\\\\\\\":null,\\\\\\\"color\\\\\\\":\\\\\\\"#bec2c8\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Marketing\\\\\\\",\\\\\\\"summary\\\\\\\":\\\\\\\"Marketing goals for the Q1 plan.\\\\\\\",\\\\\\\"description\\\\\\\":\\\\\\\"\\\\\\\",\\\\\\\"url\\\\\\\":\\\\\\\"https://linear.app/cobrowser/project/marketing-5946aa1f4564\\\\\\\",\\\\\\\"createdAt\\\\\\\":\\\\\\\"2026-01-21T14:10:45.864Z\\\\\\\",\\\\\\\"updatedAt\\\\\\\":\\\\\\\"2026-01-21T15:39:44.281Z\\\\\\\",\\\\\\\"startDate\\\\\\\":null,\\\\\\\"targetDate\\\\\\\":\\\\\\\"2026-04-01\\\\\\\",\\\\\\\"labels\\\\\\\":[],\\\\\\\"initiatives\\\\\\\":[],\\\\\\\"lead\\\\\\\":{},\\\\\\\"status\\\\\\\":{\\\\\\\"id\\\\\\\":\\\\\\\"03be2067-8e60-4beb-af6f-421a75bc9e59\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Backlog\\\\\\\"}},{\\\\\\\"id\\\\\\\":\\\\\\\"d58e8e0a-3108-4ab3-8c30-c0da5b963e67\\\\\\\",\\\\\\\"icon\\\\\\\":null,\\\\\\\"color\\\\\\\":\\\\\\\"#bec2c8\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Sales\\\\\\\",\\\\\\\"summary\\\\\\\":\\\\\\\"Sales goals for the Q1 plan.\\\\\\\",\\\\\\\"description\\\\\\\":\\\\\\\"\\\\\\\",\\\\\\\"url\\\\\\\":\\\\\\\"https://linear.app/cobrowser/project/sales-b01f4df56c0a\\\\\\\",\\\\\\\"createdAt\\\\\\\":\\\\\\\"2026-01-21T14:10:44.368Z\\\\\\\",\\\\\\\"updatedAt\\\\\\\":\\\\\\\"2026-01-21T15:39:44.300Z\\\\\\\",\\\\\\\"startDate\\\\\\\":null,\\\\\\\"targetDate\\\\\\\":\\\\\\\"2026-04-01\\\\\\\",\\\\\\\"labels\\\\\\\":[],\\\\\\\"initiatives\\\\\\\":[],\\\\\\\"lead\\\\\\\":{},\\\\\\\"status\\\\\\\":{\\\\\\\"id\\\\\\\":\\\\\\\"03be2067-8e60-4beb-af6f-421a75bc9e59\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Backlog\\\\\\\"}},{\\\\\\\"id\\\\\\\":\\\\\\\"4b4dcb10-cab7-4ec9-a7e7-554603a63cf3\\\\\\\",\\\\\\\"icon\\\\\\\":null,\\\\\\\"color\\\\\\\":\\\\\\\"#bec2c8\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Engineering\\\\\\\",\\\\\\\"summary\\\\\\\":\\\\\\\"Engineering deliverables for the Q1 plan.\\\\\\\",\\\\\\\"description\\\\\\\":\\\\\\\"\\\\\\\",\\\\\\\"url\\\\\\\":\\\\\\\"https://linear.app/cobrowser/project/engineering-329049b2b1d3\\\\\\\",\\\\\\\"createdAt\\\\\\\":\\\\\\\"2026-01-21T14:10:42.873Z\\\\\\\",\\\\\\\"updatedAt\\\\\\\":\\\\\\\"2026-01-21T15:39:44.321Z\\\\\\\",\\\\\\\"startDate\\\\\\\":null,\\\\\\\"targetDate\\\\\\\":\\\\\\\"2026-04-01\\\\\\\",\\\\\\\"labels\\\\\\\":[],\\\\\\\"initiatives\\\\\\\":[],\\\\\\\"lead\\\\\\\":{},\\\\\\\"status\\\\\\\":{\\\\\\\"id\\\\\\\":\\\\\\\"03be2067-8e60-4beb-af6f-421a75bc9e59\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Backlog\\\\\\\"}}],\\\\\\\"hasNextPage\\\\\\\":false}\\\"}]}\"}}]}",
+                "result_tokens": 850,
+                "stored_in_corpus": false
+              }
+            ]
+          },
+          "verification": {
+            "claim_scores": [
+              {
+                "claim": "The response includes the exact total count of projects returned by the tool",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              },
+              {
+                "claim": "The response names every project by its title",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              }
+            ],
+            "coverage": 1.0,
+            "passed": true
+          }
+        },
+        {
+          "claims": [
+            "The response lists every team name",
+            "The response includes the key or short identifier for each team, or correctly reports that it is not available"
+          ],
+          "prompt": "List all teams in the Linear workspace. For each team, provide the team name and its key identifier.",
+          "task_id": "task_linear_002",
+          "task_result": {
+            "context_tokens": 18712,
+            "error": null,
+            "final_answer": "I couldn't find a key identifier for the teams, but here are the teams in the workspace including their name and ID:\n\n- **Team Name**: Kontext\n- **Team ID**: 50a530fe-ef47-4964-9de8-6c298d1f78fb",
+            "latency_ms": 17324,
+            "mode_name": "Baseline",
+            "num_tool_calls": 2,
+            "task_id": "task_linear_002",
+            "tool_calls": [
+              {
+                "arguments": {},
+                "index": 0,
+                "name": "Linear_list_teams",
+                "result": "{\"content\":[{\"type\":\"resource\",\"resource\":{\"uri\":\"inline://execute-tool\",\"mimeType\":\"application/json\",\"text\":\"{\\\"content\\\":[{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"{\\\\\\\"teams\\\\\\\":[{\\\\\\\"id\\\\\\\":\\\\\\\"50a530fe-ef47-4964-9de8-6c298d1f78fb\\\\\\\",\\\\\\\"icon\\\\\\\":\\\\\\\"Gears\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Kontext\\\\\\\",\\\\\\\"createdAt\\\\\\\":\\\\\\\"2025-10-17T07:46:18.808Z\\\\\\\",\\\\\\\"updatedAt\\\\\\\":\\\\\\\"2026-02-20T11:43:05.554Z\\\\\\\"}],\\\\\\\"hasNextPage\\\\\\\":false}\\\"}]}\"}}]}",
+                "result_tokens": 106,
+                "stored_in_corpus": false
+              },
+              {
+                "arguments": {
+                  "query": "50a530fe-ef47-4964-9de8-6c298d1f78fb"
+                },
+                "index": 1,
+                "name": "Linear_get_team",
+                "result": "{\"content\":[{\"type\":\"resource\",\"resource\":{\"uri\":\"inline://execute-tool\",\"mimeType\":\"application/json\",\"text\":\"{\\\"content\\\":[{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"{\\\\\\\"id\\\\\\\":\\\\\\\"50a530fe-ef47-4964-9de8-6c298d1f78fb\\\\\\\",\\\\\\\"icon\\\\\\\":\\\\\\\"Gears\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Kontext\\\\\\\",\\\\\\\"createdAt\\\\\\\":\\\\\\\"2025-10-17T07:46:18.808Z\\\\\\\",\\\\\\\"updatedAt\\\\\\\":\\\\\\\"2026-02-20T11:43:05.554Z\\\\\\\"}\\\"}]}\"}}]}",
+                "result_tokens": 95,
+                "stored_in_corpus": false
+              }
+            ]
+          },
+          "verification": {
+            "claim_scores": [
+              {
+                "claim": "The response lists every team name",
+                "score": 0.0,
+                "verdict": "NOT_FULFILLED"
+              },
+              {
+                "claim": "The response includes the key or short identifier for each team, or correctly reports that it is not available",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              }
+            ],
+            "coverage": 0.5,
+            "passed": false
+          }
+        },
+        {
+          "claims": [
+            "The response lists every user by the name returned by the tool",
+            "The response includes each user's email address if available"
+          ],
+          "prompt": "List all users in the Linear workspace. Show each user's name and email address.",
+          "task_id": "task_linear_003",
+          "task_result": {
+            "context_tokens": 18810,
+            "error": null,
+            "final_answer": "Here are the users in the Linear workspace:\n\n*   **vishy@cobrowser.xyz**: vishy@cobrowser.xyz\n*   **michel@cobrowser.xyz**: michel@cobrowser.xyz\n*   **jens@cobrowser.xyz**: jens@cobrowser.xyz",
+            "latency_ms": 9974,
+            "mode_name": "Baseline",
+            "num_tool_calls": 1,
+            "task_id": "task_linear_003",
+            "tool_calls": [
+              {
+                "arguments": {},
+                "index": 0,
+                "name": "Linear_list_users",
+                "result": "{\"content\":[{\"type\":\"resource\",\"resource\":{\"uri\":\"inline://execute-tool\",\"mimeType\":\"application/json\",\"text\":\"{\\\"content\\\":[{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"{\\\\\\\"users\\\\\\\":[{\\\\\\\"id\\\\\\\":\\\\\\\"44db32dd-3231-4cdc-a869-d3d689f3c0b5\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"vishy@cobrowser.xyz\\\\\\\",\\\\\\\"email\\\\\\\":\\\\\\\"vishy@cobrowser.xyz\\\\\\\",\\\\\\\"displayName\\\\\\\":\\\\\\\"vishy\\\\\\\",\\\\\\\"isAdmin\\\\\\\":false,\\\\\\\"isGuest\\\\\\\":false,\\\\\\\"isActive\\\\\\\":true,\\\\\\\"createdAt\\\\\\\":\\\\\\\"2026-01-27T08:21:00.970Z\\\\\\\",\\\\\\\"updatedAt\\\\\\\":\\\\\\\"2026-02-07T10:47:24.803Z\\\\\\\",\\\\\\\"status\\\\\\\":\\\\\\\"Offline (last seen 2026-02-16T18:34:14.633Z)\\\\\\\"},{\\\\\\\"id\\\\\\\":\\\\\\\"061b21b6-44dc-4265-b20a-a997c0ebfacc\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"michel@cobrowser.xyz\\\\\\\",\\\\\\\"email\\\\\\\":\\\\\\\"michel@cobrowser.xyz\\\\\\\",\\\\\\\"displayName\\\\\\\":\\\\\\\"michel\\\\\\\",\\\\\\\"isAdmin\\\\\\\":true,\\\\\\\"isGuest\\\\\\\":false,\\\\\\\"isActive\\\\\\\":true,\\\\\\\"createdAt\\\\\\\":\\\\\\\"2025-02-19T18:12:36.160Z\\\\\\\",\\\\\\\"updatedAt\\\\\\\":\\\\\\\"2026-02-06T16:22:44.099Z\\\\\\\",\\\\\\\"status\\\\\\\":\\\\\\\"Offline (last seen 2026-02-21T00:22:29.845Z)\\\\\\\"},{\\\\\\\"id\\\\\\\":\\\\\\\"091ffe15-b7b6-414f-b678-2213c12a691d\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"jens@cobrowser.xyz\\\\\\\",\\\\\\\"email\\\\\\\":\\\\\\\"jens@cobrowser.xyz\\\\\\\",\\\\\\\"displayName\\\\\\\":\\\\\\\"jens\\\\\\\",\\\\\\\"isAdmin\\\\\\\":true,\\\\\\\"isGuest\\\\\\\":false,\\\\\\\"isActive\\\\\\\":true,\\\\\\\"createdAt\\\\\\\":\\\\\\\"2025-02-19T18:12:35.484Z\\\\\\\",\\\\\\\"updatedAt\\\\\\\":\\\\\\\"2026-01-03T12:41:20.065Z\\\\\\\",\\\\\\\"status\\\\\\\":\\\\\\\"Offline (last seen 2026-02-22T13:04:44.004Z)\\\\\\\"}],\\\\\\\"hasNextPage\\\\\\\":false}\\\"}]}\"}}]}",
+                "result_tokens": 359,
+                "stored_in_corpus": false
+              }
+            ]
+          },
+          "verification": {
+            "claim_scores": [
+              {
+                "claim": "The response lists every user by the name returned by the tool",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              },
+              {
+                "claim": "The response includes each user's email address if available",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              }
+            ],
+            "coverage": 1.0,
+            "passed": true
+          }
+        },
+        {
+          "claims": [
+            "The response names every issue label",
+            "The response includes the color for each label if available"
+          ],
+          "prompt": "What issue labels are available in Linear? List each label with its name and color.",
+          "task_id": "task_linear_004",
+          "task_result": {
+            "context_tokens": 18430,
+            "error": null,
+            "final_answer": "Here are the available issue labels in Linear:\n\n* **Feature**: #BB87FC\n* **Improvement**: #4EA7FC\n* **Bug**: #EB5757",
+            "latency_ms": 11260,
+            "mode_name": "Baseline",
+            "num_tool_calls": 1,
+            "task_id": "task_linear_004",
+            "tool_calls": [
+              {
+                "arguments": {},
+                "index": 0,
+                "name": "Linear_list_issue_labels",
+                "result": "{\"content\":[{\"type\":\"resource\",\"resource\":{\"uri\":\"inline://execute-tool\",\"mimeType\":\"application/json\",\"text\":\"{\\\"content\\\":[{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"{\\\\\\\"labels\\\\\\\":[{\\\\\\\"id\\\\\\\":\\\\\\\"daa8235a-a908-43cb-98b3-b387acb00a1d\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Feature\\\\\\\",\\\\\\\"color\\\\\\\":\\\\\\\"#BB87FC\\\\\\\",\\\\\\\"description\\\\\\\":null},{\\\\\\\"id\\\\\\\":\\\\\\\"cd46a6a4-b88f-4c61-aa17-5e786e9736ac\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Improvement\\\\\\\",\\\\\\\"color\\\\\\\":\\\\\\\"#4EA7FC\\\\\\\",\\\\\\\"description\\\\\\\":null},{\\\\\\\"id\\\\\\\":\\\\\\\"a89be1b0-5690-435a-b8a2-ff1448d0730f\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Bug\\\\\\\",\\\\\\\"color\\\\\\\":\\\\\\\"#EB5757\\\\\\\",\\\\\\\"description\\\\\\\":null}],\\\\\\\"hasNextPage\\\\\\\":false}\\\"}]}\"}}]}",
+                "result_tokens": 158,
+                "stored_in_corpus": false
+              }
+            ]
+          },
+          "verification": {
+            "claim_scores": [
+              {
+                "claim": "The response names every issue label",
+                "score": 0.5,
+                "verdict": "PARTIAL"
+              },
+              {
+                "claim": "The response includes the color for each label if available",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              }
+            ],
+            "coverage": 0.75,
+            "passed": true
+          }
+        },
+        {
+          "claims": [
+            "The response names every status",
+            "The response includes the type or category of each status (e.g., started, completed, canceled)"
+          ],
+          "prompt": "What are all the possible issue statuses in Linear? List each status name and indicate its type or category.",
+          "task_id": "task_linear_005",
+          "task_result": {
+            "context_tokens": 18774,
+            "error": null,
+            "final_answer": "Here are the issue statuses available in Linear, along with their types:\n\n**Backlog**\n* Backlog\n\n**Unstarted**\n* Todo\n\n**Started**\n* In Progress\n\n**Completed**\n* Done\n\n**Canceled**\n* Canceled",
+            "latency_ms": 18716,
+            "mode_name": "Baseline",
+            "num_tool_calls": 2,
+            "task_id": "task_linear_005",
+            "tool_calls": [
+              {
+                "arguments": {},
+                "index": 0,
+                "name": "Linear_list_teams",
+                "result": "{\"content\":[{\"type\":\"resource\",\"resource\":{\"uri\":\"inline://execute-tool\",\"mimeType\":\"application/json\",\"text\":\"{\\\"content\\\":[{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"{\\\\\\\"teams\\\\\\\":[{\\\\\\\"id\\\\\\\":\\\\\\\"50a530fe-ef47-4964-9de8-6c298d1f78fb\\\\\\\",\\\\\\\"icon\\\\\\\":\\\\\\\"Gears\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Kontext\\\\\\\",\\\\\\\"createdAt\\\\\\\":\\\\\\\"2025-10-17T07:46:18.808Z\\\\\\\",\\\\\\\"updatedAt\\\\\\\":\\\\\\\"2026-02-20T11:43:05.554Z\\\\\\\"}],\\\\\\\"hasNextPage\\\\\\\":false}\\\"}]}\"}}]}",
+                "result_tokens": 106,
+                "stored_in_corpus": false
+              },
+              {
+                "arguments": {
+                  "team": "Kontext"
+                },
+                "index": 1,
+                "name": "Linear_list_issue_statuses",
+                "result": "{\"content\":[{\"type\":\"resource\",\"resource\":{\"uri\":\"inline://execute-tool\",\"mimeType\":\"application/json\",\"text\":\"{\\\"content\\\":[{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"[{\\\\\\\"id\\\\\\\":\\\\\\\"d65cdccb-2efa-40f9-af7f-5e72686f7781\\\\\\\",\\\\\\\"type\\\\\\\":\\\\\\\"unstarted\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Todo\\\\\\\"},{\\\\\\\"id\\\\\\\":\\\\\\\"bdce3ef4-e9e7-4da6-a57d-1df2f9bb95a6\\\\\\\",\\\\\\\"type\\\\\\\":\\\\\\\"canceled\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Canceled\\\\\\\"},{\\\\\\\"id\\\\\\\":\\\\\\\"b5475aa8-e5c0-4c4e-8d57-904aef9b14e1\\\\\\\",\\\\\\\"type\\\\\\\":\\\\\\\"completed\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Done\\\\\\\"},{\\\\\\\"id\\\\\\\":\\\\\\\"7edd1260-fc59-460c-adaa-2599480f488b\\\\\\\",\\\\\\\"type\\\\\\\":\\\\\\\"started\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"In Progress\\\\\\\"},{\\\\\\\"id\\\\\\\":\\\\\\\"28fa31ba-e184-4b68-9e97-d533d75164cf\\\\\\\",\\\\\\\"type\\\\\\\":\\\\\\\"backlog\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Backlog\\\\\\\"}]\\\"}]}\"}}]}",
+                "result_tokens": 187,
+                "stored_in_corpus": false
+              }
+            ]
+          },
+          "verification": {
+            "claim_scores": [
+              {
+                "claim": "The response names every status",
+                "score": 0.5,
+                "verdict": "PARTIAL"
+              },
+              {
+                "claim": "The response includes the type or category of each status (e.g., started, completed, canceled)",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              }
+            ],
+            "coverage": 0.75,
+            "passed": true
+          }
+        }
+      ]
+    },
+    "CodeMode": {
+      "summary": {
+        "avg_context_tokens": 9039,
+        "avg_coverage": 0.9,
+        "avg_latency_ms": 10260,
+        "pass_count": 5,
+        "pass_rate": 1.0,
+        "total_tasks": 5
+      },
+      "tasks": [
+        {
+          "claims": [
+            "The response includes the exact total count of projects returned by the tool",
+            "The response names every project by its title"
+          ],
+          "prompt": "List all projects in Linear. Tell me how many there are and name each one.",
+          "task_id": "task_linear_001",
+          "task_result": {
+            "context_tokens": 8759,
+            "error": null,
+            "final_answer": "There are 5 projects in Linear. Their names are: Legal & Admin, Standardization Groups, Marketing, Sales, and Engineering.",
+            "latency_ms": 6993,
+            "mode_name": "CodeMode",
+            "num_tool_calls": 1,
+            "task_id": "task_linear_001",
+            "tool_calls": [
+              {
+                "arguments": {
+                  "code": "async () => {\n  const projects = await codemode.Linear_list_projects({});\n  const projectNames = projects.map(project => project.name);\n  return {\n    count: projects.length,\n    names: projectNames\n  };\n}"
+                },
+                "index": 0,
+                "name": "EXECUTE_CODE",
+                "result": "{\n  \"count\": 5,\n  \"names\": [\n    \"Legal & Admin\",\n    \"Standardization Groups\",\n    \"Marketing\",\n    \"Sales\",\n    \"Engineering\"\n  ]\n}",
+                "result_tokens": 33,
+                "stored_in_corpus": false
+              }
+            ]
+          },
+          "verification": {
+            "claim_scores": [
+              {
+                "claim": "The response includes the exact total count of projects returned by the tool",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              },
+              {
+                "claim": "The response names every project by its title",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              }
+            ],
+            "coverage": 1.0,
+            "passed": true
+          }
+        },
+        {
+          "claims": [
+            "The response lists every team name",
+            "The response includes the key or short identifier for each team, or correctly reports that it is not available"
+          ],
+          "prompt": "List all teams in the Linear workspace. For each team, provide the team name and its key identifier.",
+          "task_id": "task_linear_002",
+          "task_result": {
+            "context_tokens": 9099,
+            "error": null,
+            "final_answer": "There is one team in your Linear workspace: Kontext. A key for this team was not provided.",
+            "latency_ms": 10334,
+            "mode_name": "CodeMode",
+            "num_tool_calls": 1,
+            "task_id": "task_linear_002",
+            "tool_calls": [
+              {
+                "arguments": {
+                  "code": "async () => {\n  const teams = await codemode.Linear_list_teams({});\n  return teams.map(team => {\n    return {\n      name: team.name,\n      key: team.key\n    };\n  });\n}"
+                },
+                "index": 0,
+                "name": "EXECUTE_CODE",
+                "result": "[\n  {\n    \"name\": \"Kontext\"\n  }\n]",
+                "result_tokens": 8,
+                "stored_in_corpus": false
+              }
+            ]
+          },
+          "verification": {
+            "claim_scores": [
+              {
+                "claim": "The response lists every team name",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              },
+              {
+                "claim": "The response includes the key or short identifier for each team, or correctly reports that it is not available",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              }
+            ],
+            "coverage": 1.0,
+            "passed": true
+          }
+        },
+        {
+          "claims": [
+            "The response lists every user by the name returned by the tool",
+            "The response includes each user's email address if available"
+          ],
+          "prompt": "List all users in the Linear workspace. Show each user's name and email address.",
+          "task_id": "task_linear_003",
+          "task_result": {
+            "context_tokens": 9298,
+            "error": null,
+            "final_answer": "Here are the users in the Linear workspace:\n\n*   **Name:** vishy@cobrowser.xyz\n    **Email:** vishy@cobrowser.xyz\n*   **Name:** michel@cobrowser.xyz\n    **Email:** michel@cobrowser.xyz\n*   **Name:** jens@cobrowser.xyz\n    **Email:** jens@cobrowser.xyz",
+            "latency_ms": 10529,
+            "mode_name": "CodeMode",
+            "num_tool_calls": 1,
+            "task_id": "task_linear_003",
+            "tool_calls": [
+              {
+                "arguments": {
+                  "code": "async () => {\n  const users = await codemode.Linear_list_users({});\n  return users.map(user => ({\n    name: user.name,\n    email: user.email\n  }));\n}"
+                },
+                "index": 0,
+                "name": "EXECUTE_CODE",
+                "result": "[\n  {\n    \"email\": \"vishy@cobrowser.xyz\",\n    \"name\": \"vishy@cobrowser.xyz\"\n  },\n  {\n    \"email\": \"michel@cobrowser.xyz\",\n    \"name\": \"michel@cobrowser.xyz\"\n  },\n  {\n    \"email\": \"jens@cobrowser.xyz\",\n    \"name\": \"jens@cobrowser.xyz\"\n  }\n]",
+                "result_tokens": 59,
+                "stored_in_corpus": false
+              }
+            ]
+          },
+          "verification": {
+            "claim_scores": [
+              {
+                "claim": "The response lists every user by the name returned by the tool",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              },
+              {
+                "claim": "The response includes each user's email address if available",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              }
+            ],
+            "coverage": 1.0,
+            "passed": true
+          }
+        },
+        {
+          "claims": [
+            "The response names every issue label",
+            "The response includes the color for each label if available"
+          ],
+          "prompt": "What issue labels are available in Linear? List each label with its name and color.",
+          "task_id": "task_linear_004",
+          "task_result": {
+            "context_tokens": 8799,
+            "error": null,
+            "final_answer": "The available issue labels in Linear are:\n- Feature: #BB87FC\n- Improvement: #4EA7FC\n- Bug: #EB5757",
+            "latency_ms": 9160,
+            "mode_name": "CodeMode",
+            "num_tool_calls": 1,
+            "task_id": "task_linear_004",
+            "tool_calls": [
+              {
+                "arguments": {
+                  "code": "async () => {\n  const labels = await codemode.Linear_list_issue_labels({});\n  return labels.map(label => ({ name: label.name, color: label.color }));\n}"
+                },
+                "index": 0,
+                "name": "EXECUTE_CODE",
+                "result": "[\n  {\n    \"color\": \"#BB87FC\",\n    \"name\": \"Feature\"\n  },\n  {\n    \"color\": \"#4EA7FC\",\n    \"name\": \"Improvement\"\n  },\n  {\n    \"color\": \"#EB5757\",\n    \"name\": \"Bug\"\n  }\n]",
+                "result_tokens": 41,
+                "stored_in_corpus": false
+              }
+            ]
+          },
+          "verification": {
+            "claim_scores": [
+              {
+                "claim": "The response names every issue label",
+                "score": 0.5,
+                "verdict": "PARTIAL"
+              },
+              {
+                "claim": "The response includes the color for each label if available",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              }
+            ],
+            "coverage": 0.75,
+            "passed": true
+          }
+        },
+        {
+          "claims": [
+            "The response names every status",
+            "The response includes the type or category of each status (e.g., started, completed, canceled)"
+          ],
+          "prompt": "What are all the possible issue statuses in Linear? List each status name and indicate its type or category.",
+          "task_id": "task_linear_005",
+          "task_result": {
+            "context_tokens": 9240,
+            "error": null,
+            "final_answer": "Based on the information from your Linear workspace, here are all the possible issue statuses and their corresponding types:\n\n*   **Todo**: Unstarted\n*   **In Progress**: Started\n*   **Done**: Completed\n*   **Canceled**: Canceled\n*   **Backlog**: Backlog",
+            "latency_ms": 14286,
+            "mode_name": "CodeMode",
+            "num_tool_calls": 1,
+            "task_id": "task_linear_005",
+            "tool_calls": [
+              {
+                "arguments": {
+                  "code": "async () => {\n  const teams = await codemode.Linear_list_teams({});\n  const allStatuses = new Map();\n\n  for (const team of teams) {\n    const statuses = await codemode.Linear_list_issue_statuses({ team: team.id });\n    for (const status of statuses) {\n      if (!allStatuses.has(status.name)) {\n        allStatuses.set(status.name, status.type);\n      }\n    }\n  }\n\n  return Array.from(allStatuses, ([name, type]) => ({ name, type }));\n}"
+                },
+                "index": 0,
+                "name": "EXECUTE_CODE",
+                "result": "[\n  {\n    \"name\": \"Todo\",\n    \"type\": \"unstarted\"\n  },\n  {\n    \"name\": \"Canceled\",\n    \"type\": \"canceled\"\n  },\n  {\n    \"name\": \"Done\",\n    \"type\": \"completed\"\n  },\n  {\n    \"name\": \"In Progress\",\n    \"type\": \"started\"\n  },\n  {\n    \"name\": \"Backlog\",\n    \"type\": \"backlog\"\n  }\n]",
+                "result_tokens": 69,
+                "stored_in_corpus": false
+              }
+            ]
+          },
+          "verification": {
+            "claim_scores": [
+              {
+                "claim": "The response names every status",
+                "score": 0.5,
+                "verdict": "PARTIAL"
+              },
+              {
+                "claim": "The response includes the type or category of each status (e.g., started, completed, canceled)",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              }
+            ],
+            "coverage": 0.75,
+            "passed": true
+          }
+        }
+      ]
+    },
+    "CodeMode+RLM": {
+      "summary": {
+        "avg_context_tokens": 9282,
+        "avg_coverage": 0.8,
+        "avg_latency_ms": 11227,
+        "pass_count": 4,
+        "pass_rate": 0.8,
+        "total_tasks": 5
+      },
+      "tasks": [
+        {
+          "claims": [
+            "The response includes the exact total count of projects returned by the tool",
+            "The response names every project by its title"
+          ],
+          "prompt": "List all projects in Linear. Tell me how many there are and name each one.",
+          "task_id": "task_linear_001",
+          "task_result": {
+            "context_tokens": 9174,
+            "error": null,
+            "final_answer": "There are 5 projects in Linear:\n\n* Legal & Admin\n* Standardization Groups\n* Marketing\n* Sales\n* Engineering",
+            "latency_ms": 8240,
+            "mode_name": "CodeMode+RLM",
+            "num_tool_calls": 1,
+            "task_id": "task_linear_001",
+            "tool_calls": [
+              {
+                "arguments": {
+                  "code": "async () => {\n  const projects = await codemode.Linear_list_projects({});\n  const projectNames = projects.map(p => p.name);\n  return {\n    count: projectNames.length,\n    names: projectNames,\n  };\n}"
+                },
+                "index": 0,
+                "name": "EXECUTE_CODE",
+                "result": "{\n  \"count\": 5,\n  \"names\": [\n    \"Legal & Admin\",\n    \"Standardization Groups\",\n    \"Marketing\",\n    \"Sales\",\n    \"Engineering\"\n  ]\n}",
+                "result_tokens": 33,
+                "stored_in_corpus": false
+              }
+            ]
+          },
+          "verification": {
+            "claim_scores": [
+              {
+                "claim": "The response includes the exact total count of projects returned by the tool",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              },
+              {
+                "claim": "The response names every project by its title",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              }
+            ],
+            "coverage": 1.0,
+            "passed": true
+          }
+        },
+        {
+          "claims": [
+            "The response lists every team name",
+            "The response includes the key or short identifier for each team, or correctly reports that it is not available"
+          ],
+          "prompt": "List all teams in the Linear workspace. For each team, provide the team name and its key identifier.",
+          "task_id": "task_linear_002",
+          "task_result": {
+            "context_tokens": 9232,
+            "error": null,
+            "final_answer": "Based on the information I could retrieve, here is the team in the Linear workspace:\n\n*   **Team Name:** Kontext",
+            "latency_ms": 11878,
+            "mode_name": "CodeMode+RLM",
+            "num_tool_calls": 1,
+            "task_id": "task_linear_002",
+            "tool_calls": [
+              {
+                "arguments": {
+                  "code": "async () => {\n  const teams = await codemode.Linear_list_teams({});\n  return teams.map(team => ({ name: team.name, key: team.key }));\n}"
+                },
+                "index": 0,
+                "name": "EXECUTE_CODE",
+                "result": "[\n  {\n    \"name\": \"Kontext\"\n  }\n]",
+                "result_tokens": 8,
+                "stored_in_corpus": false
+              }
+            ]
+          },
+          "verification": {
+            "claim_scores": [
+              {
+                "claim": "The response lists every team name",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              },
+              {
+                "claim": "The response includes the key or short identifier for each team, or correctly reports that it is not available",
+                "score": 0.0,
+                "verdict": "NOT_FULFILLED"
+              }
+            ],
+            "coverage": 0.5,
+            "passed": false
+          }
+        },
+        {
+          "claims": [
+            "The response lists every user by the name returned by the tool",
+            "The response includes each user's email address if available"
+          ],
+          "prompt": "List all users in the Linear workspace. Show each user's name and email address.",
+          "task_id": "task_linear_003",
+          "task_result": {
+            "context_tokens": 9380,
+            "error": null,
+            "final_answer": "Here are all the users in the Linear workspace:\n\n*   **vishy@cobrowser.xyz**: vishy@cobrowser.xyz\n*   **michel@cobrowser.xyz**: michel@cobrowser.xyz\n*   **jens@cobrowser.xyz**: jens@cobrowser.xyz",
+            "latency_ms": 10389,
+            "mode_name": "CodeMode+RLM",
+            "num_tool_calls": 1,
+            "task_id": "task_linear_003",
+            "tool_calls": [
+              {
+                "arguments": {
+                  "code": "async () => {\n  const users = await codemode.Linear_list_users({});\n  const userInfo = users.map(user => ({\n    name: user.name,\n    email: user.email,\n  }));\n  return userInfo;\n}"
+                },
+                "index": 0,
+                "name": "EXECUTE_CODE",
+                "result": "[\n  {\n    \"email\": \"vishy@cobrowser.xyz\",\n    \"name\": \"vishy@cobrowser.xyz\"\n  },\n  {\n    \"email\": \"michel@cobrowser.xyz\",\n    \"name\": \"michel@cobrowser.xyz\"\n  },\n  {\n    \"email\": \"jens@cobrowser.xyz\",\n    \"name\": \"jens@cobrowser.xyz\"\n  }\n]",
+                "result_tokens": 59,
+                "stored_in_corpus": false
+              }
+            ]
+          },
+          "verification": {
+            "claim_scores": [
+              {
+                "claim": "The response lists every user by the name returned by the tool",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              },
+              {
+                "claim": "The response includes each user's email address if available",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              }
+            ],
+            "coverage": 1.0,
+            "passed": true
+          }
+        },
+        {
+          "claims": [
+            "The response names every issue label",
+            "The response includes the color for each label if available"
+          ],
+          "prompt": "What issue labels are available in Linear? List each label with its name and color.",
+          "task_id": "task_linear_004",
+          "task_result": {
+            "context_tokens": 9140,
+            "error": null,
+            "final_answer": "Here are the available issue labels in Linear:\n\n*   **Feature**: #BB87FC\n*   **Improvement**: #4EA7FC\n*   **Bug**: #EB5757",
+            "latency_ms": 11166,
+            "mode_name": "CodeMode+RLM",
+            "num_tool_calls": 1,
+            "task_id": "task_linear_004",
+            "tool_calls": [
+              {
+                "arguments": {
+                  "code": "async () => {\n  const labels = await codemode.Linear_list_issue_labels({});\n  return labels.map(label => ({\n    name: label.name,\n    color: label.color\n  }));\n}"
+                },
+                "index": 0,
+                "name": "EXECUTE_CODE",
+                "result": "[\n  {\n    \"color\": \"#BB87FC\",\n    \"name\": \"Feature\"\n  },\n  {\n    \"color\": \"#4EA7FC\",\n    \"name\": \"Improvement\"\n  },\n  {\n    \"color\": \"#EB5757\",\n    \"name\": \"Bug\"\n  }\n]",
+                "result_tokens": 41,
+                "stored_in_corpus": false
+              }
+            ]
+          },
+          "verification": {
+            "claim_scores": [
+              {
+                "claim": "The response names every issue label",
+                "score": 0.5,
+                "verdict": "PARTIAL"
+              },
+              {
+                "claim": "The response includes the color for each label if available",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              }
+            ],
+            "coverage": 0.75,
+            "passed": true
+          }
+        },
+        {
+          "claims": [
+            "The response names every status",
+            "The response includes the type or category of each status (e.g., started, completed, canceled)"
+          ],
+          "prompt": "What are all the possible issue statuses in Linear? List each status name and indicate its type or category.",
+          "task_id": "task_linear_005",
+          "task_result": {
+            "context_tokens": 9488,
+            "error": null,
+            "final_answer": "Based on the information from your Linear workspace, here are all the possible issue statuses and their types:\n\n*   **Todo**: unstarted\n*   **Canceled**: canceled\n*   **Done**: completed\n*   **In Progress**: started\n*   **Backlog**: backlog",
+            "latency_ms": 14462,
+            "mode_name": "CodeMode+RLM",
+            "num_tool_calls": 1,
+            "task_id": "task_linear_005",
+            "tool_calls": [
+              {
+                "arguments": {
+                  "code": "async () => {\n  const teams = await codemode.Linear_list_teams();\n  const allStatuses = new Map();\n\n  for (const team of teams) {\n    const statuses = await codemode.Linear_list_issue_statuses({ team: team.id });\n    for (const status of statuses) {\n      if (!allStatuses.has(status.name)) {\n        allStatuses.set(status.name, status.type);\n      }\n    }\n  }\n\n  const formattedStatuses = Array.from(allStatuses, ([name, type]) => ({ name, type }));\n  return formattedStatuses;\n}"
+                },
+                "index": 0,
+                "name": "EXECUTE_CODE",
+                "result": "[\n  {\n    \"name\": \"Todo\",\n    \"type\": \"unstarted\"\n  },\n  {\n    \"name\": \"Canceled\",\n    \"type\": \"canceled\"\n  },\n  {\n    \"name\": \"Done\",\n    \"type\": \"completed\"\n  },\n  {\n    \"name\": \"In Progress\",\n    \"type\": \"started\"\n  },\n  {\n    \"name\": \"Backlog\",\n    \"type\": \"backlog\"\n  }\n]",
+                "result_tokens": 69,
+                "stored_in_corpus": false
+              }
+            ]
+          },
+          "verification": {
+            "claim_scores": [
+              {
+                "claim": "The response names every status",
+                "score": 0.5,
+                "verdict": "PARTIAL"
+              },
+              {
+                "claim": "The response includes the type or category of each status (e.g., started, completed, canceled)",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              }
+            ],
+            "coverage": 0.75,
+            "passed": true
+          }
+        }
+      ]
+    },
+    "RLM": {
+      "summary": {
+        "avg_context_tokens": 10961,
+        "avg_coverage": 0.9,
+        "avg_latency_ms": 19256,
+        "pass_count": 5,
+        "pass_rate": 1.0,
+        "total_tasks": 5
+      },
+      "tasks": [
+        {
+          "claims": [
+            "The response includes the exact total count of projects returned by the tool",
+            "The response names every project by its title"
+          ],
+          "prompt": "List all projects in Linear. Tell me how many there are and name each one.",
+          "task_id": "task_linear_001",
+          "task_result": {
+            "context_tokens": 10570,
+            "error": null,
+            "final_answer": "There are 5 projects in Linear. They are:\n- Legal & Admin\n- Standardization Groups\n- Marketing\n- Sales\n- Engineering\n",
+            "latency_ms": 14950,
+            "mode_name": "RLM",
+            "num_tool_calls": 3,
+            "task_id": "task_linear_001",
+            "tool_calls": [
+              {
+                "arguments": {
+                  "code": "print(context)"
+                },
+                "index": 0,
+                "name": "repl_execute",
+                "result": "List all projects in Linear. Tell me how many there are and name each one.\n",
+                "result_tokens": 18,
+                "stored_in_corpus": false
+              },
+              {
+                "arguments": {
+                  "code": "projects_json = execute_tool(\"a7bf0a61-f018-4f75-9375-3e62a100f3df:list_projects\")\nprint(projects_json)"
+                },
+                "index": 1,
+                "name": "repl_execute",
+                "result": "{\"content\":[{\"type\":\"resource\",\"resource\":{\"uri\":\"inline://execute-tool\",\"mimeType\":\"application/json\",\"text\":\"{\\\"content\\\":[{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"{\\\\\\\"projects\\\\\\\":[{\\\\\\\"id\\\\\\\":\\\\\\\"ece20b87-24e8-4b29-b44f-ad213603134c\\\\\\\",\\\\\\\"icon\\\\\\\":null,\\\\\\\"color\\\\\\\":\\\\\\\"#bec2c8\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Legal & Admin\\\\\\\",\\\\\\\"summary\\\\\\\":\\\\\\\"Legal and admin work for the Q1 plan.\\\\\\\",\\\\\\\"description\\\\\\\":\\\\\\\"\\\\\\\",\\\\\\\"url\\\\\\\":\\\\\\\"https://linear.app/cobrowser/project/legal-and-admin-e14b71e28c1a\\\\\\\",\\\\\\\"createdAt\\\\\\\":\\\\\\\"2026-01-21T14:10:47.582Z\\\\\\\",\\\\\\\"updatedAt\\\\\\\":\\\\\\\"2026-01-21T15:39:44.252Z\\\\\\\",\\\\\\\"startDate\\\\\\\":null,\\\\\\\"targetDate\\\\\\\":\\\\\\\"2026-04-01\\\\\\\",\\\\\\\"labels\\\\\\\":[],\\\\\\\"initiatives\\\\\\\":[],\\\\\\\"lead\\\\\\\":{},\\\\\\\"status\\\\\\\":{\\\\\\\"id\\\\\\\":\\\\\\\"03be2067-8e60-4beb-af6f-421a75bc9e59\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Backlog\\\\\\\"}},{\\\\\\\"id\\\\\\\":\\\\\\\"9bba1a2d-97da-4696-a73e-95d97f45ca4f\\\\\\\",\\\\\\\"icon\\\\\\\":null,\\\\\\\"color\\\\\\\":\\\\\\\"#bec2c8\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Standardization Groups\\\\\\\",\\\\\\\"summary\\\\\\\":\\\\\\\"Standards and community participation for the Q1 plan.\\\\\\\",\\\\\\\"description\\\\\\\":\\\\\\\"\\\\\\\",\\\\\\\"url\\\\\\\":\\\\\\\"https://linear.app/cobrowser/project/standardization-groups-32e6a2bb3544\\\\\\\",\\\\\\\"createdAt\\\\\\\":\\\\\\\"2026-01-21T14:10:46.735Z\\\\\\\",\\\\\\\"updatedAt\\\\\\\":\\\\\\\"2026-01-21T15:39:44.267Z\\\\\\\",\\\\\\\"startDate\\\\\\\":null,\\\\\\\"targetDate\\\\\\\":\\\\\\\"2026-04-01\\\\\\\",\\\\\\\"labels\\\\\\\":[],\\\\\\\"initiatives\\\\\\\":[],\\\\\\\"lead\\\\\\\":{},\\\\\\\"status\\\\\\\":{\\\\\\\"id\\\\\\\":\\\\\\\"03be2067-8e60-4beb-af6f-421a75bc9e59\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Backlog\\\\\\\"}},{\\\\\\\"id\\\\\\\":\\\\\\\"a612138a-2c5b-476b-bf73-628dd24cdfd0\\\\\\\",\\\\\\\"icon\\\\\\\":null,\\\\\\\"color\\\\\\\":\\\\\\\"#bec2c8\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Marketing\\\\\\\",\\\\\\\"summary\\\\\\\":\\\\\\\"Marketing goals for the Q1 plan.\\\\\\\",\\\\\\\"description\\\\\\\":\\\\\\\"\\\\\\\",\\\\\\\"url\\\\\\\":\\\\\\\"https://linear.app/cobrowser/project/marketing-5946aa1f4564\\\\\\\",\\\\\\\"createdAt\\\\\\\":\\\\\\\"2026-01-21T14:10:45.864Z\\\\\\\",\\\\\\\"updatedAt\\\\\\\":\\\\\\\"2026-01-21T15:39:44.281Z\\\\\\\",\\\\\\\"startDate\\\\\\\":null,\\\\\\\"targetDate\\\\\\\":\\\\\\\"2026-04-01\\\\\\\",\\\\\\\"labels\\\\\\\":[],\\\\\\\"initiatives\\\\\\\":[],\\\\\\\"lead\\\\\\\":{},\\\\\\\"status\\\\\\\":{\\\\\\\"id\\\\\\\":\\\\\\\"03be2067-8e60-4beb-af6f-421a75bc9e59\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Backlog\\\\\\\"}},{\\\\\\\"id\\\\\\\":\\\\\\\"d58e8e0a-3108-4ab3-8c30-c0da5b963e67\\\\\\\",\\\\\\\"icon\\\\\\\":null,\\\\\\\"color\\\\\\\":\\\\\\\"#bec2c8\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Sales\\\\\\\",\\\\\\\"summary\\\\\\\":\\\\\\\"Sales goals for the Q1 plan.\\\\\\\",\\\\\\\"description\\\\\\\":\\\\\\\"\\\\\\\",\\\\\\\"url\\\\\\\":\\\\\\\"https://linear.app/cobrowser/project/sales-b01f4df56c0a\\\\\\\",\\\\\\\"createdAt\\\\\\\":\\\\\\\"2026-01-21T14:10:44.368Z\\\\\\\",\\\\\\\"updatedAt\\\\\\\":\\\\\\\"2026-01-21T15:39:44.300Z\\\\\\\",\\\\\\\"startDate\\\\\\\":null,\\\\\\\"targetDate\\\\\\\":\\\\\\\"2026-04-01\\\\\\\",\\\\\\\"labels\\\\\\\":[],\\\\\\\"initiatives\\\\\\\":[],\\\\\\\"lead\\\\\\\":{},\\\\\\\"status\\\\\\\":{\\\\\\\"id\\\\\\\":\\\\\\\"03be2067-8e60-4beb-af6f-421a75bc9e59\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Backlog\\\\\\\"}},{\\\\\\\"id\\\\\\\":\\\\\\\"4b4dcb10-cab7-4ec9-a7e7-554603a63cf3\\\\\\\",\\\\\\\"icon\\\\\\\":null,\\\\\\\"color\\\\\\\":\\\\\\\"#bec2c8\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Engineering\\\\\\\",\\\\\\\"summary\\\\\\\":\\\\\\\"Engineering deliverables for the Q1 plan.\\\\\\\",\\\\\\\"description\\\\\\\":\\\\\\\"\\\\\\\",\\\\\\\"url\\\\\\\":\\\\\\\"https://linear.app/cobrowser/project/engineering-329049b2b1d3\\\\\\\",\\\\\\\"createdAt\\\\\\\":\\\\\\\"2026-01-21T14:10:42.873Z\\\\\\\",\\\\\\\"updatedAt\\\\\\\":\\\\\\\"2026-01-21T15:39:44.321Z\\\\\\\",\\\\\\\"startDate\\\\\\\":null,\\\\\\\"targetDate\\\\\\\":\\\\\\\"2026-04-01\\\\\\\",\\\\\\\"labels\\\\\\\":[],\\\\\\\"initiatives\\\\\\\":[],\\\\\\\"lead\\\\\\\":{},\\\\\\\"status\\\\\\\":{\\\\\\\"id\\\\\\\":\\\\\\\"03be2067-8e60-4beb-af6f-421a75bc9e59\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Backlog\\\\\\\"}}],\\\\\\\"hasNextPage\\\\\\\":false}\\\"}]}\"}}]}\n",
+                "result_tokens": 850,
+                "stored_in_corpus": false
+              },
+              {
+                "arguments": {
+                  "code": "import json\n\n# First, parse the outer JSON structure\nouter_data = json.loads(projects_json)\n# Then, parse the inner JSON string which contains the actual project data\ninner_json_string = outer_data['content'][0]['resource']['text']\n# It seems there's an extra layer of JSON string escaping, so I'll parse it again\nprojects_data = json.loads(json.loads(inner_json_string)['content'][0]['text'])\n\nprojects = projects_data['projects']\nproject_count = len(projects)\nproject_names = [p['name'] for p in projects]\n\nsummary = f\"There are {project_count} projects in Linear. They are:\\n\"\nfor name in project_names:\n    summary += f\"- {name}\\n\"\n\nprint(summary)\nfinal_answer = summary"
+                },
+                "index": 2,
+                "name": "repl_execute",
+                "result": "There are 5 projects in Linear. They are:\n- Legal & Admin\n- Standardization Groups\n- Marketing\n- Sales\n- Engineering\n\n",
+                "result_tokens": 29,
+                "stored_in_corpus": false
+              }
+            ]
+          },
+          "verification": {
+            "claim_scores": [
+              {
+                "claim": "The response includes the exact total count of projects returned by the tool",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              },
+              {
+                "claim": "The response names every project by its title",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              }
+            ],
+            "coverage": 1.0,
+            "passed": true
+          }
+        },
+        {
+          "claims": [
+            "The response lists every team name",
+            "The response includes the key or short identifier for each team, or correctly reports that it is not available"
+          ],
+          "prompt": "List all teams in the Linear workspace. For each team, provide the team name and its key identifier.",
+          "task_id": "task_linear_002",
+          "task_result": {
+            "context_tokens": 9813,
+            "error": null,
+            "final_answer": "Here are the teams in your Linear workspace:\n*   **Team Name**: Kontext\n*   **Key Identifier**: 50a530fe-ef47-4964-9de8-6c298d1f78fb",
+            "latency_ms": 20171,
+            "mode_name": "RLM",
+            "num_tool_calls": 2,
+            "task_id": "task_linear_002",
+            "tool_calls": [
+              {
+                "arguments": {
+                  "code": "teams_data = execute_tool(\"a7bf0a61-f018-4f75-9375-3e62a100f3df:list_teams\")\nprint(teams_data)"
+                },
+                "index": 0,
+                "name": "repl_execute",
+                "result": "{\"content\":[{\"type\":\"resource\",\"resource\":{\"uri\":\"inline://execute-tool\",\"mimeType\":\"application/json\",\"text\":\"{\\\"content\\\":[{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"{\\\\\\\"teams\\\\\\\":[{\\\\\\\"id\\\\\\\":\\\\\\\"50a530fe-ef47-4964-9de8-6c298d1f78fb\\\\\\\",\\\\\\\"icon\\\\\\\":\\\\\\\"Gears\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Kontext\\\\\\\",\\\\\\\"createdAt\\\\\\\":\\\\\\\"2025-10-17T07:46:18.808Z\\\\\\\",\\\\\\\"updatedAt\\\\\\\":\\\\\\\"2026-02-20T11:43:05.554Z\\\\\\\"}],\\\\\\\"hasNextPage\\\\\\\":false}\\\"}]}\"}}]}\n",
+                "result_tokens": 106,
+                "stored_in_corpus": false
+              },
+              {
+                "arguments": {
+                  "code": "import json\n\n# The data is a JSON string with multiple layers of nesting and escaping.\n# I will parse it step-by-step to get to the actual team data.\ndata1 = json.loads(teams_data)\ndata2_str = data1['content'][0]['resource']['text']\ndata2 = json.loads(data2_str)\ndata3_str = data2['content'][0]['text']\nfinal_data = json.loads(data3_str)\n\n# Now I have the final JSON object with the 'teams' array.\nteams = final_data['teams']\n\n# I will now format the extracted information.\nformatted_teams = []\nfor team in teams:\n    team_name = team.get('name', 'N/A')\n    team_key = team.get('key', 'N/A') # The prompt asked for key, but the API returns id. Let's check for both\n    if team_key == 'N/A':\n        team_key = team.get('id', 'N/A') # Fallback to ID if key is not present\n    formatted_teams.append(f\"Team Name: {team_name}, Key Identifier: {team_key}\")\n\nresult = \"\\n\".join(formatted_teams)\nprint(result)"
+                },
+                "index": 1,
+                "name": "repl_execute",
+                "result": "Team Name: Kontext, Key Identifier: 50a530fe-ef47-4964-9de8-6c298d1f78fb\n",
+                "result_tokens": 18,
+                "stored_in_corpus": false
+              }
+            ]
+          },
+          "verification": {
+            "claim_scores": [
+              {
+                "claim": "The response lists every team name",
+                "score": 0.5,
+                "verdict": "PARTIAL"
+              },
+              {
+                "claim": "The response includes the key or short identifier for each team, or correctly reports that it is not available",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              }
+            ],
+            "coverage": 0.75,
+            "passed": true
+          }
+        },
+        {
+          "claims": [
+            "The response lists every user by the name returned by the tool",
+            "The response includes each user's email address if available"
+          ],
+          "prompt": "List all users in the Linear workspace. Show each user's name and email address.",
+          "task_id": "task_linear_003",
+          "task_result": {
+            "context_tokens": 10994,
+            "error": null,
+            "final_answer": "Name: vishy@cobrowser.xyz, Email: vishy@cobrowser.xyz\nName: michel@cobrowser.xyz, Email: michel@cobrowser.xyz\nName: jens@cobrowser.xyz, Email: jens@cobrowser.xyz",
+            "latency_ms": 18409,
+            "mode_name": "RLM",
+            "num_tool_calls": 3,
+            "task_id": "task_linear_003",
+            "tool_calls": [
+              {
+                "arguments": {
+                  "code": "users_json = execute_tool(\"a7bf0a61-f018-4f75-9375-3e62a100f3df:list_users\")\nprint(users_json)"
+                },
+                "index": 0,
+                "name": "repl_execute",
+                "result": "{\"content\":[{\"type\":\"resource\",\"resource\":{\"uri\":\"inline://execute-tool\",\"mimeType\":\"application/json\",\"text\":\"{\\\"content\\\":[{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"{\\\\\\\"users\\\\\\\":[{\\\\\\\"id\\\\\\\":\\\\\\\"44db32dd-3231-4cdc-a869-d3d689f3c0b5\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"vishy@cobrowser.xyz\\\\\\\",\\\\\\\"email\\\\\\\":\\\\\\\"vishy@cobrowser.xyz\\\\\\\",\\\\\\\"displayName\\\\\\\":\\\\\\\"vishy\\\\\\\",\\\\\\\"isAdmin\\\\\\\":false,\\\\\\\"isGuest\\\\\\\":false,\\\\\\\"isActive\\\\\\\":true,\\\\\\\"createdAt\\\\\\\":\\\\\\\"2026-01-27T08:21:00.970Z\\\\\\\",\\\\\\\"updatedAt\\\\\\\":\\\\\\\"2026-02-07T10:47:24.803Z\\\\\\\",\\\\\\\"status\\\\\\\":\\\\\\\"Offline (last seen 2026-02-16T18:34:14.633Z)\\\\\\\"},{\\\\\\\"id\\\\\\\":\\\\\\\"061b21b6-44dc-4265-b20a-a997c0ebfacc\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"michel@cobrowser.xyz\\\\\\\",\\\\\\\"email\\\\\\\":\\\\\\\"michel@cobrowser.xyz\\\\\\\",\\\\\\\"displayName\\\\\\\":\\\\\\\"michel\\\\\\\",\\\\\\\"isAdmin\\\\\\\":true,\\\\\\\"isGuest\\\\\\\":false,\\\\\\\"isActive\\\\\\\":true,\\\\\\\"createdAt\\\\\\\":\\\\\\\"2025-02-19T18:12:36.160Z\\\\\\\",\\\\\\\"updatedAt\\\\\\\":\\\\\\\"2026-02-06T16:22:44.099Z\\\\\\\",\\\\\\\"status\\\\\\\":\\\\\\\"Offline (last seen 2026-02-21T00:22:29.845Z)\\\\\\\"},{\\\\\\\"id\\\\\\\":\\\\\\\"091ffe15-b7b6-414f-b678-2213c12a691d\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"jens@cobrowser.xyz\\\\\\\",\\\\\\\"email\\\\\\\":\\\\\\\"jens@cobrowser.xyz\\\\\\\",\\\\\\\"displayName\\\\\\\":\\\\\\\"jens\\\\\\\",\\\\\\\"isAdmin\\\\\\\":true,\\\\\\\"isGuest\\\\\\\":false,\\\\\\\"isActive\\\\\\\":true,\\\\\\\"createdAt\\\\\\\":\\\\\\\"2025-02-19T18:12:35.484Z\\\\\\\",\\\\\\\"updatedAt\\\\\\\":\\\\\\\"2026-01-03T12:41:20.065Z\\\\\\\",\\\\\\\"status\\\\\\\":\\\\\\\"Offline (last seen 2026-02-22T13:04:44.004Z)\\\\\\\"}],\\\\\\\"hasNextPage\\\\\\\":false}\\\"}]}\"}}]}\n",
+                "result_tokens": 360,
+                "stored_in_corpus": false
+              },
+              {
+                "arguments": {
+                  "code": "import json\n\n# The output from the tool is a nested JSON string.\n# First, parse the outer layer.\ndata = json.loads(users_json)\n\n# Then, access the 'text' field which contains the actual user data as another JSON string.\nusers_data_string = data['content'][0]['resource']['text']\n\n# Parse the inner JSON string to get the list of users.\nusers_list = json.loads(users_data_string)['users']\n\n# Format the user information into a readable string.\nformatted_users = []\nfor user in users_list:\n    name = user.get('name', 'N/A')\n    email = user.get('email', 'N/A')\n    formatted_users.append(f\"Name: {name}, Email: {email}\")\n\nfinal_answer = \"\\n\".join(formatted_users)\nprint(final_answer)"
+                },
+                "index": 1,
+                "name": "repl_execute",
+                "result": "",
+                "result_tokens": 0,
+                "stored_in_corpus": false
+              },
+              {
+                "arguments": {
+                  "code": "import json\n\n# The output from the tool is a deeply nested JSON string.\n# Let's parse it step by step.\n\n# First level of parsing\ndata = json.loads(users_json)\n# Access the 'text' which is another JSON string\ntext_level1 = data['content'][0]['resource']['text']\n\n# Second level of parsing\ndata_level2 = json.loads(text_level1)\n# Access the next 'text' which is the final JSON string with user data\ntext_level2 = data_level2['content'][0]['text']\n\n# Third and final level of parsing\nfinal_data = json.loads(text_level2)\n\n# Now, 'final_data' should be the dictionary containing the 'users' key\nusers_list = final_data['users']\n\n# Format the user information into a readable string.\nformatted_users = []\nfor user in users_list:\n    name = user.get('name', 'N/A')\n    email = user.get('email', 'N/A')\n    formatted_users.append(f\"Name: {name}, Email: {email}\")\n\nfinal_answer = \"\\n\".join(formatted_users)\nprint(final_answer)"
+                },
+                "index": 2,
+                "name": "repl_execute",
+                "result": "Name: vishy@cobrowser.xyz, Email: vishy@cobrowser.xyz\nName: michel@cobrowser.xyz, Email: michel@cobrowser.xyz\nName: jens@cobrowser.xyz, Email: jens@cobrowser.xyz\n",
+                "result_tokens": 40,
+                "stored_in_corpus": false
+              }
+            ]
+          },
+          "verification": {
+            "claim_scores": [
+              {
+                "claim": "The response lists every user by the name returned by the tool",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              },
+              {
+                "claim": "The response includes each user's email address if available",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              }
+            ],
+            "coverage": 1.0,
+            "passed": true
+          }
+        },
+        {
+          "claims": [
+            "The response names every issue label",
+            "The response includes the color for each label if available"
+          ],
+          "prompt": "What issue labels are available in Linear? List each label with its name and color.",
+          "task_id": "task_linear_004",
+          "task_result": {
+            "context_tokens": 11174,
+            "error": null,
+            "final_answer": "- Feature: #BB87FC\n- Improvement: #4EA7FC\n- Bug: #EB5757",
+            "latency_ms": 21680,
+            "mode_name": "RLM",
+            "num_tool_calls": 3,
+            "task_id": "task_linear_004",
+            "tool_calls": [
+              {
+                "arguments": {
+                  "code": "issue_labels = execute_tool(\"a7bf0a61-f018-4f75-9375-3e62a100f3df:list_issue_labels\")\nprint(issue_labels)"
+                },
+                "index": 0,
+                "name": "repl_execute",
+                "result": "{\"content\":[{\"type\":\"resource\",\"resource\":{\"uri\":\"inline://execute-tool\",\"mimeType\":\"application/json\",\"text\":\"{\\\"content\\\":[{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"{\\\\\\\"labels\\\\\\\":[{\\\\\\\"id\\\\\\\":\\\\\\\"daa8235a-a908-43cb-98b3-b387acb00a1d\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Feature\\\\\\\",\\\\\\\"color\\\\\\\":\\\\\\\"#BB87FC\\\\\\\",\\\\\\\"description\\\\\\\":null},{\\\\\\\"id\\\\\\\":\\\\\\\"cd46a6a4-b88f-4c61-aa17-5e786e9736ac\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Improvement\\\\\\\",\\\\\\\"color\\\\\\\":\\\\\\\"#4EA7FC\\\\\\\",\\\\\\\"description\\\\\\\":null},{\\\\\\\"id\\\\\\\":\\\\\\\"a89be1b0-5690-435a-b8a2-ff1448d0730f\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Bug\\\\\\\",\\\\\\\"color\\\\\\\":\\\\\\\"#EB5757\\\\\\\",\\\\\\\"description\\\\\\\":null}],\\\\\\\"hasNextPage\\\\\\\":false}\\\"}]}\"}}]}\n",
+                "result_tokens": 159,
+                "stored_in_corpus": false
+              },
+              {
+                "arguments": {
+                  "code": "import json\n\n# The output from the tool is a stringified JSON within another JSON structure.\n# I need to parse it twice to get to the actual data.\nparsed_outer_json = json.loads(issue_labels)\ntool_output_string = parsed_outer_json['content'][0]['resource']['text']\n\n# The actual tool output is another string that needs to be parsed\n# I'll need to fix the escaping before parsing\ntool_output_string_fixed = tool_output_string.replace('\\\\\"', '\"')\nparsed_inner_json = json.loads(tool_output_string_fixed)\n\nlabels = parsed_inner_json['labels']\n\n# Now I'll format the output\nformatted_labels = []\nfor label in labels:\n    name = label['name']\n    color = label['color']\n    formatted_labels.append(f\"- {name}: {color}\")\n\nfinal_answer = \"\\n\".join(formatted_labels)\nprint(final_answer)"
+                },
+                "index": 1,
+                "name": "repl_execute",
+                "result": "",
+                "result_tokens": 0,
+                "stored_in_corpus": false
+              },
+              {
+                "arguments": {
+                  "code": "import json\n\n# Let's start from the raw tool output again\nraw_output = issue_labels\n\n# First level of parsing\nparsed_level1 = json.loads(raw_output)\ntext_level1 = parsed_level1['content'][0]['resource']['text']\n\n# Second level of parsing\nparsed_level2 = json.loads(text_level1)\ntext_level2 = parsed_level2['content'][0]['text']\n\n# Third and final level of parsing\n# This should give us the actual data structure with the labels\nfinal_data = json.loads(text_level2)\nlabels = final_data['labels']\n\n# Now, format the output as before\nformatted_labels = []\nfor label in labels:\n    name = label.get('name')\n    color = label.get('color')\n    if name and color:\n        formatted_labels.append(f\"- {name}: {color}\")\n\nfinal_answer = \"\\n\".join(formatted_labels)\nprint(final_answer)"
+                },
+                "index": 2,
+                "name": "repl_execute",
+                "result": "- Feature: #BB87FC\n- Improvement: #4EA7FC\n- Bug: #EB5757\n",
+                "result_tokens": 14,
+                "stored_in_corpus": false
+              }
+            ]
+          },
+          "verification": {
+            "claim_scores": [
+              {
+                "claim": "The response names every issue label",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              },
+              {
+                "claim": "The response includes the color for each label if available",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              }
+            ],
+            "coverage": 1.0,
+            "passed": true
+          }
+        },
+        {
+          "claims": [
+            "The response names every status",
+            "The response includes the type or category of each status (e.g., started, completed, canceled)"
+          ],
+          "prompt": "What are all the possible issue statuses in Linear? List each status name and indicate its type or category.",
+          "task_id": "task_linear_005",
+          "task_result": {
+            "context_tokens": 12254,
+            "error": null,
+            "final_answer": "Here are the possible issue statuses in Linear, along with their corresponding types:\n\n- **Todo**: unstarted\n- **Canceled**: canceled\n- **Done**: completed\n- **In Progress**: started\n- **Backlog**: backlog",
+            "latency_ms": 21074,
+            "mode_name": "RLM",
+            "num_tool_calls": 5,
+            "task_id": "task_linear_005",
+            "tool_calls": [
+              {
+                "arguments": {
+                  "code": "statuses_json = execute_tool(\"a7bf0a61-f018-4f75-9375-3e62a100f3df:list_issue_statuses\")\nprint(statuses_json)"
+                },
+                "index": 0,
+                "name": "repl_execute",
+                "result": "{\"content\":[{\"type\":\"resource\",\"resource\":{\"uri\":\"inline://execute-tool\",\"mimeType\":\"application/json\",\"text\":\"{\\\"content\\\":[{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"MCP error -32602: Input validation error: Invalid arguments for tool list_issue_statuses: [\\\\n  {\\\\n    \\\\\\\"expected\\\\\\\": \\\\\\\"string\\\\\\\",\\\\n    \\\\\\\"code\\\\\\\": \\\\\\\"invalid_type\\\\\\\",\\\\n    \\\\\\\"path\\\\\\\": [\\\\n      \\\\\\\"team\\\\\\\"\\\\n    ],\\\\n    \\\\\\\"message\\\\\\\": \\\\\\\"Invalid input\\\\\\\"\\\\n  }\\\\n]\\\"}],\\\"isError\\\":true}\"}}]}\n",
+                "result_tokens": 117,
+                "stored_in_corpus": false
+              },
+              {
+                "arguments": {
+                  "code": "teams_json = execute_tool(\"a7bf0a61-f018-4f75-9375-3e62a100f3df:list_teams\")\nprint(teams_json)"
+                },
+                "index": 1,
+                "name": "repl_execute",
+                "result": "{\"content\":[{\"type\":\"resource\",\"resource\":{\"uri\":\"inline://execute-tool\",\"mimeType\":\"application/json\",\"text\":\"{\\\"content\\\":[{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"{\\\\\\\"teams\\\\\\\":[{\\\\\\\"id\\\\\\\":\\\\\\\"50a530fe-ef47-4964-9de8-6c298d1f78fb\\\\\\\",\\\\\\\"icon\\\\\\\":\\\\\\\"Gears\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Kontext\\\\\\\",\\\\\\\"createdAt\\\\\\\":\\\\\\\"2025-10-17T07:46:18.808Z\\\\\\\",\\\\\\\"updatedAt\\\\\\\":\\\\\\\"2026-02-20T11:43:05.554Z\\\\\\\"}],\\\\\\\"hasNextPage\\\\\\\":false}\\\"}]}\"}}]}\n",
+                "result_tokens": 106,
+                "stored_in_corpus": false
+              },
+              {
+                "arguments": {
+                  "code": "import json\n\nteams_data = json.loads(teams_json)\nteam_id = teams_data['content'][0]['resource']['text']\nteam_data = json.loads(team_id)\nteam = team_data['teams'][0]['id']\n\nstatuses_json = execute_tool(\"a7bf0a61-f018-4f75-9375-3e62a100f3df:list_issue_statuses\", {\"team\": team})\nprint(statuses_json)"
+                },
+                "index": 2,
+                "name": "repl_execute",
+                "result": "",
+                "result_tokens": 0,
+                "stored_in_corpus": false
+              },
+              {
+                "arguments": {
+                  "code": "import json\n\nteams_data = json.loads(teams_json)\nteams_text = teams_data['content'][0]['resource']['text']\nteams = json.loads(json.loads(teams_text)['content'][0]['text'])\nteam_id = teams['teams'][0]['id']\n\nstatuses_json = execute_tool(\"a7bf0a61-f018-4f75-9375-3e62a100f3df:list_issue_statuses\", {\"team\": team_id})\nprint(statuses_json)"
+                },
+                "index": 3,
+                "name": "repl_execute",
+                "result": "{\"content\":[{\"type\":\"resource\",\"resource\":{\"uri\":\"inline://execute-tool\",\"mimeType\":\"application/json\",\"text\":\"{\\\"content\\\":[{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"[{\\\\\\\"id\\\\\\\":\\\\\\\"d65cdccb-2efa-40f9-af7f-5e72686f7781\\\\\\\",\\\\\\\"type\\\\\\\":\\\\\\\"unstarted\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Todo\\\\\\\"},{\\\\\\\"id\\\\\\\":\\\\\\\"bdce3ef4-e9e7-4da6-a57d-1df2f9bb95a6\\\\\\\",\\\\\\\"type\\\\\\\":\\\\\\\"canceled\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Canceled\\\\\\\"},{\\\\\\\"id\\\\\\\":\\\\\\\"b5475aa8-e5c0-4c4e-8d57-904aef9b14e1\\\\\\\",\\\\\\\"type\\\\\\\":\\\\\\\"completed\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Done\\\\\\\"},{\\\\\\\"id\\\\\\\":\\\\\\\"7edd1260-fc59-460c-adaa-2599480f488b\\\\\\\",\\\\\\\"type\\\\\\\":\\\\\\\"started\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"In Progress\\\\\\\"},{\\\\\\\"id\\\\\\\":\\\\\\\"28fa31ba-e184-4b68-9e97-d533d75164cf\\\\\\\",\\\\\\\"type\\\\\\\":\\\\\\\"backlog\\\\\\\",\\\\\\\"name\\\\\\\":\\\\\\\"Backlog\\\\\\\"}]\\\"}]}\"}}]}\n",
+                "result_tokens": 187,
+                "stored_in_corpus": false
+              },
+              {
+                "arguments": {
+                  "code": "import json\n\nstatuses_data = json.loads(statuses_json)\nstatuses_text = statuses_data['content'][0]['resource']['text']\nstatuses_list = json.loads(json.loads(statuses_text)['content'][0]['text'])\n\noutput = \"Here are the possible issue statuses in Linear:\\n\\n\"\nfor status in statuses_list:\n    output += f\"- **{status['name']}**: {status['type']}\\n\"\n\nprint(output)"
+                },
+                "index": 4,
+                "name": "repl_execute",
+                "result": "Here are the possible issue statuses in Linear:\n\n- **Todo**: unstarted\n- **Canceled**: canceled\n- **Done**: completed\n- **In Progress**: started\n- **Backlog**: backlog\n\n",
+                "result_tokens": 42,
+                "stored_in_corpus": false
+              }
+            ]
+          },
+          "verification": {
+            "claim_scores": [
+              {
+                "claim": "The response names every status",
+                "score": 0.5,
+                "verdict": "PARTIAL"
+              },
+              {
+                "claim": "The response includes the type or category of each status (e.g., started, completed, canceled)",
+                "score": 1.0,
+                "verdict": "FULFILLED"
+              }
+            ],
+            "coverage": 0.75,
+            "passed": true
+          }
+        }
+      ]
+    }
+  },
+  "tool_modes": [
+    "Baseline",
+    "CodeMode",
+    "CodeMode+RLM",
+    "RLM"
+  ],
+  "use_codex": false
+}
