@@ -14,7 +14,9 @@
 //!
 //! ## Scoring
 //!
-//! Claims-based scoring using LLM as judge:
+//! Claims-based scoring using LLM as judge (MCP-Atlas methodology):
+//! - Each claim is evaluated in an independent LLM call (per-claim isolation)
+//! - Structured JSON schema output enforces valid verdicts
 //! - `fulfilled` = 1.0
 //! - `partially_fulfilled` = 0.5
 //! - `not_fulfilled` = 0.0
