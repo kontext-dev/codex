@@ -7,7 +7,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 use tempfile::TempDir;
-use tracing_test::traced_test;
 
 use codex_core::rlm::BudgetManager;
 use codex_core::rlm::EvidenceItem;
@@ -16,6 +15,18 @@ use codex_core::rlm::EvidenceSource;
 use codex_core::rlm::EvidenceStore;
 use codex_core::rlm::RlmConfig;
 use codex_core::rlm::RlmController;
+
+fn init_test_tracing() {
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(|| {
+        let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("error"));
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_test_writer()
+            .init();
+    });
+}
 
 /// Benchmark result for a single operation
 #[derive(Debug, Clone)]
@@ -110,8 +121,8 @@ where
 // ============================================================================
 
 #[tokio::test]
-#[traced_test]
 async fn benchmark_budget_manager() {
+    init_test_tracing();
     tracing::info!("\n## Budget Manager Benchmarks\n");
     tracing::debug!("| Operation | Iterations | Min | Avg | Max |");
     tracing::debug!("|-----------|------------|-----|-----|-----|");
@@ -176,8 +187,8 @@ async fn benchmark_budget_manager() {
 // ============================================================================
 
 #[tokio::test]
-#[traced_test]
 async fn benchmark_evidence_store() {
+    init_test_tracing();
     tracing::info!("\n## Evidence Store Benchmarks\n");
     tracing::debug!("| Operation | Iterations | Min | Avg | Max |");
     tracing::debug!("|-----------|------------|-----|-----|-----|");
@@ -288,8 +299,8 @@ async fn benchmark_evidence_store() {
 // ============================================================================
 
 #[tokio::test]
-#[traced_test]
 async fn benchmark_corpus() {
+    init_test_tracing();
     tracing::info!("\n## Corpus Benchmarks\n");
     tracing::debug!("| Operation | Iterations | Min | Avg | Max |");
     tracing::debug!("|-----------|------------|-----|-----|-----|");
@@ -414,8 +425,8 @@ async fn benchmark_corpus() {
 // ============================================================================
 
 #[tokio::test]
-#[traced_test]
 async fn benchmark_e2e_workflow() {
+    init_test_tracing();
     tracing::info!("\n## End-to-End Workflow Benchmarks\n");
     tracing::debug!("| Workflow | Corpus Size | Time | Chunks | Evidence Items |");
     tracing::debug!("|----------|-------------|------|--------|----------------|");
@@ -497,8 +508,8 @@ async fn benchmark_e2e_workflow() {
 // ============================================================================
 
 #[tokio::test]
-#[traced_test]
 async fn benchmark_memory_scaling() {
+    init_test_tracing();
     tracing::info!("\n## Memory Scaling (Evidence Store)\n");
     tracing::debug!("| Items | Record Time | Bundle Time | Export Size |");
     tracing::debug!("|-------|-------------|-------------|-------------|");
@@ -541,8 +552,8 @@ async fn benchmark_memory_scaling() {
 // ============================================================================
 
 #[tokio::test]
-#[traced_test]
 async fn print_benchmark_summary() {
+    init_test_tracing();
     tracing::info!("\n# RLM Benchmark Results\n");
     tracing::info!(
         "Generated: {}\n",

@@ -43,7 +43,18 @@ use kontext_dev::build_mcp_url;
 use serde_json::json;
 use tempfile::TempDir;
 use tokio::sync::RwLock;
-use tracing_test::traced_test;
+
+fn init_test_tracing() {
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(|| {
+        let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("error"));
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_test_writer()
+            .init();
+    });
+}
 
 /// Check if integration tests should be skipped
 fn should_skip() -> bool {
@@ -52,8 +63,8 @@ fn should_skip() -> bool {
 
 /// Test: Gateway OAuth authentication
 #[tokio::test]
-#[traced_test]
 async fn test_gateway_authentication() {
+    init_test_tracing();
     if should_skip() {
         tracing::warn!("Skipping: KONTEXT credentials not set");
         tracing::warn!("Set KONTEXT_CLIENT_ID and KONTEXT_CLIENT_SECRET to run");
@@ -111,8 +122,8 @@ async fn test_gateway_authentication() {
 
 /// Test: Build MCP URL from config
 #[tokio::test]
-#[traced_test]
 async fn test_build_mcp_url() {
+    init_test_tracing();
     if should_skip() {
         tracing::warn!("Skipping: KONTEXT credentials not set");
         return;
@@ -149,8 +160,8 @@ async fn test_build_mcp_url() {
 /// Test: RLM infrastructure with simulated Gateway response
 /// This test doesn't require actual Gateway authentication - it tests the RLM routing logic
 #[tokio::test]
-#[traced_test]
 async fn test_rlm_routing_with_simulated_response() {
+    init_test_tracing();
     // This test works without credentials - it tests RLM routing with simulated data
     tracing::info!("RLM Routing Test (Simulated)");
 
@@ -232,8 +243,8 @@ async fn test_rlm_routing_with_simulated_response() {
 
 /// Benchmark: Real Gateway authentication and RLM routing
 #[tokio::test]
-#[traced_test]
 async fn benchmark_gateway_with_rlm() {
+    init_test_tracing();
     if should_skip() {
         tracing::warn!("Skipping: KONTEXT credentials not set");
         return;
@@ -344,8 +355,8 @@ async fn benchmark_gateway_with_rlm() {
 /// Test: Evidence summary generation after Gateway calls
 /// This test doesn't require actual Gateway authentication - it tests evidence tracking
 #[tokio::test]
-#[traced_test]
 async fn test_evidence_summary_with_simulated_calls() {
+    init_test_tracing();
     // This test works without credentials - it tests evidence tracking with simulated data
     tracing::info!("Evidence Summary Test (Simulated)");
 
@@ -400,8 +411,8 @@ async fn test_evidence_summary_with_simulated_calls() {
 
 /// Print test instructions when run without credentials
 #[tokio::test]
-#[traced_test]
 async fn print_setup_instructions() {
+    init_test_tracing();
     if !should_skip() {
         // Credentials are set, don't print instructions
         return;
@@ -432,8 +443,8 @@ async fn print_setup_instructions() {
 /// Test: Real MCP tool calls routed through RLM
 /// This test makes actual MCP calls to the Gateway and routes responses through RLM
 #[tokio::test]
-#[traced_test]
 async fn test_real_mcp_tool_calls_with_rlm() {
+    init_test_tracing();
     if should_skip() {
         tracing::warn!("Skipping: KONTEXT credentials not set");
         return;
@@ -724,8 +735,8 @@ fn truncate_name(s: &str, max: usize) -> String {
 
 /// Benchmark: Real MCP tool calls with RLM - detailed metrics
 #[tokio::test]
-#[traced_test]
 async fn benchmark_real_mcp_with_rlm() {
+    init_test_tracing();
     if should_skip() {
         tracing::warn!("Skipping: KONTEXT credentials not set");
         return;
@@ -872,8 +883,8 @@ struct ModeResult {
 
 /// Benchmark: Compare EXECUTE_TOOL vs EXECUTE_CODE vs EXECUTE_TOOL+RLM
 #[tokio::test]
-#[traced_test]
 async fn benchmark_three_execution_modes() {
+    init_test_tracing();
     if should_skip() {
         tracing::warn!("Skipping: KONTEXT credentials not set");
         return;

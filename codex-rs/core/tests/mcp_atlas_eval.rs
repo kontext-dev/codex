@@ -66,7 +66,18 @@ use kontext_dev::build_mcp_url;
 use serde_json::json;
 use tempfile::TempDir;
 use tokio::sync::RwLock;
-use tracing_test::traced_test;
+
+fn init_test_tracing() {
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(|| {
+        let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("error"));
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_test_writer()
+            .init();
+    });
+}
 
 /// Gateway task CSV paths relative to core directory (CARGO_MANIFEST_DIR).
 const GATEWAY_TASKS_V1_DATASET_PATH: &str = "../mcp-atlas/services/mcp_eval/gateway_tasks.csv";
@@ -159,8 +170,8 @@ async fn create_rlm_router(temp_path: &std::path::Path) -> anyhow::Result<Gatewa
 
 /// Test 1: Verify dataset loads correctly
 #[tokio::test]
-#[traced_test]
 async fn test_dataset_loads() {
+    init_test_tracing();
     tracing::info!("Test: Dataset Loading");
 
     let dataset_path = get_dataset_path();
@@ -201,8 +212,8 @@ async fn test_dataset_loads() {
 
 /// Test 2: Verify Gateway connection works
 #[tokio::test]
-#[traced_test]
 async fn test_gateway_connection() {
+    init_test_tracing();
     if should_skip() {
         tracing::warn!("Skipping: credentials not set");
         return;
@@ -289,8 +300,8 @@ async fn test_gateway_connection() {
 
 /// Test 3: Verify real Git MCP tool works
 #[tokio::test]
-#[traced_test]
 async fn test_git_mcp_tool() {
+    init_test_tracing();
     if should_skip() {
         tracing::warn!("Skipping: credentials not set");
         return;
@@ -370,8 +381,8 @@ async fn test_git_mcp_tool() {
 
 /// Test 4: Verify Code Executor MCP tool works
 #[tokio::test]
-#[traced_test]
 async fn test_code_executor_mcp_tool() {
+    init_test_tracing();
     if should_skip() {
         tracing::warn!("Skipping: credentials not set");
         return;
@@ -451,8 +462,8 @@ async fn test_code_executor_mcp_tool() {
 
 /// Test 5: Verify CLI MCP tool works
 #[tokio::test]
-#[traced_test]
 async fn test_cli_mcp_tool() {
+    init_test_tracing();
     if should_skip() {
         tracing::warn!("Skipping: credentials not set");
         return;
@@ -532,8 +543,8 @@ async fn test_cli_mcp_tool() {
 
 /// Test 6: Verify Claim Judge works
 #[tokio::test]
-#[traced_test]
 async fn test_claim_judge() {
+    init_test_tracing();
     if env::var("OPENAI_API_KEY").is_err() {
         tracing::warn!("Skipping: OPENAI_API_KEY not set");
         return;
@@ -581,8 +592,8 @@ async fn test_claim_judge() {
 
 /// Test 7: Verify RLM routing works
 #[tokio::test]
-#[traced_test]
 async fn test_rlm_routing() {
+    init_test_tracing();
     tracing::info!("Test: RLM Routing");
 
     let temp_dir = TempDir::new().unwrap();
@@ -653,8 +664,8 @@ async fn test_rlm_routing() {
 
 /// Run three-way evaluation on first 10 tasks (test mode)
 #[tokio::test]
-#[traced_test]
 async fn run_mcp_atlas_three_way_evaluation() {
+    init_test_tracing();
     if should_skip() {
         tracing::trace!("MCP-Atlas Evaluation - Setup Required");
         tracing::trace!("Required environment variables:");
@@ -1383,6 +1394,24 @@ fn save_results(
             let tasks: Vec<serde_json::Value> = mode_results
                 .iter()
                 .map(|r| {
+                    let claim_scores: Vec<serde_json::Value> = r
+                        .verification
+                        .scores
+                        .iter()
+                        .map(|(claim, score)| {
+                            let verdict = match score {
+                                ClaimScore::Fulfilled => "FULFILLED",
+                                ClaimScore::PartiallyFulfilled => "PARTIAL",
+                                ClaimScore::NotFulfilled => "NOT_FULFILLED",
+                            };
+                            json!({
+                                "claim": claim,
+                                "verdict": verdict,
+                                "score": score.score(),
+                            })
+                        })
+                        .collect();
+
                     json!({
                         "task_id": r.task_id,
                         "task_result": {
@@ -1392,10 +1421,12 @@ fn save_results(
                             "latency_ms": r.task_result.latency_ms,
                             "error": r.task_result.error,
                             "final_answer": r.task_result.final_answer,
+                            "num_tool_calls": r.task_result.tool_calls.len(),
                         },
                         "verification": {
                             "coverage": r.verification.coverage,
                             "passed": r.verification.passed,
+                            "claim_scores": claim_scores,
                         },
                     })
                 })
@@ -1442,9 +1473,9 @@ fn save_results(
 
 /// Full evaluation on all 500 tasks (ignored by default - run with --ignored)
 #[tokio::test]
-#[traced_test]
 #[ignore]
 async fn run_full_mcp_atlas_evaluation() {
+    init_test_tracing();
     if should_skip() {
         tracing::warn!("Skipping full evaluation - credentials not set");
         return;
@@ -1460,8 +1491,8 @@ async fn run_full_mcp_atlas_evaluation() {
 
 /// Analyze dataset to find tasks solvable with available Gateway tools
 #[tokio::test]
-#[traced_test]
 async fn analyze_solvable_tasks() {
+    init_test_tracing();
     if should_skip() {
         tracing::warn!("Skipping: credentials not set");
         return;
@@ -1734,8 +1765,8 @@ async fn analyze_solvable_tasks() {
 /// Verbose debug evaluation on 5 random tasks
 /// This test logs EVERY step to help debug why tasks fail
 #[tokio::test]
-#[traced_test]
 async fn run_verbose_debug_evaluation() {
+    init_test_tracing();
     if should_skip() {
         tracing::warn!("Skipping: credentials not set");
         return;
@@ -2137,8 +2168,8 @@ async fn run_verbose_debug_evaluation() {
 
 /// Print setup instructions
 #[tokio::test]
-#[traced_test]
 async fn print_setup_instructions() {
+    init_test_tracing();
     if !should_skip() {
         return;
     }

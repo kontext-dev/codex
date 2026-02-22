@@ -8,11 +8,22 @@ use codex_rmcp_client::RmcpClient;
 use core_test_support::gateway_auth;
 use kontext_dev::build_mcp_url;
 use serde_json::json;
-use tracing_test::traced_test;
+
+fn init_test_tracing() {
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(|| {
+        let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("error"));
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_test_writer()
+            .init();
+    });
+}
 
 #[tokio::test]
-#[traced_test]
 async fn list_all_gateway_tools() {
+    init_test_tracing();
     if gateway_auth::should_skip() {
         tracing::warn!("Skipping: credentials not set");
         return;

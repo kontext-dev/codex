@@ -23,7 +23,18 @@ use codex_core::rlm::RlmConfig;
 use codex_core::rlm::RlmCorpus;
 use tempfile::TempDir;
 use tokio::sync::RwLock;
-use tracing_test::traced_test;
+
+fn init_test_tracing() {
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(|| {
+        let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("error"));
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_test_writer()
+            .init();
+    });
+}
 
 /// Simulated tool result sizes based on real Linear API responses
 struct SimulatedToolResult {
@@ -476,8 +487,8 @@ fn print_summary(all_results: &[(BenchmarkScenario, Vec<ModeResult>)]) {
 }
 
 #[tokio::test]
-#[traced_test]
 async fn benchmark_three_way_comparison() {
+    init_test_tracing();
     tracing::info!("\n# RLM vs Baseline vs Code Mode Benchmark\n");
     tracing::info!(
         "Generated: {}\n",
@@ -501,8 +512,8 @@ async fn benchmark_three_way_comparison() {
 
 /// Benchmark RLM infrastructure overhead
 #[tokio::test]
-#[traced_test]
 async fn benchmark_rlm_infrastructure_overhead() {
+    init_test_tracing();
     tracing::info!("\n# RLM Infrastructure Overhead Benchmark\n");
 
     let iterations = 10;
@@ -614,8 +625,8 @@ async fn benchmark_rlm_infrastructure_overhead() {
 
 /// Test evidence summary generation
 #[tokio::test]
-#[traced_test]
 async fn benchmark_evidence_summary_generation() {
+    init_test_tracing();
     tracing::info!("\n# Evidence Summary Generation Benchmark\n");
 
     let temp_dir = TempDir::new().unwrap();
@@ -676,8 +687,8 @@ async fn benchmark_evidence_summary_generation() {
 
 /// Print final benchmark results in markdown format
 #[tokio::test]
-#[traced_test]
 async fn print_benchmark_results_md() {
+    init_test_tracing();
     tracing::info!("# RLM + Gateway Benchmark Results\n");
     tracing::info!(
         "Generated: {}\n",
