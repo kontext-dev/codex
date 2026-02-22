@@ -1560,6 +1560,16 @@ async fn discover_gateway_tools(client: &RmcpClient) -> Result<Vec<GatewayTool>>
 
     let tools_value: serde_json::Value =
         serde_json::from_str(tools_json).with_context(|| "Failed to parse tools payload")?;
+
+    // Surface servers that need OAuth re-auth
+    if let Some(errors) = tools_value.get("errors").and_then(|v| v.as_array()) {
+        for err in errors {
+            let server = err.get("serverName").and_then(|v| v.as_str()).unwrap_or("unknown");
+            let reason = err.get("reason").and_then(|v| v.as_str()).unwrap_or("unknown");
+            tracing::warn!("Gateway: server {server} not available ({reason})");
+        }
+    }
+
     let tools_array: Vec<serde_json::Value> = if let Some(items) = tools_value.as_array() {
         items.clone()
     } else if let Some(items) = tools_value.get("items").and_then(|v| v.as_array()) {

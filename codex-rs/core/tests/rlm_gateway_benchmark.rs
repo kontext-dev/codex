@@ -28,7 +28,7 @@ fn init_test_tracing() {
     static INIT: std::sync::Once = std::sync::Once::new();
     INIT.call_once(|| {
         let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("error"));
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
         tracing_subscriber::fmt()
             .with_env_filter(filter)
             .with_test_writer()
@@ -332,8 +332,8 @@ fn estimate_cost(context_tokens: i64, completion_tokens: i64) -> f64 {
 /// Print benchmark results in a table format
 fn print_results(scenario: &BenchmarkScenario, results: &[ModeResult]) {
     tracing::trace!("\n{}", "═".repeat(80));
-    tracing::info!("Scenario: {}", scenario.id);
-    tracing::info!("   \"{}\"", scenario.prompt);
+    tracing::warn!("Scenario: {}", scenario.id);
+    tracing::warn!("   \"{}\"", scenario.prompt);
     tracing::info!("   Description: {}", scenario.description);
     tracing::info!("   Tools: {:?}", scenario.tools);
     tracing::trace!("{}\n", "═".repeat(80));

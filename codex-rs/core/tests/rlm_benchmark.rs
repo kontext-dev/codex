@@ -20,7 +20,7 @@ fn init_test_tracing() {
     static INIT: std::sync::Once = std::sync::Once::new();
     INIT.call_once(|| {
         let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("error"));
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
         tracing_subscriber::fmt()
             .with_env_filter(filter)
             .with_test_writer()

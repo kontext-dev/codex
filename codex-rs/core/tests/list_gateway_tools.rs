@@ -13,7 +13,7 @@ fn init_test_tracing() {
     static INIT: std::sync::Once = std::sync::Once::new();
     INIT.call_once(|| {
         let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("error"));
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
         tracing_subscriber::fmt()
             .with_env_filter(filter)
             .with_test_writer()
@@ -120,7 +120,7 @@ async fn list_all_gateway_tools() {
                     }
 
                     if !tools.is_empty() || tools_payload.get("items").is_some() {
-                        tracing::info!("Found {} tools", tools.len());
+                        tracing::warn!("Found {} tools", tools.len());
 
                         assert!(!tools.is_empty(), "Should discover at least one tool");
 
@@ -146,7 +146,7 @@ async fn list_all_gateway_tools() {
                         }
 
                         for (server, tools) in by_server.iter() {
-                            tracing::debug!("{} ({} tools)", server, tools.len());
+                            tracing::warn!("  {} ({} tools)", server, tools.len());
                             for tool in tools.iter().take(30) {
                                 tracing::debug!("- {tool}");
                             }

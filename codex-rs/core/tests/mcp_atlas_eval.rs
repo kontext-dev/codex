@@ -71,7 +71,7 @@ fn init_test_tracing() {
     static INIT: std::sync::Once = std::sync::Once::new();
     INIT.call_once(|| {
         let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("error"));
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
         tracing_subscriber::fmt()
             .with_env_filter(filter)
             .with_test_writer()
@@ -930,7 +930,7 @@ async fn run_mcp_atlas_three_way_evaluation() {
         return;
     }
 
-    tracing::info!("Running evaluation on {} tasks", eval_tasks.len());
+    tracing::warn!("Running evaluation on {} tasks", eval_tasks.len());
     if let Some(ref prefixes) = task_prefixes {
         tracing::info!("(filtered by prefixes: {})", prefixes.join(", "));
     }
@@ -1004,12 +1004,12 @@ async fn run_mcp_atlas_three_way_evaluation() {
     // Run tool-calling modes
     for mode in &tool_modes {
         let mode_name = mode.to_string();
-        tracing::info!("Running {mode_name} mode (ToolCalling)");
+        tracing::warn!("Running {mode_name} mode (ToolCalling)");
 
         let mut results = Vec::new();
 
         for (i, task) in eval_tasks.iter().enumerate() {
-            tracing::info!(
+            tracing::warn!(
                 "Task {}/{}: {}...",
                 i + 1,
                 eval_tasks.len(),
@@ -1048,9 +1048,9 @@ async fn run_mcp_atlas_three_way_evaluation() {
 
             let status = if verification.passed { "PASS" } else { "FAIL" };
             let latency_secs = task_result.latency_ms as f64 / 1000.0;
-            tracing::info!(
-                "Coverage: {:.2}, Status: {}, Tokens: {}, Latency: {:.1}s",
-                verification.coverage, status, task_result.context_tokens, latency_secs
+            tracing::warn!(
+                "  {} | coverage={:.2} | tokens={} | {:.1}s",
+                status, verification.coverage, task_result.context_tokens, latency_secs
             );
             if let Some(ref err) = task_result.error {
                 tracing::error!("ERROR: {err}");
@@ -1567,7 +1567,7 @@ async fn analyze_solvable_tasks() {
 
     // Print available Gateway tools
     let gateway_tools = runner.available_tools();
-    tracing::info!("Available Gateway tools ({} total):", gateway_tools.len());
+    tracing::warn!("Available Gateway tools ({} total):", gateway_tools.len());
 
     let mut by_server: std::collections::HashMap<&str, Vec<&str>> =
         std::collections::HashMap::new();
@@ -1629,20 +1629,20 @@ async fn analyze_solvable_tasks() {
     partially_matched.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
     // Report
-    tracing::info!("## Summary");
-    tracing::info!("| Category | Count | Percentage |");
-    tracing::info!("|----------|-------|------------|");
-    tracing::info!(
+    tracing::warn!("## Summary");
+    tracing::warn!("| Category | Count | Percentage |");
+    tracing::warn!("|----------|-------|------------|");
+    tracing::warn!(
         "| Fully Matched (>=80% tools available) | {} | {:.1}% |",
         fully_matched.len(),
         fully_matched.len() as f64 / tasks.len() as f64 * 100.0
     );
-    tracing::info!(
+    tracing::warn!(
         "| Partially Matched (<80% but >0% tools) | {} | {:.1}% |",
         partially_matched.len(),
         partially_matched.len() as f64 / tasks.len() as f64 * 100.0
     );
-    tracing::info!(
+    tracing::warn!(
         "| No Match (0% tools available) | {} | {:.1}% |",
         no_match.len(),
         no_match.len() as f64 / tasks.len() as f64 * 100.0
