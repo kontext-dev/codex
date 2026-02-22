@@ -3,20 +3,17 @@
 //! This module provides the infrastructure for making recursive LLM calls
 //! from within an RLM session, using the parent session's authentication
 //! and model configuration.
-//!
-//! NOTE: The `invoke()` method has been stubbed out because it depends on
-//! deeply-coupled codex internals (`Codex`, `Session`, `TurnContext`, etc.)
-//! that have changed significantly. The 4 benchmark modes never call
-//! `invoke()` directly.
 
 use std::sync::Arc;
 
 use uuid::Uuid;
 
 use super::BudgetManager;
+use super::RlmError;
 use super::evidence::EvidenceItem;
 use super::evidence::EvidenceKind;
 use super::evidence::EvidenceSource;
+use super::lm_handler::LmHandler;
 
 /// Parameters for a sub-LM invocation.
 #[derive(Debug, Clone)]
@@ -143,6 +140,77 @@ impl SubLmInvoker {
     /// Get a reference to the budget manager.
     pub fn budget_manager(&self) -> &Arc<BudgetManager> {
         &self.budget_manager
+    }
+
+    /// Invoke a sub-LM call with budget tracking, routing through the LM Handler.
+    pub async fn invoke(
+        &self,
+        params: SubLmParams,
+        lm_handler: &LmHandler,
+    ) -> Result<SubLmResult, RlmError> {
+        // 1. Budget check.
+        let check = self.budget_manager.can_proceed(params.estimated_tokens).await;
+        if !check.can_proceed() {
+            return Err(RlmError::BudgetExhausted(format!(
+                "Cannot proceed with estimated {} tokens: {check:?}",
+                params.estimated_tokens
+            )));
+        }
+
+        // 2. Increment recursion depth.
+        self.budget_manager.increment_depth().await?;
+
+        // 3. Build prompt from params.
+        let prompt = if let Some(ref ctx) = params.context {
+            format!("{}\n\nContext:\n{}", params.instruction, ctx)
+        } else {
+            params.instruction.clone()
+        };
+
+        // 4. POST to the LM Handler's /llm_query endpoint.
+        let url = format!("http://127.0.0.1:{}/llm_query", lm_handler.port());
+        let req_body = serde_json::json!({
+            "prompt": prompt,
+            "model": serde_json::Value::Null,
+            "depth": 1,
+        });
+
+        let result = reqwest::Client::new()
+            .post(&url)
+            .json(&req_body)
+            .send()
+            .await;
+
+        // 5. Decrement depth regardless of outcome.
+        self.budget_manager.decrement_depth().await;
+
+        // 6. Process result.
+        let resp = result.map_err(|e| RlmError::SubLmFailed(e.to_string()))?;
+        let resp_body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| RlmError::SubLmFailed(format!("Failed to parse response: {e}")))?;
+
+        if let Some(err) = resp_body.get("error").and_then(|v| v.as_str()) {
+            return Err(RlmError::SubLmFailed(err.to_string()));
+        }
+
+        let output = resp_body
+            .get("response")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        // Estimate tokens used from output (budget recording is done by LmHandler).
+        let tokens_used = estimate_tokens(&output) + params.estimated_tokens;
+
+        Ok(SubLmResult {
+            call_id: params.call_id,
+            output,
+            tokens_used,
+            success: true,
+            task_type: params.task_type,
+        })
     }
 }
 

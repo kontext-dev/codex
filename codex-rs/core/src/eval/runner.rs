@@ -31,11 +31,23 @@ use serde_json::json;
 use tokio::sync::RwLock;
 
 use super::McpAtlasTask;
+use crate::rlm::BudgetManager;
+use crate::rlm::ContextMetadata;
 use crate::rlm::EvidenceStore;
+use crate::rlm::FinalAnswer;
 use crate::rlm::GatewayResultRouter;
+use crate::rlm::LmHandler;
+use crate::rlm::LmHandlerConfig;
+use crate::rlm::LocalRepl;
 use crate::rlm::ProcessedResult;
+use crate::rlm::ReplResult;
 use crate::rlm::RlmConfig;
 use crate::rlm::RlmCorpus;
+use crate::rlm::build_rlm_system_prompt;
+use crate::rlm::build_rlm_user_prompt;
+use crate::rlm::find_code_blocks;
+use crate::rlm::find_final_answer;
+use crate::rlm::format_repl_feedback;
 
 /// Execution mode for tool-calling client
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -48,6 +60,8 @@ pub enum ToolCallingMode {
     BaselineRlm,
     /// EXECUTE_CODE with RLM routing for large results (hybrid mode)
     CodeModeRlm,
+    /// True RLM mode: Python REPL with iterative LLM loop and sub-LLM calls
+    Rlm,
 }
 
 impl std::fmt::Display for ToolCallingMode {
@@ -57,6 +71,7 @@ impl std::fmt::Display for ToolCallingMode {
             ToolCallingMode::CodeMode => write!(f, "CodeMode"),
             ToolCallingMode::BaselineRlm => write!(f, "Baseline+RLM"),
             ToolCallingMode::CodeModeRlm => write!(f, "CodeMode+RLM"),
+            ToolCallingMode::Rlm => write!(f, "RLM"),
         }
     }
 }
@@ -108,6 +123,14 @@ pub struct GatewayTool {
     pub description: String,
     /// Input schema
     pub input_schema: serde_json::Value,
+}
+
+impl GatewayTool {
+    /// Prefixed name for use in LLM function definitions (e.g. `Linear_list_issues`).
+    /// Guarantees uniqueness when multiple servers expose identically-named tools.
+    pub fn prefixed_name(&self) -> String {
+        format!("{}_{}", self.server, self.name)
+    }
 }
 
 /// Tool-calling client runner that supports multiple execution modes
@@ -194,6 +217,7 @@ impl ToolCallingRunner {
         match mode {
             ToolCallingMode::CodeMode => return self.run_task_codemode(task).await,
             ToolCallingMode::CodeModeRlm => return self.run_task_codemode_rlm(task).await,
+            ToolCallingMode::Rlm => return self.run_task_rlm(task).await,
             _ => {} // Baseline and BaselineRlm continue below
         }
 
@@ -209,11 +233,11 @@ impl ToolCallingRunner {
             self.build_tool_definitions_from_gateway()
         };
 
-        // Build tool list for system prompt
+        // Build tool list for system prompt (uses prefixed names to match function definitions)
         let tool_list = self
             .gateway_tools
             .iter()
-            .map(|t| format!("- {}: {} ({})", t.name, t.description, t.server))
+            .map(|t| format!("- {}: {}", t.prefixed_name(), t.description))
             .collect::<Vec<_>>()
             .join("\n");
 
@@ -228,23 +252,14 @@ all necessary information, provide a final answer.
 
 {tool_list}
 
-# Corpus Access Tools (for large results)
-
-When tool results are too large, they are stored in a corpus and you'll see a summary.
-Use these tools to access the stored data:
-
-- rlm_search(query): Search stored results by semantic query
-- rlm_get_chunk(chunk_id): Retrieve a specific chunk by ID
-- rlm_list_chunks(): List all stored chunks with summaries
-
 # Instructions
 
 1. Analyze the task and determine which tools to use
 2. Make tool calls to gather information
-3. If you receive a "stored in corpus" message, use rlm_search or rlm_get_chunk to access the data
-4. When you have enough information, provide your final answer directly
+3. When you have enough information, provide your final answer directly
 
-Note: Tool calls are executed via a Gateway. Use the exact tool names shown above."#
+Note: Tool calls are executed via a Gateway. Use the exact tool names shown above.
+In rare cases a tool result may be summarized automatically. If so, you can use rlm_search, rlm_get_chunk, or rlm_list_chunks to retrieve the full data."#
             )
         } else {
             format!(
@@ -442,7 +457,9 @@ Note: Tool calls are executed via a Gateway. Use the exact tool names shown abov
         }
     }
 
-    /// Build tool definitions for the LLM from discovered Gateway tools
+    /// Build tool definitions for the LLM from discovered Gateway tools.
+    /// Uses server-prefixed names (e.g. `Linear_list_issues`) to avoid
+    /// duplicate function names when multiple servers expose the same tool.
     fn build_tool_definitions_from_gateway(&self) -> Vec<ChatCompletionTool> {
         self.gateway_tools
             .iter()
@@ -451,8 +468,8 @@ Note: Tool calls are executed via a Gateway. Use the exact tool names shown abov
                     .r#type(ChatCompletionToolType::Function)
                     .function(
                         FunctionObjectArgs::default()
-                            .name(tool.name.clone())
-                            .description(format!("{} ({})", tool.description, tool.server))
+                            .name(tool.prefixed_name())
+                            .description(tool.description.clone())
                             .parameters(tool.input_schema.clone())
                             .build()
                             .unwrap(),
@@ -482,7 +499,7 @@ Note: Tool calls are executed via a Gateway. Use the exact tool names shown abov
                 .function(
                     FunctionObjectArgs::default()
                         .name("rlm_search")
-                        .description("Search stored tool results by semantic query. Use this to find specific data from large results that were stored.")
+                        .description("Search tool results by semantic query.")
                         .parameters(json!({
                             "type": "object",
                             "properties": {
@@ -532,7 +549,7 @@ Note: Tool calls are executed via a Gateway. Use the exact tool names shown abov
                 .function(
                     FunctionObjectArgs::default()
                         .name("rlm_list_chunks")
-                        .description("List all stored chunks with their summaries. Use this to see what data is available.")
+                        .description("List all available data chunks with their summaries.")
                         .parameters(json!({
                             "type": "object",
                             "properties": {}
@@ -694,6 +711,10 @@ Note: Tool calls are executed via a Gateway. Use the exact tool names shown abov
         match mode {
             ToolCallingMode::Baseline => self.execute_baseline(&tool_id, &args).await,
             ToolCallingMode::CodeMode => self.execute_codemode(&tool_id, &args).await,
+            ToolCallingMode::Rlm => {
+                // Rlm is dispatched to run_task_rlm() directly and does not use tool calls
+                self.execute_baseline(&tool_id, &args).await
+            }
             ToolCallingMode::BaselineRlm | ToolCallingMode::CodeModeRlm => {
                 // CodeModeRlm is dispatched to run_task_codemode_rlm() directly,
                 // but handle it here for completeness (same RLM routing behavior)
@@ -891,10 +912,11 @@ Write code in a ```typescript code block:
 
 # Workflow
 
-1. First: Write TypeScript code to fetch data (in a code block)
-2. After seeing results: Provide a PLAIN TEXT answer to the task
+1. Write TypeScript code to fetch data (in a code block)
+2. Review the result. If you need more data, write another code block
+3. When you have all the information, provide a plain text answer to the task
 
-CRITICAL: After code execution, your FINAL response must be plain text that directly answers the task question. Do NOT respond with another code block - write a natural language answer using the data you fetched."#
+Your final answer must be plain text that directly answers the task question, not a code block."#
         )
     }
 
@@ -941,24 +963,14 @@ Write code in a ```typescript code block:
 {example_code}
 ```
 
-# Corpus Access (for large results)
-
-When tool results are too large (>2000 tokens), they are automatically stored in a corpus and you'll receive a summary instead.
-
-To access stored data, use these function calls (NOT code blocks):
-- rlm_search(query): Search stored results by semantic query
-- rlm_get_chunk(chunk_id): Retrieve a specific chunk by ID
-- rlm_list_chunks(): List all stored chunks with summaries
-
-These corpus tools are called via standard function calling, not TypeScript code.
-
 # Workflow
 
-1. Write TypeScript code to fetch data from Gateway tools
-2. If result is large, you'll see "[Tool result stored: N chunks]" - use rlm_search/rlm_get_chunk to access specific data
-3. After gathering all information, provide a PLAIN TEXT answer
+1. Write TypeScript code to fetch data (in a code block)
+2. Review the result. If you need more data, write another code block
+3. When you have all the information, provide a plain text answer to the task
 
-CRITICAL: Your FINAL response must be plain text that directly answers the task question."#
+Your final answer must be plain text that directly answers the task question, not a code block.
+In rare cases a tool result may be summarized automatically. If so, you can use rlm_search, rlm_get_chunk, or rlm_list_chunks to retrieve the full data."#
         )
     }
 
@@ -975,7 +987,7 @@ CRITICAL: Your FINAL response must be plain text that directly answers the task 
         {
             Ok(result) => {
                 // Return full result - server returns: { result, logs, toolCalls, durationMs }
-                serde_json::to_string_pretty(&result).unwrap_or_default()
+                serde_json::to_string(&result).unwrap_or_default()
             }
             Err(e) => format!("Code execution failed: {e}"),
         }
@@ -1008,7 +1020,7 @@ CRITICAL: Your FINAL response must be plain text that directly answers the task 
             }
         };
 
-        let content = serde_json::to_string_pretty(&result).unwrap_or_default();
+        let content = serde_json::to_string(&result).unwrap_or_default();
 
         // Route through RLM if available
         if let Some(ref router) = self.rlm_router {
@@ -1169,7 +1181,7 @@ CRITICAL: Your FINAL response must be plain text that directly answers the task 
                 messages.push(ChatCompletionRequestMessage::User(
                     ChatCompletionRequestUserMessageArgs::default()
                         .content(format!(
-                            "Code execution result:\n```json\n{exec_result}\n```\n\nBased on this result, provide your final answer to the original task."
+                            "Code execution result:\n```json\n{exec_result}\n```"
                         ))
                         .build()
                         .unwrap(),
@@ -1397,7 +1409,7 @@ CRITICAL: Your FINAL response must be plain text that directly answers the task 
                     )
                 } else {
                     format!(
-                        "Code execution result:\n```json\n{}\n```\n\nBased on this result, provide your final answer to the original task.",
+                        "Code execution result:\n```json\n{}\n```",
                         exec_result.content
                     )
                 };
@@ -1436,6 +1448,234 @@ CRITICAL: Your FINAL response must be plain text that directly answers the task 
             context_tokens: total_context_tokens,
             latency_ms: start.elapsed().as_millis() as u64,
             error: Some("Max turns reached".to_string()),
+        }
+    }
+
+    /// Execute a task in true RLM mode: Python REPL with iterative LLM loop
+    ///
+    /// This mode does NOT use tool definitions. Instead, the LLM generates Python
+    /// code in ```repl blocks which are executed in a persistent Python subprocess.
+    /// Sub-LLM calls are available via `llm_query()` / `llm_query_batched()` in the
+    /// REPL. The loop runs until the LLM emits FINAL(...) or FINAL_VAR(...), or
+    /// max iterations are reached.
+    pub async fn run_task_rlm(&self, task: &McpAtlasTask) -> TaskResult {
+        let start = Instant::now();
+
+        // 1. Create budget manager and LM handler for sub-LLM calls
+        let rlm_config = RlmConfig::default();
+        let budget = Arc::new(BudgetManager::new(&rlm_config));
+
+        let api_key = std::env::var("EVAL_API_KEY").unwrap_or_default();
+        let base_url = std::env::var("EVAL_BASE_URL").ok().filter(|s| !s.is_empty());
+
+        let lm_config = LmHandlerConfig {
+            root_model: self.agent_model.clone(),
+            sub_model: None,
+            api_key,
+            base_url,
+        };
+
+        let lm_handler = match LmHandler::start(lm_config, budget).await {
+            Ok(h) => h,
+            Err(e) => {
+                return error_result(
+                    task,
+                    "RLM",
+                    start,
+                    &format!("LM handler start failed: {e}"),
+                );
+            }
+        };
+
+        // 2. Create REPL
+        let mut repl = match LocalRepl::new(lm_handler.port()).await {
+            Ok(r) => r,
+            Err(e) => {
+                lm_handler.stop().await;
+                return error_result(task, "RLM", start, &format!("REPL start failed: {e}"));
+            }
+        };
+
+        // 3. Inject context (the task prompt is the context for RLM)
+        if let Err(e) = repl.set_context(&task.prompt).await {
+            repl.cleanup().await;
+            lm_handler.stop().await;
+            return error_result(task, "RLM", start, &format!("Set context failed: {e}"));
+        }
+
+        // 4. Build context metadata
+        let metadata = ContextMetadata {
+            context_type: "str".to_string(),
+            context_total_length: task.prompt.len(),
+            context_lengths: vec![task.prompt.len()],
+        };
+
+        let system_prompt = build_rlm_system_prompt(&metadata);
+        let mut total_context_tokens: i64 = estimate_tokens(&system_prompt);
+        let mut tool_calls = Vec::new();
+
+        // 5. Build conversation messages
+        let mut messages: Vec<ChatCompletionRequestMessage> = vec![
+            ChatCompletionRequestMessage::System(
+                ChatCompletionRequestSystemMessageArgs::default()
+                    .content(system_prompt.clone())
+                    .build()
+                    .unwrap(),
+            ),
+        ];
+
+        // 6. Iterative REPL loop
+        for iteration in 0..self.max_turns {
+            // Add user prompt for this iteration
+            let user_prompt = build_rlm_user_prompt(iteration, &task.prompt);
+            messages.push(ChatCompletionRequestMessage::User(
+                ChatCompletionRequestUserMessageArgs::default()
+                    .content(user_prompt.clone())
+                    .build()
+                    .unwrap(),
+            ));
+            total_context_tokens += estimate_tokens(&user_prompt);
+
+            // Call LLM (NO tools — we want free-form text with ```repl blocks)
+            let request = match CreateChatCompletionRequestArgs::default()
+                .model(&self.agent_model)
+                .messages(messages.clone())
+                .build()
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    repl.cleanup().await;
+                    lm_handler.stop().await;
+                    return error_result(
+                        task,
+                        "RLM",
+                        start,
+                        &format!("Request build failed: {e}"),
+                    );
+                }
+            };
+
+            let response = match self.llm_client.chat().create(request).await {
+                Ok(r) => r,
+                Err(e) => {
+                    repl.cleanup().await;
+                    lm_handler.stop().await;
+                    return error_result(task, "RLM", start, &format!("LLM call failed: {e}"));
+                }
+            };
+
+            if let Some(usage) = &response.usage {
+                total_context_tokens = usage.total_tokens as i64;
+            }
+
+            let content = response
+                .choices
+                .first()
+                .and_then(|c| c.message.content.clone())
+                .unwrap_or_default();
+
+            // Add assistant message
+            messages.push(ChatCompletionRequestMessage::Assistant(
+                ChatCompletionRequestAssistantMessageArgs::default()
+                    .content(content.clone())
+                    .build()
+                    .unwrap(),
+            ));
+
+            // Check for FINAL answer
+            if let Some(final_answer) = find_final_answer(&content) {
+                let answer = match final_answer {
+                    FinalAnswer::Direct(text) => text,
+                    FinalAnswer::Variable(name) => {
+                        repl.resolve_var(&name).await.unwrap_or_else(|e| {
+                            format!("Failed to resolve variable '{}': {}", name, e)
+                        })
+                    }
+                };
+
+                let _usage = lm_handler.usage().await;
+                repl.cleanup().await;
+                lm_handler.stop().await;
+
+                return TaskResult {
+                    task_id: task.task_id.clone(),
+                    final_answer: answer,
+                    tool_calls,
+                    mode_name: "RLM".to_string(),
+                    context_tokens: total_context_tokens,
+                    latency_ms: start.elapsed().as_millis() as u64,
+                    error: None,
+                };
+            }
+
+            // Extract and execute code blocks
+            let code_blocks = find_code_blocks(&content);
+            if code_blocks.is_empty() && iteration > 0 {
+                // No code blocks and no FINAL — use content as answer
+                repl.cleanup().await;
+                lm_handler.stop().await;
+                return TaskResult {
+                    task_id: task.task_id.clone(),
+                    final_answer: content,
+                    tool_calls,
+                    mode_name: "RLM".to_string(),
+                    context_tokens: total_context_tokens,
+                    latency_ms: start.elapsed().as_millis() as u64,
+                    error: None,
+                };
+            }
+
+            // Execute each code block
+            for code in &code_blocks {
+                let result = match repl.execute(code).await {
+                    Ok(r) => r,
+                    Err(e) => ReplResult {
+                        stdout: String::new(),
+                        stderr: format!("REPL execution error: {e}"),
+                        locals_summary: String::new(),
+                        execution_time_ms: 0,
+                    },
+                };
+
+                tool_calls.push(ToolCallRecord {
+                    name: "repl_execute".to_string(),
+                    arguments: json!({ "code": code }),
+                    result: result.stdout.clone(),
+                    result_tokens: estimate_tokens(&result.stdout),
+                    stored_in_corpus: false,
+                });
+
+                // Format feedback for LLM
+                let feedback = format_repl_feedback(
+                    code,
+                    &result.stdout,
+                    &result.stderr,
+                    &result.locals_summary,
+                    20_000,
+                );
+
+                messages.push(ChatCompletionRequestMessage::User(
+                    ChatCompletionRequestUserMessageArgs::default()
+                        .content(feedback.clone())
+                        .build()
+                        .unwrap(),
+                ));
+                total_context_tokens += estimate_tokens(&feedback);
+            }
+        }
+
+        // Max iterations reached
+        repl.cleanup().await;
+        lm_handler.stop().await;
+
+        TaskResult {
+            task_id: task.task_id.clone(),
+            final_answer: format!("Max RLM iterations ({}) reached", self.max_turns),
+            tool_calls,
+            mode_name: "RLM".to_string(),
+            context_tokens: total_context_tokens,
+            latency_ms: start.elapsed().as_millis() as u64,
+            error: Some("Max iterations reached".to_string()),
         }
     }
 
@@ -1525,6 +1765,19 @@ struct ToolCallResult {
     content: String,
     tokens: i64,
     stored_in_corpus: bool,
+}
+
+/// Build an error TaskResult for early-exit paths in run_task_rlm.
+fn error_result(task: &McpAtlasTask, mode: &str, start: Instant, msg: &str) -> TaskResult {
+    TaskResult {
+        task_id: task.task_id.clone(),
+        final_answer: String::new(),
+        tool_calls: Vec::new(),
+        mode_name: mode.to_string(),
+        context_tokens: 0,
+        latency_ms: start.elapsed().as_millis() as u64,
+        error: Some(msg.to_string()),
+    }
 }
 
 /// Estimate tokens from content (rough: 4 chars per token)
@@ -1665,6 +1918,7 @@ mod tests {
         assert_eq!(format!("{}", ToolCallingMode::CodeMode), "CodeMode");
         assert_eq!(format!("{}", ToolCallingMode::BaselineRlm), "Baseline+RLM");
         assert_eq!(format!("{}", ToolCallingMode::CodeModeRlm), "CodeMode+RLM");
+        assert_eq!(format!("{}", ToolCallingMode::Rlm), "RLM");
     }
 
     #[test]

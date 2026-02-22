@@ -742,7 +742,7 @@ async fn run_mcp_atlas_three_way_evaluation() {
         tracing::trace!("EVAL_DATASET_PATH=/path/to/dataset.csv            # Legacy override");
         tracing::trace!("Tool-calling client modes:");
         tracing::trace!(
-            "EVAL_TOOL_MODES=baseline,codemode  # Comma-separated (baseline,codemode,rlm,codemoderlm,all)"
+            "EVAL_TOOL_MODES=baseline,codemode  # Comma-separated (baseline,codemode,rlm,baselinerlm,codemoderlm,all)"
         );
         tracing::trace!("Codex client:");
         tracing::trace!("EVAL_USE_CODEX=true            # Enable Codex client");
@@ -1019,8 +1019,9 @@ async fn run_mcp_atlas_three_way_evaluation() {
         .filter_map(|s| match s.trim().to_lowercase().as_str() {
             "baseline" => Some(ToolCallingMode::Baseline),
             "codemode" | "code" => Some(ToolCallingMode::CodeMode),
-            "rlm" | "baselinerlm" => Some(ToolCallingMode::BaselineRlm),
+            "baselinerlm" | "baseline+rlm" => Some(ToolCallingMode::BaselineRlm),
             "codemoderlm" | "code+rlm" | "coderlm" => Some(ToolCallingMode::CodeModeRlm),
+            "rlm" | "repl" => Some(ToolCallingMode::Rlm),
             "all" => None, // Handle "all" separately
             _ => None,
         })
@@ -1036,6 +1037,7 @@ async fn run_mcp_atlas_three_way_evaluation() {
             ToolCallingMode::CodeMode,
             ToolCallingMode::BaselineRlm,
             ToolCallingMode::CodeModeRlm,
+            ToolCallingMode::Rlm,
         ]
     } else {
         tool_modes
