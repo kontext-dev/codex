@@ -23,10 +23,13 @@
 //!
 //! Task passes if Coverage >= 0.75
 
+pub mod codemode_types;
 pub mod dataset;
 pub mod judge;
 pub mod runner;
 
+pub use codemode_types::generate_codemode_js_preamble;
+pub use codemode_types::generate_codemode_types;
 pub use dataset::McpAtlasTask;
 pub use dataset::TrajectoryStep;
 pub use dataset::load_dataset;

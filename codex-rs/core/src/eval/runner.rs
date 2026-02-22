@@ -43,6 +43,7 @@ use crate::rlm::ProcessedResult;
 use crate::rlm::ReplResult;
 use crate::rlm::RlmConfig;
 use crate::rlm::RlmCorpus;
+use crate::rlm::build_rlm_codemode_system_prompt;
 use crate::rlm::build_rlm_system_prompt;
 use crate::rlm::build_rlm_user_prompt;
 use crate::rlm::find_code_blocks;
@@ -62,6 +63,8 @@ pub enum ToolCallingMode {
     CodeModeRlm,
     /// True RLM mode: Python REPL with iterative LLM loop and sub-LLM calls
     Rlm,
+    /// RLM + CodeMode: Python REPL with Gateway tool execution via execute_code()
+    RlmCodeMode,
 }
 
 impl std::fmt::Display for ToolCallingMode {
@@ -72,6 +75,7 @@ impl std::fmt::Display for ToolCallingMode {
             ToolCallingMode::BaselineRlm => write!(f, "Baseline+RLM"),
             ToolCallingMode::CodeModeRlm => write!(f, "CodeMode+RLM"),
             ToolCallingMode::Rlm => write!(f, "RLM"),
+            ToolCallingMode::RlmCodeMode => write!(f, "RLM+CodeMode"),
         }
     }
 }
@@ -187,7 +191,7 @@ impl ToolCallingRunner {
             mcp_client,
             llm_client,
             rlm_router,
-            agent_model: "gpt-4o".to_string(),
+            agent_model: std::env::var("EVAL_MODEL").unwrap_or_else(|_| "gpt-4o".to_string()),
             max_turns: 10,
             gateway_tools,
             tool_lookup,
@@ -211,6 +215,69 @@ impl ToolCallingRunner {
         &self.gateway_tools
     }
 
+    /// Build a tool name lookup map for the LM handler.
+    /// Maps various name forms (name, id, server_name, lowercased variants)
+    /// to the canonical Gateway tool ID.
+    fn build_tool_lookup_map(&self) -> HashMap<String, String> {
+        let mut map = HashMap::new();
+        for tool in &self.gateway_tools {
+            // Canonical: name → id
+            map.insert(tool.name.clone(), tool.id.clone());
+            // Exact ID
+            map.insert(tool.id.clone(), tool.id.clone());
+            // Prefixed: Server_name → id
+            map.insert(tool.prefixed_name(), tool.id.clone());
+            // Lowercased variants
+            map.insert(tool.name.to_lowercase(), tool.id.clone());
+            map.insert(tool.id.to_lowercase(), tool.id.clone());
+            map.insert(tool.prefixed_name().to_lowercase(), tool.id.clone());
+            // Common LLM guesses: server:name without proper casing
+            let colon_form = format!("{}:{}", tool.server.to_lowercase(), tool.name.to_lowercase());
+            map.insert(colon_form, tool.id.clone());
+        }
+        map
+    }
+
+    /// Format a tool list section for inclusion in RLM system prompts.
+    fn format_tool_list_for_prompt(&self) -> String {
+        if self.gateway_tools.is_empty() {
+            return String::new();
+        }
+
+        let mut section = String::from("\n\n# Available Gateway Tools\n\nYou can call these tools using `execute_tool(tool_id, args)`. Use the EXACT tool_id shown below:\n\n");
+        for tool in &self.gateway_tools {
+            section.push_str(&format!("- `\"{}\"` — {} (server: {})\n", tool.id, tool.description, tool.server));
+        }
+        section.push_str("\nExample: `execute_tool(\"");
+        if let Some(first) = self.gateway_tools.first() {
+            section.push_str(&first.id);
+        }
+        section.push_str("\")` or `execute_tool(\"");
+        if let Some(first) = self.gateway_tools.first() {
+            section.push_str(&first.id);
+        }
+        section.push_str("\", {\"key\": \"value\"})`\n");
+        section
+    }
+
+    /// Format a tool list section for RLM+CodeMode prompts (TypeScript execute_code style).
+    fn format_tool_list_for_codemode_prompt(&self) -> String {
+        if self.gateway_tools.is_empty() {
+            return String::new();
+        }
+
+        let mut section = String::from("\n\n# Available Gateway Tools\n\nCall these tools via `execute_code()` using TypeScript. Use the EXACT tool_id shown below:\n\n");
+        for tool in &self.gateway_tools {
+            section.push_str(&format!("- tool_id: `\"{}\"` — {} (server: {})\n", tool.id, tool.description, tool.server));
+        }
+        section.push_str("\nExample:\n```repl\nresult = execute_code('''\nconst data = await tools.EXECUTE_TOOL({ tool_id: \"");
+        if let Some(first) = self.gateway_tools.first() {
+            section.push_str(&first.id);
+        }
+        section.push_str("\", tool_arguments: {} });\nreturn data;\n''')\nprint(result[:500])\n```\n");
+        section
+    }
+
     /// Execute a task in the specified mode
     pub async fn run_task(&self, task: &McpAtlasTask, mode: ToolCallingMode) -> TaskResult {
         // Dispatch to mode-specific runners
@@ -218,6 +285,7 @@ impl ToolCallingRunner {
             ToolCallingMode::CodeMode => return self.run_task_codemode(task).await,
             ToolCallingMode::CodeModeRlm => return self.run_task_codemode_rlm(task).await,
             ToolCallingMode::Rlm => return self.run_task_rlm(task).await,
+            ToolCallingMode::RlmCodeMode => return self.run_task_rlm_codemode(task).await,
             _ => {} // Baseline and BaselineRlm continue below
         }
 
@@ -259,6 +327,12 @@ all necessary information, provide a final answer.
 3. When you have enough information, provide your final answer directly
 
 Note: Tool calls are executed via a Gateway. Use the exact tool names shown above.
+
+Important:
+- Do not ask follow-up questions. Answer using only the data from tool calls.
+- When the task asks for a count, always include the explicit numerical count.
+- If gathering the answer requires multiple tool calls, make all necessary calls before answering.
+
 In rare cases a tool result may be summarized automatically. If so, you can use rlm_search, rlm_get_chunk, or rlm_list_chunks to retrieve the full data."#
             )
         } else {
@@ -277,7 +351,12 @@ all necessary information, provide a final answer.
 2. Make tool calls to gather information
 3. When you have enough information, provide your final answer directly
 
-Note: Tool calls are executed via a Gateway. Use the exact tool names shown above."#
+Note: Tool calls are executed via a Gateway. Use the exact tool names shown above.
+
+Important:
+- Do not ask follow-up questions. Answer using only the data from tool calls.
+- When the task asks for a count, always include the explicit numerical count.
+- If gathering the answer requires multiple tool calls, make all necessary calls before answering."#
             )
         };
 
@@ -721,6 +800,11 @@ Note: Tool calls are executed via a Gateway. Use the exact tool names shown abov
                 self.execute_with_rlm(&tool_id, &args, task_id, &call.id)
                     .await
             }
+            ToolCallingMode::RlmCodeMode => {
+                // RlmCodeMode is dispatched to run_task_rlm_codemode() directly
+                // and does not use standard tool call dispatch
+                self.execute_baseline(&tool_id, &args).await
+            }
         }
     }
 
@@ -832,11 +916,11 @@ Note: Tool calls are executed via a Gateway. Use the exact tool names shown abov
     /// Execute tool in code mode - call EXECUTE_CODE and return FULL result
     /// The server runs the code in a VM and returns complete tool output
     async fn execute_codemode(&self, tool_id: &str, args: &serde_json::Value) -> ToolCallResult {
-        // Generate code that calls the tool and returns full result (not a summary!)
-        // Gateway's EXECUTE_TOOL expects "tool_arguments" not "args"
+        // Gateway VM uses `new AsyncFunction("tools", "console", code)` — code is the
+        // function body, so bare statements with `return`/`await` work directly.
         let code = format!(
             r#"const result = await tools.EXECUTE_TOOL({{ tool_id: "{}", tool_arguments: {} }});
-               return result;"#,
+return result;"#,
             tool_id,
             serde_json::to_string(args).unwrap_or("{}".to_string())
         );
@@ -867,54 +951,54 @@ Note: Tool calls are executed via a Gateway. Use the exact tool names shown abov
         }
     }
 
-    /// Build system prompt for CodeMode - instructs LLM to generate TypeScript code
+    /// Build system prompt for CodeMode - instructs LLM to generate JavaScript code
     fn build_codemode_system_prompt(&self) -> String {
-        // Build tool list with actual tool IDs for accurate code generation
-        let tool_list = self
-            .gateway_tools
-            .iter()
-            .map(|t| format!("- tool_id: \"{}\" - {} ({})", t.id, t.description, t.server))
-            .collect::<Vec<_>>()
-            .join("\n");
+        let generated_types =
+            super::codemode_types::generate_codemode_types(&self.gateway_tools);
 
-        // Get a sample tool ID for the example - build outside raw string for safety
-        let sample_tool_id = self
+        // Get a sample tool name for the example
+        let sample_name = self
             .gateway_tools
             .iter()
             .find(|t| t.name == "list_projects" || t.name.contains("list"))
-            .map(|t| t.id.clone())
-            .unwrap_or_else(|| "Linear:list_projects".to_string());
-
-        // Build the example code block with actual tool ID substituted
-        let example_code = format!(
-            r#"const result = await tools.EXECUTE_TOOL({{
-    tool_id: "{sample_tool_id}",
-    tool_arguments: {{}}
-}});
-console.log(JSON.stringify(result, null, 2));
-return result;"#
-        );
+            .map(|t| t.prefixed_name())
+            .unwrap_or_else(|| "Linear_list_projects".to_string());
 
         format!(
-            r#"You are an AI assistant. Complete tasks using TypeScript code.
+            r#"You are an AI assistant. Complete tasks by writing JavaScript code.
 
-# Available Tools
+# Available Tools (type reference)
 
-{tool_list}
+{generated_types}
 
 # How to Call Tools
 
-Write code in a ```typescript code block:
+Write a SINGLE ```javascript code block containing an async arrow function that calls the `codemode` object. `codemode.*` calls return clean, unwrapped data — if the upstream API returns a single list, you get the array directly.
 
-```typescript
-{example_code}
+```javascript
+async () => {{
+  const items = await codemode.{sample_name}({{}});
+  // items is typically an array — map directly
+  const names = items.map(i => i.name ?? i.title ?? i.key);
+  return {{ count: names.length, names }};
+}}
 ```
+
+# Rules
+
+- Write an async arrow function: `async () => {{ ... }}`. Do NOT write bare statements.
+- Call tools via `codemode.<ToolName>({{ ... }})` — NOT via `tools.EXECUTE_TOOL`.
+- `codemode.*` calls return clean, unwrapped data. List endpoints return arrays directly — use `.map()`, `.filter()`, `.length` on the result immediately. Do NOT access `.nodes`, `.items`, or other wrapper properties.
+- Chain ALL tool calls in one code block. Do NOT make one call per block.
+- Extract only the fields you need and return a compact summary. Do NOT return raw tool results.
+- When the task asks for a count, compute it in code and include it in your return value.
+- Do not ask follow-up questions. Answer using only the data from tool calls.
+- Write plain JavaScript only. Do NOT use TypeScript syntax (no type annotations, no `as` casts, no interfaces).
 
 # Workflow
 
-1. Write TypeScript code to fetch data (in a code block)
-2. Review the result. If you need more data, write another code block
-3. When you have all the information, provide a plain text answer to the task
+1. Write ONE ```javascript code block with an async arrow function that calls all needed tools via `codemode.*` and returns extracted data
+2. Read the compact result and provide a plain text answer to the task
 
 Your final answer must be plain text that directly answers the task question, not a code block."#
         )
@@ -922,60 +1006,67 @@ Your final answer must be plain text that directly answers the task question, no
 
     /// Build system prompt for CodeModeRlm - combines CodeMode code generation with RLM corpus access
     fn build_codemode_rlm_system_prompt(&self) -> String {
-        // Build tool list with actual tool IDs for accurate code generation
-        let tool_list = self
-            .gateway_tools
-            .iter()
-            .map(|t| format!("- tool_id: \"{}\" - {} ({})", t.id, t.description, t.server))
-            .collect::<Vec<_>>()
-            .join("\n");
+        let generated_types =
+            super::codemode_types::generate_codemode_types(&self.gateway_tools);
 
-        // Get a sample tool ID for the example
-        let sample_tool_id = self
+        // Get a sample tool name for the example
+        let sample_name = self
             .gateway_tools
             .iter()
             .find(|t| t.name == "list_projects" || t.name.contains("list"))
-            .map(|t| t.id.clone())
-            .unwrap_or_else(|| "Linear:list_projects".to_string());
-
-        // Build the example code block with actual tool ID substituted
-        let example_code = format!(
-            r#"const result = await tools.EXECUTE_TOOL({{
-    tool_id: "{sample_tool_id}",
-    tool_arguments: {{}}
-}});
-console.log(JSON.stringify(result, null, 2));
-return result;"#
-        );
+            .map(|t| t.prefixed_name())
+            .unwrap_or_else(|| "Linear_list_projects".to_string());
 
         format!(
-            r#"You are an AI assistant. Complete tasks using TypeScript code.
+            r#"You are an AI assistant. Complete tasks by writing JavaScript code.
 
-# Available Gateway Tools (call via code)
+# Available Gateway Tools (type reference)
 
-{tool_list}
+{generated_types}
 
 # How to Call Gateway Tools
 
-Write code in a ```typescript code block:
+Write a SINGLE ```javascript code block containing an async arrow function that calls the `codemode` object. `codemode.*` calls return clean, unwrapped data — if the upstream API returns a single list, you get the array directly.
 
-```typescript
-{example_code}
+```javascript
+async () => {{
+  const items = await codemode.{sample_name}({{}});
+  // items is typically an array — map directly
+  const names = items.map(i => i.name ?? i.title ?? i.key);
+  return {{ count: names.length, names }};
+}}
 ```
+
+# Rules
+
+- Write an async arrow function: `async () => {{ ... }}`. Do NOT write bare statements.
+- Call tools via `codemode.<ToolName>({{ ... }})` — NOT via `tools.EXECUTE_TOOL`.
+- `codemode.*` calls return clean, unwrapped data. List endpoints return arrays directly — use `.map()`, `.filter()`, `.length` on the result immediately. Do NOT access `.nodes`, `.items`, or other wrapper properties.
+- Chain ALL tool calls in one code block. Do NOT make one call per block.
+- Extract only the fields you need and return a compact summary. Do NOT return raw tool results.
+- When the task asks for a count, compute it in code and include it in your return value.
+- Do not ask follow-up questions. Answer using only the data from tool calls.
+- Write plain JavaScript only. Do NOT use TypeScript syntax (no type annotations, no `as` casts, no interfaces).
 
 # Workflow
 
-1. Write TypeScript code to fetch data (in a code block)
-2. Review the result. If you need more data, write another code block
-3. When you have all the information, provide a plain text answer to the task
+1. Write ONE ```javascript code block with an async arrow function that calls all needed tools via `codemode.*` and returns extracted data
+2. Read the compact result and provide a plain text answer to the task
 
 Your final answer must be plain text that directly answers the task question, not a code block.
 In rare cases a tool result may be summarized automatically. If so, you can use rlm_search, rlm_get_chunk, or rlm_list_chunks to retrieve the full data."#
         )
     }
 
-    /// Execute code via EXECUTE_CODE tool and return full results
+    /// Execute code via EXECUTE_CODE tool and return the result.
+    /// Normalizes LLM-generated code (unwraps async arrow functions) so the
+    /// Gateway's AsyncFunction body receives bare statements.
+    /// The Gateway already provides the `codemode` runtime object — no
+    /// client-side preamble is needed.
     async fn execute_code(&self, code: &str) -> String {
+        // Gateway VM uses `new AsyncFunction("tools", "console", code)` — code is the
+        // function body. Unwrap async arrows the LLM may generate into bare statements.
+        let code = unwrap_async_arrow(code);
         match self
             .mcp_client
             .call_tool(
@@ -985,22 +1076,19 @@ In rare cases a tool result may be summarized automatically. If so, you can use 
             )
             .await
         {
-            Ok(result) => {
-                // Return full result - server returns: { result, logs, toolCalls, durationMs }
-                serde_json::to_string(&result).unwrap_or_default()
-            }
+            Ok(result) => extract_execute_code_result(&result),
             Err(e) => format!("Code execution failed: {e}"),
         }
     }
 
-    /// Execute code via EXECUTE_CODE and route result through RLM
+    /// Execute code via EXECUTE_CODE and route result through RLM.
     async fn execute_code_with_rlm(
         &self,
         code: &str,
         task_id: &str,
         call_index: usize,
     ) -> ToolCallResult {
-        // Execute code via EXECUTE_CODE
+        let code = unwrap_async_arrow(code);
         let result = match self
             .mcp_client
             .call_tool(
@@ -1020,7 +1108,7 @@ In rare cases a tool result may be summarized automatically. If so, you can use 
             }
         };
 
-        let content = serde_json::to_string(&result).unwrap_or_default();
+        let content = extract_execute_code_result(&result);
 
         // Route through RLM if available
         if let Some(ref router) = self.rlm_router {
@@ -1071,6 +1159,12 @@ In rare cases a tool result may be summarized automatically. If so, you can use 
     pub async fn run_task_codemode(&self, task: &McpAtlasTask) -> TaskResult {
         let start = Instant::now();
         let system_prompt = self.build_codemode_system_prompt();
+        tracing::warn!(
+            "  [codemode] system prompt built ({} chars, {} tools, types: {})",
+            system_prompt.len(),
+            self.gateway_tools.len(),
+            system_prompt.contains("declare const codemode"),
+        );
         let mut total_context_tokens: i64 = 0;
         let mut tool_calls = Vec::new();
 
@@ -1094,7 +1188,8 @@ In rare cases a tool result may be summarized automatically. If so, you can use 
         total_context_tokens += estimate_tokens(&task.prompt);
 
         // Agent loop
-        for _turn in 0..self.max_turns {
+        for turn in 0..self.max_turns {
+            tracing::warn!("  [codemode] turn {}/{} — calling LLM...", turn + 1, self.max_turns);
             // Call LLM WITHOUT tools - we want code generation, not tool calls
             let request_result = CreateChatCompletionRequestArgs::default()
                 .model(&self.agent_model)
@@ -1153,11 +1248,27 @@ In rare cases a tool result may be summarized automatically. If so, you can use 
             };
 
             let content = choice.message.content.clone().unwrap_or_default();
+            tracing::warn!(
+                "  [codemode] LLM responded ({} chars), uses codemode.*: {}",
+                content.len(),
+                content.contains("codemode."),
+            );
+            // Debug: log the full LLM response
+            tracing::warn!("  [codemode] LLM content:\n{}", &content[..content.len().min(600)]);
 
             // Check if response contains code block
             if let Some(code) = extract_code_block(&content) {
+                tracing::warn!(
+                    "  [codemode] extracted code block ({} chars):\n{}",
+                    code.len(),
+                    &code[..code.len().min(500)],
+                );
                 // Execute the code via EXECUTE_CODE
                 let exec_result = self.execute_code(&code).await;
+                tracing::warn!(
+                    "  [codemode] EXECUTE_CODE returned ({} chars)",
+                    exec_result.len(),
+                );
 
                 tool_calls.push(ToolCallRecord {
                     name: "EXECUTE_CODE".to_string(),
@@ -1190,6 +1301,7 @@ In rare cases a tool result may be summarized automatically. If so, you can use 
                 continue;
             }
 
+            tracing::warn!("  [codemode] no code block — treating as final answer");
             // No code block - this is the final answer
             return TaskResult {
                 task_id: task.task_id.clone(),
@@ -1473,6 +1585,9 @@ In rare cases a tool result may be summarized automatically. If so, you can use 
             sub_model: None,
             api_key,
             base_url,
+            mcp_client: Some(Arc::clone(&self.mcp_client)),
+            rlm_router: None,
+            tool_lookup: self.build_tool_lookup_map(),
         };
 
         let lm_handler = match LmHandler::start(lm_config, budget).await {
@@ -1510,9 +1625,12 @@ In rare cases a tool result may be summarized automatically. If so, you can use 
             context_lengths: vec![task.prompt.len()],
         };
 
-        let system_prompt = build_rlm_system_prompt(&metadata);
+        // Inject available tools into the system prompt so the LLM knows what to call
+        let tool_list_section = self.format_tool_list_for_prompt();
+        let system_prompt = format!("{}{}", build_rlm_system_prompt(&metadata), tool_list_section);
         let mut total_context_tokens: i64 = estimate_tokens(&system_prompt);
         let mut tool_calls = Vec::new();
+        let mut last_assistant_content = String::new();
 
         // 5. Build conversation messages
         let mut messages: Vec<ChatCompletionRequestMessage> = vec![
@@ -1527,7 +1645,7 @@ In rare cases a tool result may be summarized automatically. If so, you can use 
         // 6. Iterative REPL loop
         for iteration in 0..self.max_turns {
             // Add user prompt for this iteration
-            let user_prompt = build_rlm_user_prompt(iteration, &task.prompt);
+            let user_prompt = build_rlm_user_prompt(iteration, self.max_turns, &task.prompt);
             messages.push(ChatCompletionRequestMessage::User(
                 ChatCompletionRequestUserMessageArgs::default()
                     .content(user_prompt.clone())
@@ -1573,6 +1691,7 @@ In rare cases a tool result may be summarized automatically. If so, you can use 
                 .first()
                 .and_then(|c| c.message.content.clone())
                 .unwrap_or_default();
+            last_assistant_content = content.clone();
 
             // Add assistant message
             messages.push(ChatCompletionRequestMessage::Assistant(
@@ -1664,18 +1783,309 @@ In rare cases a tool result may be summarized automatically. If so, you can use 
             }
         }
 
-        // Max iterations reached
+        // Max iterations reached — the last iteration prompt already forced
+        // FINAL(...), so use the last assistant response as the answer.
         repl.cleanup().await;
         lm_handler.stop().await;
 
         TaskResult {
             task_id: task.task_id.clone(),
-            final_answer: format!("Max RLM iterations ({}) reached", self.max_turns),
+            final_answer: last_assistant_content,
             tool_calls,
             mode_name: "RLM".to_string(),
             context_tokens: total_context_tokens,
             latency_ms: start.elapsed().as_millis() as u64,
-            error: Some("Max iterations reached".to_string()),
+            error: None,
+        }
+    }
+
+    /// Execute a task in RLM+CodeMode: Python REPL with Gateway tool execution.
+    ///
+    /// Like `run_task_rlm`, this uses a persistent Python REPL with iterative
+    /// LLM loop and sub-LLM calls. The key difference is that the REPL also
+    /// has `execute_code()` for calling Gateway tools via EXECUTE_CODE, and
+    /// `corpus_search()` / `corpus_get_chunk()` for accessing large results
+    /// that were auto-stored in the corpus.
+    pub async fn run_task_rlm_codemode(&self, task: &McpAtlasTask) -> TaskResult {
+        let start = Instant::now();
+
+        // 1. Create RLM infrastructure
+        let rlm_config = RlmConfig::default();
+        let budget = Arc::new(BudgetManager::new(&rlm_config));
+
+        let api_key = std::env::var("EVAL_API_KEY").unwrap_or_default();
+        let base_url = std::env::var("EVAL_BASE_URL").ok().filter(|s| !s.is_empty());
+
+        // Create corpus + router for large result storage
+        let temp_dir = match tempfile::TempDir::new() {
+            Ok(d) => d,
+            Err(e) => {
+                return error_result(
+                    task,
+                    "RLM+CodeMode",
+                    start,
+                    &format!("Temp dir creation failed: {e}"),
+                );
+            }
+        };
+        let corpus = match crate::rlm::RlmCorpus::new(
+            temp_dir.path().to_path_buf(),
+            rlm_config.clone(),
+        )
+        .await
+        {
+            Ok(c) => c,
+            Err(e) => {
+                return error_result(
+                    task,
+                    "RLM+CodeMode",
+                    start,
+                    &format!("Corpus creation failed: {e}"),
+                );
+            }
+        };
+        if let Err(e) = corpus.ingest_prompt(&task.prompt).await {
+            return error_result(
+                task,
+                "RLM+CodeMode",
+                start,
+                &format!("Corpus ingest failed: {e}"),
+            );
+        }
+
+        let corpus_arc = Arc::new(RwLock::new(Some(corpus)));
+        let evidence_store = Arc::new(RwLock::new(EvidenceStore::new()));
+        let router = Arc::new(GatewayResultRouter::new(
+            corpus_arc,
+            evidence_store,
+            rlm_config,
+        ));
+
+        // 2. Create LM handler WITH Gateway proxy (mcp_client + rlm_router)
+        let lm_config = LmHandlerConfig {
+            root_model: self.agent_model.clone(),
+            sub_model: None,
+            api_key,
+            base_url,
+            mcp_client: Some(Arc::clone(&self.mcp_client)),
+            rlm_router: Some(Arc::clone(&router)),
+            tool_lookup: self.build_tool_lookup_map(),
+        };
+
+        let lm_handler = match LmHandler::start(lm_config, budget).await {
+            Ok(h) => h,
+            Err(e) => {
+                return error_result(
+                    task,
+                    "RLM+CodeMode",
+                    start,
+                    &format!("LM handler start failed: {e}"),
+                );
+            }
+        };
+
+        // 3. Create REPL (will have execute_code, corpus_search, corpus_get_chunk available)
+        let mut repl = match LocalRepl::new(lm_handler.port()).await {
+            Ok(r) => r,
+            Err(e) => {
+                lm_handler.stop().await;
+                return error_result(
+                    task,
+                    "RLM+CodeMode",
+                    start,
+                    &format!("REPL start failed: {e}"),
+                );
+            }
+        };
+
+        // 4. Inject context
+        if let Err(e) = repl.set_context(&task.prompt).await {
+            repl.cleanup().await;
+            lm_handler.stop().await;
+            return error_result(
+                task,
+                "RLM+CodeMode",
+                start,
+                &format!("Set context failed: {e}"),
+            );
+        }
+
+        // 5. Build context metadata and system prompt with injected tool list
+        let metadata = ContextMetadata {
+            context_type: "str".to_string(),
+            context_total_length: task.prompt.len(),
+            context_lengths: vec![task.prompt.len()],
+        };
+
+        let tool_list_section = self.format_tool_list_for_codemode_prompt();
+        let system_prompt = format!("{}{}", build_rlm_codemode_system_prompt(&metadata), tool_list_section);
+        let mut total_context_tokens: i64 = estimate_tokens(&system_prompt);
+        let mut tool_calls = Vec::new();
+        let mut last_assistant_content = String::new();
+
+        let mut messages: Vec<ChatCompletionRequestMessage> = vec![
+            ChatCompletionRequestMessage::System(
+                ChatCompletionRequestSystemMessageArgs::default()
+                    .content(system_prompt.clone())
+                    .build()
+                    .unwrap(),
+            ),
+        ];
+
+        // 6. Iterative REPL loop (same structure as run_task_rlm)
+        for iteration in 0..self.max_turns {
+            let user_prompt = build_rlm_user_prompt(iteration, self.max_turns, &task.prompt);
+            messages.push(ChatCompletionRequestMessage::User(
+                ChatCompletionRequestUserMessageArgs::default()
+                    .content(user_prompt.clone())
+                    .build()
+                    .unwrap(),
+            ));
+            total_context_tokens += estimate_tokens(&user_prompt);
+
+            // Call LLM (NO tools — free-form text with ```repl blocks)
+            let request = match CreateChatCompletionRequestArgs::default()
+                .model(&self.agent_model)
+                .messages(messages.clone())
+                .build()
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    repl.cleanup().await;
+                    lm_handler.stop().await;
+                    return error_result(
+                        task,
+                        "RLM+CodeMode",
+                        start,
+                        &format!("Request build failed: {e}"),
+                    );
+                }
+            };
+
+            let response = match self.llm_client.chat().create(request).await {
+                Ok(r) => r,
+                Err(e) => {
+                    repl.cleanup().await;
+                    lm_handler.stop().await;
+                    return error_result(
+                        task,
+                        "RLM+CodeMode",
+                        start,
+                        &format!("LLM call failed: {e}"),
+                    );
+                }
+            };
+
+            if let Some(usage) = &response.usage {
+                total_context_tokens = usage.total_tokens as i64;
+            }
+
+            let content = response
+                .choices
+                .first()
+                .and_then(|c| c.message.content.clone())
+                .unwrap_or_default();
+            last_assistant_content = content.clone();
+
+            messages.push(ChatCompletionRequestMessage::Assistant(
+                ChatCompletionRequestAssistantMessageArgs::default()
+                    .content(content.clone())
+                    .build()
+                    .unwrap(),
+            ));
+
+            // Check for FINAL answer
+            if let Some(final_answer) = find_final_answer(&content) {
+                let answer = match final_answer {
+                    FinalAnswer::Direct(text) => text,
+                    FinalAnswer::Variable(name) => {
+                        repl.resolve_var(&name).await.unwrap_or_else(|e| {
+                            format!("Failed to resolve variable '{}': {}", name, e)
+                        })
+                    }
+                };
+
+                let _usage = lm_handler.usage().await;
+                repl.cleanup().await;
+                lm_handler.stop().await;
+
+                return TaskResult {
+                    task_id: task.task_id.clone(),
+                    final_answer: answer,
+                    tool_calls,
+                    mode_name: "RLM+CodeMode".to_string(),
+                    context_tokens: total_context_tokens,
+                    latency_ms: start.elapsed().as_millis() as u64,
+                    error: None,
+                };
+            }
+
+            // Extract and execute code blocks
+            let code_blocks = find_code_blocks(&content);
+            if code_blocks.is_empty() && iteration > 0 {
+                repl.cleanup().await;
+                lm_handler.stop().await;
+                return TaskResult {
+                    task_id: task.task_id.clone(),
+                    final_answer: content,
+                    tool_calls,
+                    mode_name: "RLM+CodeMode".to_string(),
+                    context_tokens: total_context_tokens,
+                    latency_ms: start.elapsed().as_millis() as u64,
+                    error: None,
+                };
+            }
+
+            for code in &code_blocks {
+                let result = match repl.execute(code).await {
+                    Ok(r) => r,
+                    Err(e) => ReplResult {
+                        stdout: String::new(),
+                        stderr: format!("REPL execution error: {e}"),
+                        locals_summary: String::new(),
+                        execution_time_ms: 0,
+                    },
+                };
+
+                tool_calls.push(ToolCallRecord {
+                    name: "repl_execute".to_string(),
+                    arguments: json!({ "code": code }),
+                    result: result.stdout.clone(),
+                    result_tokens: estimate_tokens(&result.stdout),
+                    stored_in_corpus: false,
+                });
+
+                let feedback = format_repl_feedback(
+                    code,
+                    &result.stdout,
+                    &result.stderr,
+                    &result.locals_summary,
+                    20_000,
+                );
+
+                messages.push(ChatCompletionRequestMessage::User(
+                    ChatCompletionRequestUserMessageArgs::default()
+                        .content(feedback.clone())
+                        .build()
+                        .unwrap(),
+                ));
+                total_context_tokens += estimate_tokens(&feedback);
+            }
+        }
+
+        // Max iterations reached — the last iteration prompt already forced
+        // FINAL(...), so use the last assistant response as the answer.
+        repl.cleanup().await;
+        lm_handler.stop().await;
+
+        TaskResult {
+            task_id: task.task_id.clone(),
+            final_answer: last_assistant_content,
+            tool_calls,
+            mode_name: "RLM+CodeMode".to_string(),
+            context_tokens: total_context_tokens,
+            latency_ms: start.elapsed().as_millis() as u64,
+            error: None,
         }
     }
 
@@ -1785,6 +2195,66 @@ fn estimate_tokens(content: &str) -> i64 {
     (content.len() / 4) as i64
 }
 
+/// Extract the code's return value from an EXECUTE_CODE MCP response.
+///
+/// The Gateway returns: MCP envelope → `content[0].resource.text` (JSON string)
+/// → `{ result, logs?, error? }`.  We parse through the MCP envelope and
+/// return a compact string with just the `result` field.
+fn extract_execute_code_result(mcp_response: &rmcp::model::CallToolResult) -> String {
+    let raw = serde_json::to_string(mcp_response).unwrap_or_default();
+
+    // Parse outer MCP envelope → content[0].resource.text or content[0].text
+    let text = (|| -> Option<String> {
+        let outer: serde_json::Value = serde_json::from_str(&raw).ok()?;
+        let content = outer.get("content")?.as_array()?;
+        let first = content.first()?;
+        first
+            .get("resource")
+            .and_then(|r| r.get("text"))
+            .and_then(|t| t.as_str())
+            .or_else(|| first.get("text").and_then(|t| t.as_str()))
+            .map(|s| s.to_string())
+    })();
+
+    let Some(inner_json) = text else {
+        return raw;
+    };
+
+    // Parse the inner { result, logs?, error? } object
+    let Ok(inner) = serde_json::from_str::<serde_json::Value>(&inner_json) else {
+        return inner_json;
+    };
+
+    // Log execution details for debugging
+    if let Some(error) = inner.get("error").and_then(|e| e.as_str()) {
+        tracing::warn!("  [codemode] VM error: {}", error);
+    }
+    if let Some(logs) = inner.get("logs").and_then(|l| l.as_array()) {
+        for log in logs.iter().take(10) {
+            if let Some(s) = log.as_str() {
+                tracing::warn!("  [codemode] VM log: {}", &s[..s.len().min(200)]);
+            }
+        }
+    }
+
+    // Extract "result" — this is the code's return value
+    if let Some(result) = inner.get("result") {
+        if result.is_null() {
+            // null result with error means execution failed
+            if let Some(error) = inner.get("error").and_then(|e| e.as_str()) {
+                return format!("Code execution error: {error}");
+            }
+        }
+        if let Some(s) = result.as_str() {
+            return s.to_string();
+        }
+        return serde_json::to_string_pretty(result).unwrap_or_else(|_| result.to_string());
+    }
+
+    // Fallback: return the inner JSON
+    inner_json
+}
+
 /// Extract TypeScript/JavaScript code from markdown code blocks
 fn extract_code_block(content: &str) -> Option<String> {
     // Match ```typescript, ```ts, ```javascript, ```js, or plain ```
@@ -1793,6 +2263,49 @@ fn extract_code_block(content: &str) -> Option<String> {
     re.captures(content)
         .map(|c| c.get(1).unwrap().as_str().trim().to_string())
         .filter(|s| !s.is_empty()) // Don't return empty code blocks
+}
+
+/// Unwrap async arrow functions into bare statements for the Gateway VM.
+///
+/// The Gateway VM uses `new AsyncFunction("tools", "console", code)` where
+/// `code` is the **body** of an async function. If the LLM writes
+/// `async () => { body }`, the body alone is what the VM needs — the async
+/// arrow wrapper is redundant and would just create an uncalled function.
+///
+/// Examples:
+/// - `async () => { const x = 1; return x; }` → `const x = 1; return x;`
+/// - `async()=>{ return 42; }` → `return 42;`
+/// - `const x = await foo();` → unchanged (already bare statements)
+fn unwrap_async_arrow(code: &str) -> String {
+    let trimmed = code.trim();
+
+    // Check for async arrow prefix variants
+    let body_start = if trimmed.starts_with("async () =>") {
+        Some("async () =>".len())
+    } else if trimmed.starts_with("async() =>") {
+        Some("async() =>".len())
+    } else if trimmed.starts_with("async ()=>") {
+        Some("async ()=>".len())
+    } else if trimmed.starts_with("async()=>") {
+        Some("async()=>".len())
+    } else {
+        None
+    };
+
+    let Some(start) = body_start else {
+        return trimmed.to_string();
+    };
+
+    let rest = trimmed[start..].trim();
+
+    // Must be a block body: `{ ... }`
+    if rest.starts_with('{') && rest.ends_with('}') {
+        // Extract the body between the outer braces
+        rest[1..rest.len() - 1].trim().to_string()
+    } else {
+        // Expression body: `async () => expr` — wrap with return
+        format!("return {rest};")
+    }
 }
 
 /// Discover available tools from Gateway using SEARCH_TOOLS
@@ -1926,5 +2439,84 @@ mod tests {
         assert_eq!(estimate_tokens("1234"), 1);
         assert_eq!(estimate_tokens("12345678"), 2);
         assert_eq!(estimate_tokens(""), 0);
+    }
+
+    #[test]
+    fn test_normalize_bare_statements_passthrough() {
+        let code = r#"const projects = await codemode.Linear_list_projects({});
+return { count: projects.length };"#;
+        let result = normalize_code_for_async_fn(code);
+        // Bare statements should be used as-is (no IIFE wrapping)
+        assert!(result.contains("await codemode.Linear_list_projects"));
+        assert!(result.contains("return { count: projects.length }"));
+        // Should NOT be wrapped in IIFE
+        assert!(!result.contains("(async () =>"));
+    }
+
+    #[test]
+    fn test_normalize_async_arrow_body_extraction() {
+        let code = r#"async () => {
+  const projects = await codemode.Linear_list_projects({});
+  return { count: projects.length };
+}"#;
+        let result = normalize_code_for_async_fn(code);
+        // Should extract the body, not wrap in IIFE
+        assert!(result.contains("await codemode.Linear_list_projects"));
+        assert!(result.contains("return { count: projects.length }"));
+        // Should NOT contain async () => or IIFE wrapping
+        assert!(!result.contains("async () =>"));
+        assert!(!result.contains("})()"));
+    }
+
+    #[test]
+    fn test_normalize_async_arrow_expression() {
+        let code = "async () => 42";
+        let result = normalize_code_for_async_fn(code);
+        assert_eq!(result, "return 42");
+    }
+
+    #[test]
+    fn test_normalize_async_arrow_nested_braces() {
+        let code = r#"async () => {
+  const data = { a: 1, b: { c: 2 } };
+  return data;
+}"#;
+        let result = normalize_code_for_async_fn(code);
+        assert!(result.contains("const data = { a: 1, b: { c: 2 } }"));
+        assert!(result.contains("return data;"));
+        assert!(!result.contains("async () =>"));
+    }
+
+    #[test]
+    fn test_normalize_strips_ts_type_annotations() {
+        let code = "const projects: any[] = await codemode.Linear_list_projects({});\nreturn projects;";
+        let result = normalize_code_for_async_fn(code);
+        // Should not contain type annotation
+        assert!(!result.contains(": any[]"));
+        // Should still have the variable declaration
+        assert!(result.contains("const projects =") || result.contains("const projects="));
+    }
+
+    #[test]
+    fn test_normalize_strips_as_cast() {
+        let code = "const data = result as unknown;\nreturn data;";
+        let result = normalize_code_for_async_fn(code);
+        assert!(!result.contains("as unknown"));
+    }
+
+    #[test]
+    fn test_extract_code_block_javascript() {
+        let content = "Here is the code:\n```javascript\nasync () => {\n  return 42;\n}\n```\nDone.";
+        let block = extract_code_block(content);
+        assert!(block.is_some());
+        assert!(block.unwrap().contains("return 42"));
+    }
+
+    #[test]
+    fn test_extract_code_block_typescript() {
+        let content = "```typescript\nconst x = 1;\n```";
+        let block = extract_code_block(content);
+        assert!(block.is_some());
+        assert!(block.unwrap().contains("const x = 1"));
     }
 }

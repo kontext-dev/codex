@@ -593,7 +593,11 @@ async fn test_claim_judge() {
 
     tracing::info!("Test: Claim Judge");
 
-    let judge = match ClaimJudge::new(resolve_judge_base_url(), resolve_judge_api_key()) {
+    let judge = match ClaimJudge::with_model(
+        &resolve_judge_model(),
+        resolve_judge_base_url(),
+        resolve_judge_api_key(),
+    ) {
         Ok(j) => j,
         Err(e) => {
             tracing::error!("Failed to create judge: {e}");
@@ -742,7 +746,7 @@ async fn run_mcp_atlas_three_way_evaluation() {
         tracing::trace!("EVAL_DATASET_PATH=/path/to/dataset.csv            # Legacy override");
         tracing::trace!("Tool-calling client modes:");
         tracing::trace!(
-            "EVAL_TOOL_MODES=baseline,codemode  # Comma-separated (baseline,codemode,rlm,baselinerlm,codemoderlm,all)"
+            "EVAL_TOOL_MODES=baseline,codemode  # Comma-separated (baseline,codemode,rlm,rlmcodemode,baselinerlm,codemoderlm,all)"
         );
         tracing::trace!("Codex client:");
         tracing::trace!("EVAL_USE_CODEX=true            # Enable Codex client");
@@ -1014,7 +1018,7 @@ async fn run_mcp_atlas_three_way_evaluation() {
     let tool_modes: Vec<ToolCallingMode> = env::var("EVAL_TOOL_MODES")
         .ok()
         .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| "baseline,codemode,rlm".to_string())
+        .unwrap_or_else(|| "baseline,codemode,rlm,rlmcodemode".to_string())
         .split(',')
         .filter_map(|s| match s.trim().to_lowercase().as_str() {
             "baseline" => Some(ToolCallingMode::Baseline),
@@ -1022,6 +1026,7 @@ async fn run_mcp_atlas_three_way_evaluation() {
             "baselinerlm" | "baseline+rlm" => Some(ToolCallingMode::BaselineRlm),
             "codemoderlm" | "code+rlm" | "coderlm" => Some(ToolCallingMode::CodeModeRlm),
             "rlm" | "repl" => Some(ToolCallingMode::Rlm),
+            "rlmcodemode" | "rlm+codemode" | "rlm_codemode" => Some(ToolCallingMode::RlmCodeMode),
             "all" => None, // Handle "all" separately
             _ => None,
         })
@@ -1038,6 +1043,7 @@ async fn run_mcp_atlas_three_way_evaluation() {
             ToolCallingMode::BaselineRlm,
             ToolCallingMode::CodeModeRlm,
             ToolCallingMode::Rlm,
+            ToolCallingMode::RlmCodeMode,
         ]
     } else {
         tool_modes
@@ -1187,6 +1193,7 @@ fn print_comparison(results: &HashMap<String, Vec<EvalResult>>) {
         "Baseline+RLM",
         "CodeMode+RLM",
         "RLM",
+        "RLM+CodeMode",
         "Codex",
     ];
 
@@ -1434,6 +1441,7 @@ fn save_results(
         "Baseline+RLM",
         "CodeMode+RLM",
         "RLM",
+        "RLM+CodeMode",
         "Codex",
     ];
 
@@ -1966,7 +1974,11 @@ async fn run_verbose_debug_evaluation() {
 
     // Step 4: Setup judge
     tracing::debug!("[STEP 4] Setting up claim judge...");
-    let judge = match ClaimJudge::new(resolve_judge_base_url(), resolve_judge_api_key()) {
+    let judge = match ClaimJudge::with_model(
+        &resolve_judge_model(),
+        resolve_judge_base_url(),
+        resolve_judge_api_key(),
+    ) {
         Ok(j) => {
             tracing::debug!("Claim judge created");
             j

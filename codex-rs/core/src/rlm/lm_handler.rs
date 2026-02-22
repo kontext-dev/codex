@@ -1,16 +1,22 @@
 //! LM Handler — lightweight HTTP server that proxies sub-LLM calls from the
-//! Python REPL back to the OpenAI-compatible API.
+//! Python REPL back to the OpenAI-compatible API, and optionally proxies
+//! Gateway tool calls and corpus operations for RLM+CodeMode.
 //!
 //! The handler is started on `127.0.0.1:0` (OS-assigned port) and exposes:
 //!
 //! - `POST /llm_query`         — single prompt completion
 //! - `POST /llm_query_batched` — batch of prompts (concurrent)
+//! - `POST /execute_code`      — proxy to Gateway EXECUTE_CODE (optional)
+//! - `POST /corpus_search`     — search RLM corpus (optional)
+//! - `POST /corpus_get_chunk`  — retrieve corpus chunk (optional)
 //! - `GET  /health`            — liveness check
 //!
 //! All endpoints exchange JSON.  The HTTP parsing is intentionally minimal
 //! because only our own Python REPL talks to this server.
 
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use async_openai::config::OpenAIConfig;
@@ -19,19 +25,23 @@ use async_openai::types::{
     CreateChatCompletionRequestArgs,
 };
 use async_openai::Client;
+use codex_rmcp_client::RmcpClient;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
 
 use super::BudgetManager;
+use super::GatewayResultRouter;
+use super::ProcessedResult;
 
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
 
 /// Configuration for the LM Handler.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct LmHandlerConfig {
     /// Model name used for depth-0 (root) calls.
     pub root_model: String,
@@ -42,6 +52,25 @@ pub struct LmHandlerConfig {
     pub api_key: String,
     /// Optional base URL override (e.g. for Azure / local proxies).
     pub base_url: Option<String>,
+    /// Optional MCP client for proxying Gateway tool calls (RLM+CodeMode).
+    pub mcp_client: Option<Arc<RmcpClient>>,
+    /// Optional RLM router for large-result corpus management (RLM+CodeMode).
+    pub rlm_router: Option<Arc<GatewayResultRouter>>,
+    /// Tool name lookup: maps various name forms (fuzzy) to canonical Gateway tool IDs.
+    /// Used by `/execute_tool` to resolve LLM-guessed tool names to real IDs.
+    pub tool_lookup: HashMap<String, String>,
+}
+
+impl std::fmt::Debug for LmHandlerConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LmHandlerConfig")
+            .field("root_model", &self.root_model)
+            .field("sub_model", &self.sub_model)
+            .field("base_url", &self.base_url)
+            .field("mcp_client", &self.mcp_client.as_ref().map(|_| "<RmcpClient>"))
+            .field("rlm_router", &self.rlm_router.as_ref().map(|_| "<GatewayResultRouter>"))
+            .finish()
+    }
 }
 
 /// Aggregated token usage across all calls handled by this server.
@@ -96,6 +125,49 @@ struct BatchedResponse {
     error: Option<String>,
 }
 
+// -- Gateway proxy types (RLM+CodeMode) --
+
+#[derive(Deserialize)]
+struct ExecuteCodeRequest {
+    code: String,
+}
+
+#[derive(Serialize)]
+struct ExecuteCodeResponse {
+    result: Option<String>,
+    stored_in_corpus: bool,
+    error: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct CorpusSearchRequest {
+    query: String,
+    #[serde(default = "default_max_results")]
+    max_results: usize,
+}
+
+fn default_max_results() -> usize {
+    5
+}
+
+#[derive(Deserialize)]
+struct CorpusGetChunkRequest {
+    chunk_id: String,
+}
+
+#[derive(Deserialize)]
+struct ExecuteToolRequest {
+    tool_id: String,
+    #[serde(default)]
+    args: serde_json::Value,
+}
+
+#[derive(Serialize)]
+struct ExecuteToolResponse {
+    result: Option<String>,
+    error: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
 // Shared state handed to every connection handler
 // ---------------------------------------------------------------------------
@@ -106,6 +178,12 @@ struct SharedState {
     sub_model: String,
     budget: Arc<BudgetManager>,
     usage: Arc<RwLock<UsageSummary>>,
+    /// Optional MCP client for proxying EXECUTE_CODE to Gateway.
+    mcp_client: Option<Arc<RmcpClient>>,
+    /// Optional RLM router for large-result corpus routing.
+    rlm_router: Option<Arc<GatewayResultRouter>>,
+    /// Tool name lookup for resolving fuzzy names to canonical IDs.
+    tool_lookup: HashMap<String, String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -140,6 +218,9 @@ impl LmHandler {
             sub_model,
             budget,
             usage: Arc::clone(&usage),
+            mcp_client: config.mcp_client.clone(),
+            rlm_router: config.rlm_router.clone(),
+            tool_lookup: config.tool_lookup.clone(),
         });
 
         let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
@@ -226,6 +307,34 @@ async fn handle_connection(mut stream: TcpStream, state: Arc<SharedState>) -> Re
             let json = serde_json::to_vec(&resp)?;
             write_response(&mut stream, 200, &json).await?;
         }
+        ("POST", "/execute_code") => {
+            let req: ExecuteCodeRequest =
+                serde_json::from_slice(&body).context("Invalid /execute_code JSON")?;
+            let resp = handle_execute_code(&state, req).await;
+            let json = serde_json::to_vec(&resp)?;
+            write_response(&mut stream, 200, &json).await?;
+        }
+        ("POST", "/corpus_search") => {
+            let req: CorpusSearchRequest =
+                serde_json::from_slice(&body).context("Invalid /corpus_search JSON")?;
+            let resp = handle_corpus_search(&state, req).await;
+            let json = serde_json::to_vec(&resp)?;
+            write_response(&mut stream, 200, &json).await?;
+        }
+        ("POST", "/corpus_get_chunk") => {
+            let req: CorpusGetChunkRequest =
+                serde_json::from_slice(&body).context("Invalid /corpus_get_chunk JSON")?;
+            let resp = handle_corpus_get_chunk(&state, req).await;
+            let json = serde_json::to_vec(&resp)?;
+            write_response(&mut stream, 200, &json).await?;
+        }
+        ("POST", "/execute_tool") => {
+            let req: ExecuteToolRequest =
+                serde_json::from_slice(&body).context("Invalid /execute_tool JSON")?;
+            let resp = handle_execute_tool(&state, req).await;
+            let json = serde_json::to_vec(&resp)?;
+            write_response(&mut stream, 200, &json).await?;
+        }
         _ => {
             write_response(&mut stream, 404, b"{\"error\":\"not found\"}").await?;
         }
@@ -281,6 +390,192 @@ async fn handle_batched(state: &SharedState, req: BatchedRequest) -> BatchedResp
         error: None,
     }
 }
+
+// ---------------------------------------------------------------------------
+// Gateway proxy handlers (RLM+CodeMode)
+// ---------------------------------------------------------------------------
+
+/// Execute TypeScript/JS code on the Gateway via EXECUTE_CODE, routing large
+/// results through the RLM corpus.
+async fn handle_execute_code(state: &SharedState, req: ExecuteCodeRequest) -> ExecuteCodeResponse {
+    let Some(ref mcp) = state.mcp_client else {
+        return ExecuteCodeResponse {
+            result: None,
+            stored_in_corpus: false,
+            error: Some("Gateway not configured (no mcp_client)".to_string()),
+        };
+    };
+
+    tracing::debug!(
+        "LmHandler /execute_code: code_len={}",
+        req.code.len()
+    );
+
+    // Call Gateway's EXECUTE_CODE
+    let raw = match mcp
+        .call_tool(
+            "EXECUTE_CODE".to_string(),
+            Some(json!({ "code": req.code })),
+            Some(Duration::from_secs(120)),
+        )
+        .await
+    {
+        Ok(r) => serde_json::to_string(&r).unwrap_or_default(),
+        Err(e) => {
+            return ExecuteCodeResponse {
+                result: None,
+                stored_in_corpus: false,
+                error: Some(format!("EXECUTE_CODE failed: {e}")),
+            };
+        }
+    };
+
+    // Route through corpus if router is available
+    if let Some(ref router) = state.rlm_router {
+        let call_id = format!("repl_exec_{}", uuid::Uuid::new_v4());
+        match router
+            .process_result(&call_id, "kontext-dev", "EXECUTE_CODE", &raw)
+            .await
+        {
+            Ok(ProcessedResult::StoredInCorpus { summary, .. }) => ExecuteCodeResponse {
+                result: Some(summary),
+                stored_in_corpus: true,
+                error: None,
+            },
+            Ok(ProcessedResult::PassThrough { content }) => ExecuteCodeResponse {
+                result: Some(content),
+                stored_in_corpus: false,
+                error: None,
+            },
+            Err(e) => ExecuteCodeResponse {
+                result: Some(raw),
+                stored_in_corpus: false,
+                error: Some(format!("Corpus routing failed (returning raw): {e}")),
+            },
+        }
+    } else {
+        ExecuteCodeResponse {
+            result: Some(raw),
+            stored_in_corpus: false,
+            error: None,
+        }
+    }
+}
+
+/// Search the RLM corpus for chunks matching a query.
+async fn handle_corpus_search(
+    state: &SharedState,
+    req: CorpusSearchRequest,
+) -> serde_json::Value {
+    let Some(ref router) = state.rlm_router else {
+        return json!({ "error": "Corpus not configured (no rlm_router)", "results": [] });
+    };
+
+    let results = router.search_corpus(&req.query, req.max_results).await;
+    json!({ "results": results })
+}
+
+/// Retrieve a specific chunk from the RLM corpus by ID.
+async fn handle_corpus_get_chunk(
+    state: &SharedState,
+    req: CorpusGetChunkRequest,
+) -> serde_json::Value {
+    let Some(ref router) = state.rlm_router else {
+        return json!({ "error": "Corpus not configured (no rlm_router)", "content": null });
+    };
+
+    match router.get_chunk(&req.chunk_id).await {
+        Some(content) => json!({ "content": content }),
+        None => json!({ "error": "Chunk not found", "content": null }),
+    }
+}
+
+/// Execute a Gateway tool directly via EXECUTE_TOOL (like Baseline mode).
+/// Returns the full result without corpus routing.
+///
+/// Performs fuzzy tool name resolution: the LLM may guess tool names like
+/// `linear_list_projects` or `list_projects` which need to be resolved to
+/// the actual Gateway ID (e.g., `Linear:list_projects`).
+async fn handle_execute_tool(state: &SharedState, req: ExecuteToolRequest) -> ExecuteToolResponse {
+    let Some(ref mcp) = state.mcp_client else {
+        return ExecuteToolResponse {
+            result: None,
+            error: Some("Gateway not configured (no mcp_client)".to_string()),
+        };
+    };
+
+    // Resolve tool_id: try exact match first, then fuzzy lookup
+    let resolved_id = resolve_tool_id(&req.tool_id, &state.tool_lookup);
+
+    tracing::debug!(
+        "LmHandler /execute_tool: requested={} resolved={} args_len={}",
+        req.tool_id,
+        resolved_id,
+        req.args.to_string().len()
+    );
+
+    let execute_args = json!({
+        "tool_id": resolved_id,
+        "tool_arguments": req.args,
+    });
+
+    match mcp
+        .call_tool(
+            "EXECUTE_TOOL".to_string(),
+            Some(execute_args),
+            Some(Duration::from_secs(120)),
+        )
+        .await
+    {
+        Ok(r) => ExecuteToolResponse {
+            result: Some(serde_json::to_string(&r).unwrap_or_default()),
+            error: None,
+        },
+        Err(e) => ExecuteToolResponse {
+            result: None,
+            error: Some(format!("EXECUTE_TOOL failed: {e}")),
+        },
+    }
+}
+
+/// Resolve a potentially fuzzy tool ID to the canonical Gateway tool ID.
+///
+/// Tries in order:
+/// 1. Exact match in lookup table
+/// 2. Case-insensitive exact match
+/// 3. Substring containment match (e.g., "list_projects" matches "Linear:list_projects")
+/// 4. Falls back to the original ID if no match
+fn resolve_tool_id(requested: &str, lookup: &HashMap<String, String>) -> String {
+    // 1. Exact match
+    if let Some(id) = lookup.get(requested) {
+        return id.clone();
+    }
+
+    // 2. Case-insensitive exact match
+    let requested_lower = requested.to_lowercase();
+    for (key, id) in lookup {
+        if key.to_lowercase() == requested_lower {
+            return id.clone();
+        }
+    }
+
+    // 3. Substring containment — find the best match
+    // Normalize common separators: dots and hyphens become underscores
+    let normalized = requested_lower.replace(['.', '-', ':'], "_");
+    for (key, id) in lookup {
+        let key_normalized = key.to_lowercase().replace(['.', '-', ':'], "_");
+        if normalized.contains(&key_normalized) || key_normalized.contains(&normalized) {
+            return id.clone();
+        }
+    }
+
+    // 4. Fall back to original
+    requested.to_string()
+}
+
+// ---------------------------------------------------------------------------
+// LLM query core
+// ---------------------------------------------------------------------------
 
 /// Execute a single LLM chat completion with budget checks.
 async fn do_llm_call(
@@ -484,6 +779,9 @@ mod tests {
             sub_model: None,
             api_key: "test-key".to_string(),
             base_url: None,
+            mcp_client: None,
+            rlm_router: None,
+            tool_lookup: HashMap::new(),
         };
         let budget = Arc::new(BudgetManager::new(&RlmConfig::default()));
         let handler = LmHandler::start(config, budget).await.unwrap();
@@ -509,6 +807,9 @@ mod tests {
             sub_model: None,
             api_key: "test-key".to_string(),
             base_url: None,
+            mcp_client: None,
+            rlm_router: None,
+            tool_lookup: HashMap::new(),
         };
         let budget = Arc::new(BudgetManager::new(&RlmConfig::default()));
         let handler = LmHandler::start(config, budget).await.unwrap();
@@ -529,6 +830,9 @@ mod tests {
             sub_model: None,
             api_key: "test-key".to_string(),
             base_url: None,
+            mcp_client: None,
+            rlm_router: None,
+            tool_lookup: HashMap::new(),
         };
         let budget = Arc::new(BudgetManager::new(&RlmConfig::default()));
         let handler = LmHandler::start(config, budget).await.unwrap();

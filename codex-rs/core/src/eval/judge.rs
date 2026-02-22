@@ -130,10 +130,10 @@ impl ClaimJudge {
         }
         let client = Client::with_config(config);
 
-        Ok(Self {
-            client,
-            model: "gpt-4o".to_string(),
-        })
+        let model = std::env::var("JUDGE_MODEL")
+            .or_else(|_| std::env::var("EVAL_MODEL"))
+            .unwrap_or_else(|_| "gpt-4o".to_string());
+        Ok(Self { client, model })
     }
 
     /// Create with a specific model
@@ -233,6 +233,21 @@ impl ClaimJudge {
                 coverage: 1.0,
                 passed: true,
                 raw_response: "No claims to verify".to_string(),
+            });
+        }
+
+        // Empty answer → all claims NOT_FULFILLED (no LLM calls needed)
+        let trimmed = answer.trim();
+        if trimmed.is_empty() || trimmed == "Max turns (10) reached without final answer" {
+            let scores: Vec<_> = claims
+                .iter()
+                .map(|c| (c.clone(), ClaimScore::NotFulfilled))
+                .collect();
+            return Ok(ClaimVerificationResult {
+                scores,
+                coverage: 0.0,
+                passed: false,
+                raw_response: "Empty answer — all claims auto-scored NOT_FULFILLED".to_string(),
             });
         }
 

@@ -1,10 +1,14 @@
-//! Local REPL execution environment for true RLM mode.
+//! Local REPL execution environment for RLM mode.
 //!
 //! Manages a persistent Python subprocess that maintains state across
 //! code executions. Communication uses a line-delimited JSON protocol
 //! over stdin/stdout. The Python side provides helper functions:
 //! - `llm_query(prompt, model=None)` — sub-LLM calls via HTTP
 //! - `llm_query_batched(prompts, model=None)` — batched sub-LLM calls
+//! - `execute_tool(tool_id, args)` — call Gateway tool via EXECUTE_TOOL (RLM)
+//! - `execute_code(ts_code)` — run TS/JS on Gateway via EXECUTE_CODE (RLM+CodeMode)
+//! - `corpus_search(query, max_results=5)` — search RLM corpus (RLM+CodeMode)
+//! - `corpus_get_chunk(chunk_id)` — retrieve corpus chunk (RLM+CodeMode)
 //! - `FINAL_VAR(name)` — mark a variable as the final answer
 //! - `SHOW_VARS()` — list all user-defined variables
 //! - `print()` — standard output (captured)
@@ -337,8 +341,106 @@ def _show_vars():
             items.append(f"  {{k}} = {{val_repr}}")
     return "\n".join(items) if items else "(no variables)"
 
+def _execute_tool(tool_id, args=None):
+    """Call a Gateway tool directly via EXECUTE_TOOL (like Baseline mode).
+
+    Args:
+        tool_id: The tool identifier (e.g., 'linear_list_projects',
+                 'github_get_repo').
+        args: Optional dict of tool arguments.
+
+    Returns: str — the full tool result as JSON.
+    """
+    if args is None:
+        args = {{}}
+    payload = json.dumps({{"tool_id": tool_id, "args": args}}).encode()
+    req = urllib.request.Request(
+        "http://127.0.0.1:{port}/execute_tool",
+        data=payload,
+        headers={{"Content-Type": "application/json"}},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            body = json.loads(resp.read().decode())
+            if body.get("error"):
+                return f"[execute_tool error: {{body['error']}}]"
+            return body.get("result", "")
+    except Exception as e:
+        return f"[execute_tool error: {{e}}]"
+
+def _execute_code(code):
+    """Execute TypeScript/JS code on the Gateway via EXECUTE_CODE.
+
+    The code runs in a sandboxed VM that has access to `tools.EXECUTE_TOOL()`
+    for calling any Gateway tool (Linear, GitHub, etc.).  Large results are
+    automatically stored in the corpus — use `corpus_search()` /
+    `corpus_get_chunk()` to retrieve them.
+
+    Returns: str — the execution result (or a summary if stored in corpus).
+    """
+    payload = json.dumps({{"code": code}}).encode()
+    req = urllib.request.Request(
+        "http://127.0.0.1:{port}/execute_code",
+        data=payload,
+        headers={{"Content-Type": "application/json"}},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            body = json.loads(resp.read().decode())
+            if body.get("error"):
+                return f"[execute_code error: {{body['error']}}]"
+            return body.get("result", "")
+    except Exception as e:
+        return f"[execute_code error: {{e}}]"
+
+def _corpus_search(query, max_results=5):
+    """Search the RLM corpus for chunks matching a query.
+
+    Returns: list of dicts with keys 'chunk_id', 'score', 'snippet'.
+    """
+    payload = json.dumps({{"query": query, "max_results": max_results}}).encode()
+    req = urllib.request.Request(
+        "http://127.0.0.1:{port}/corpus_search",
+        data=payload,
+        headers={{"Content-Type": "application/json"}},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = json.loads(resp.read().decode())
+            return body.get("results", [])
+    except Exception as e:
+        return [{{"error": str(e)}}]
+
+def _corpus_get_chunk(chunk_id):
+    """Retrieve a specific chunk from the RLM corpus by its ID.
+
+    Returns: str — the chunk content, or an error message.
+    """
+    payload = json.dumps({{"chunk_id": chunk_id}}).encode()
+    req = urllib.request.Request(
+        "http://127.0.0.1:{port}/corpus_get_chunk",
+        data=payload,
+        headers={{"Content-Type": "application/json"}},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = json.loads(resp.read().decode())
+            if body.get("error"):
+                return f"[corpus_get_chunk error: {{body['error']}}]"
+            return body.get("content", "")
+    except Exception as e:
+        return f"[corpus_get_chunk error: {{e}}]"
+
 _locals["llm_query"] = _llm_query
 _locals["llm_query_batched"] = _llm_query_batched
+_locals["execute_tool"] = _execute_tool
+_locals["execute_code"] = _execute_code
+_locals["corpus_search"] = _corpus_search
+_locals["corpus_get_chunk"] = _corpus_get_chunk
 _locals["FINAL_VAR"] = _final_var
 _locals["SHOW_VARS"] = _show_vars
 
@@ -355,7 +457,7 @@ def _locals_summary():
     for k, v in sorted(_locals.items()):
         if k.startswith("_"):
             continue
-        if callable(v) and k in ("llm_query", "llm_query_batched", "FINAL_VAR", "SHOW_VARS"):
+        if callable(v) and k in ("llm_query", "llm_query_batched", "execute_tool", "execute_code", "corpus_search", "corpus_get_chunk", "FINAL_VAR", "SHOW_VARS"):
             continue
         val_repr = repr(v)
         if len(val_repr) > 200:
