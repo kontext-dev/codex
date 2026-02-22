@@ -114,8 +114,8 @@ pub struct GatewayTool {
 pub struct ToolCallingRunner {
     /// MCP client for Gateway calls
     mcp_client: Arc<RmcpClient>,
-    /// OpenAI client for agent LLM
-    openai_client: Client<OpenAIConfig>,
+    /// LLM client for agent (OpenAI-compatible)
+    llm_client: Client<OpenAIConfig>,
     /// RLM router for BaselineRlm mode
     rlm_router: Option<Arc<GatewayResultRouter>>,
     /// Model to use for agent
@@ -130,12 +130,23 @@ pub struct ToolCallingRunner {
 
 impl ToolCallingRunner {
     /// Create a new task runner and discover available tools from Gateway
+    ///
+    /// `base_url` and `api_key` configure the OpenAI-compatible endpoint used by
+    /// the agent LLM. Both should be provided via `EVAL_API_KEY` / `EVAL_BASE_URL`.
     pub async fn new(
         mcp_client: Arc<RmcpClient>,
         rlm_router: Option<Arc<GatewayResultRouter>>,
+        base_url: Option<String>,
+        api_key: Option<String>,
     ) -> Result<Self> {
-        let config = OpenAIConfig::default();
-        let openai_client = Client::with_config(config);
+        let mut config = OpenAIConfig::default();
+        if let Some(base) = base_url {
+            config = config.with_api_base(base);
+        }
+        if let Some(key) = api_key {
+            config = config.with_api_key(key);
+        }
+        let llm_client = Client::with_config(config);
 
         // Discover tools from Gateway
         let gateway_tools = discover_gateway_tools(&mcp_client).await?;
@@ -151,7 +162,7 @@ impl ToolCallingRunner {
 
         Ok(Self {
             mcp_client,
-            openai_client,
+            llm_client,
             rlm_router,
             agent_model: "gpt-4o".to_string(),
             max_turns: 10,
@@ -308,7 +319,7 @@ Note: Tool calls are executed via a Gateway. Use the exact tool names shown abov
             };
 
             // Call the agent LLM
-            let response = match self.openai_client.chat().create(request).await {
+            let response = match self.llm_client.chat().create(request).await {
                 Ok(r) => r,
                 Err(e) => {
                     return TaskResult {
@@ -431,7 +442,7 @@ Note: Tool calls are executed via a Gateway. Use the exact tool names shown abov
         }
     }
 
-    /// Build tool definitions for OpenAI from discovered Gateway tools
+    /// Build tool definitions for the LLM from discovered Gateway tools
     fn build_tool_definitions_from_gateway(&self) -> Vec<ChatCompletionTool> {
         self.gateway_tools
             .iter()
@@ -1094,7 +1105,7 @@ CRITICAL: Your FINAL response must be plain text that directly answers the task 
             };
 
             // Call the agent LLM
-            let response = match self.openai_client.chat().create(request).await {
+            let response = match self.llm_client.chat().create(request).await {
                 Ok(r) => r,
                 Err(e) => {
                     return TaskResult {
@@ -1250,7 +1261,7 @@ CRITICAL: Your FINAL response must be plain text that directly answers the task 
             };
 
             // Call the agent LLM
-            let response = match self.openai_client.chat().create(request).await {
+            let response = match self.llm_client.chat().create(request).await {
                 Ok(r) => r,
                 Err(e) => {
                     return TaskResult {

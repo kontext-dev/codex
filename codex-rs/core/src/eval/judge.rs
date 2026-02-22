@@ -1,6 +1,6 @@
-//! GPT-4o Claim Judge
+//! LLM Claim Judge
 //!
-//! Verifies claims against agent answers using GPT-4o as the judge.
+//! Verifies claims against agent answers using an LLM as the judge.
 
 use anyhow::Context;
 use anyhow::Result;
@@ -46,7 +46,7 @@ pub struct ClaimVerificationResult {
     pub raw_response: String,
 }
 
-/// GPT-4o-based claim judge
+/// LLM-based claim judge (any OpenAI-compatible provider)
 pub struct ClaimJudge {
     client: Client<OpenAIConfig>,
     model: String,
@@ -55,9 +55,16 @@ pub struct ClaimJudge {
 impl ClaimJudge {
     /// Create a new claim judge
     ///
-    /// Uses OPENAI_API_KEY from environment
-    pub fn new() -> Result<Self> {
-        let config = OpenAIConfig::default();
+    /// `base_url` and `api_key` configure the OpenAI-compatible endpoint.
+    /// Both should be provided via `EVAL_API_KEY` / `EVAL_BASE_URL` env vars.
+    pub fn new(base_url: Option<String>, api_key: Option<String>) -> Result<Self> {
+        let mut config = OpenAIConfig::default();
+        if let Some(base) = base_url {
+            config = config.with_api_base(base);
+        }
+        if let Some(key) = api_key {
+            config = config.with_api_key(key);
+        }
         let client = Client::with_config(config);
 
         Ok(Self {
@@ -67,8 +74,18 @@ impl ClaimJudge {
     }
 
     /// Create with a specific model
-    pub fn with_model(model: impl Into<String>) -> Result<Self> {
-        let config = OpenAIConfig::default();
+    pub fn with_model(
+        model: impl Into<String>,
+        base_url: Option<String>,
+        api_key: Option<String>,
+    ) -> Result<Self> {
+        let mut config = OpenAIConfig::default();
+        if let Some(base) = base_url {
+            config = config.with_api_base(base);
+        }
+        if let Some(key) = api_key {
+            config = config.with_api_key(key);
+        }
         let client = Client::with_config(config);
 
         Ok(Self {
@@ -151,7 +168,7 @@ Evaluate each claim and respond with JSON array."#
             .chat()
             .create(request)
             .await
-            .with_context(|| "Failed to call GPT-4o for claim verification")?;
+            .with_context(|| format!("Failed to call LLM for claim verification (model={})", self.model))?;
 
         let raw_response = response
             .choices
@@ -180,7 +197,7 @@ Evaluate each claim and respond with JSON array."#
         })
     }
 
-    /// Parse the JSON response from GPT-4o
+    /// Parse the JSON response from the judge LLM
     fn parse_verification_response(
         &self,
         response: &str,

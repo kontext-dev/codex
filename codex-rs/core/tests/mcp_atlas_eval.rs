@@ -4,7 +4,7 @@
 //! Benchmarks LLM agent performance on the MCP-Atlas dataset using two client architectures:
 //!
 //! ## Tool-Calling Client (ToolCallingRunner)
-//! Uses OpenAI function calling with modes:
+//! Uses LLM function calling with modes:
 //! - Baseline: Direct EXECUTE_TOOL calls with full results in context
 //! - CodeMode: EXECUTE_CODE with summarized results
 //! - Baseline+RLM: EXECUTE_TOOL with RLM routing for large results
@@ -22,8 +22,8 @@
 //! export KONTEXT_MCP_URL=http://localhost:4000/mcp
 //! export KONTEXT_TOKEN_URL=http://localhost:4000/oauth2/token
 //!
-//! # OpenAI for agent and judge
-//! export OPENAI_API_KEY=<your-api-key>
+//! # LLM API key (any OpenAI-compatible provider)
+//! export EVAL_API_KEY=<your-api-key>
 //! ```
 //!
 //! ## Running
@@ -107,7 +107,42 @@ struct EvalResult {
 fn should_skip() -> bool {
     env::var("SKIP_EVAL_TESTS").is_ok()
         || gateway_auth::should_skip()
-        || env::var("OPENAI_API_KEY").is_err()
+        || env_non_empty("EVAL_API_KEY").is_none()
+}
+
+/// Read an env var, treating empty strings as unset.
+fn env_non_empty(key: &str) -> Option<String> {
+    env::var(key).ok().filter(|v| !v.is_empty())
+}
+
+/// Resolve the API key for the agent LLM.
+fn resolve_eval_api_key() -> Option<String> {
+    env_non_empty("EVAL_API_KEY")
+}
+
+/// Resolve the base URL for the agent LLM.
+fn resolve_eval_base_url() -> Option<String> {
+    env_non_empty("EVAL_BASE_URL")
+}
+
+/// Resolve the API key for the judge LLM.
+/// Cascade: `JUDGE_API_KEY` -> `EVAL_API_KEY`
+fn resolve_judge_api_key() -> Option<String> {
+    env_non_empty("JUDGE_API_KEY").or_else(|| env_non_empty("EVAL_API_KEY"))
+}
+
+/// Resolve the base URL for the judge LLM.
+/// Cascade: `JUDGE_BASE_URL` -> `EVAL_BASE_URL`
+fn resolve_judge_base_url() -> Option<String> {
+    env_non_empty("JUDGE_BASE_URL").or_else(|| env_non_empty("EVAL_BASE_URL"))
+}
+
+/// Resolve the judge model name.
+/// Cascade: `JUDGE_MODEL` -> `EVAL_MODEL`
+fn resolve_judge_model() -> String {
+    env_non_empty("JUDGE_MODEL")
+        .or_else(|| env_non_empty("EVAL_MODEL"))
+        .unwrap_or_else(|| "gpt-4o".to_string())
 }
 
 fn resolve_gateway_dataset_path(manifest_dir: &str, selector: &str) -> PathBuf {
@@ -545,14 +580,14 @@ async fn test_cli_mcp_tool() {
 #[tokio::test]
 async fn test_claim_judge() {
     init_test_tracing();
-    if env::var("OPENAI_API_KEY").is_err() {
-        tracing::warn!("Skipping: OPENAI_API_KEY not set");
+    if env_non_empty("EVAL_API_KEY").is_none() {
+        tracing::warn!("Skipping: EVAL_API_KEY not set");
         return;
     }
 
     tracing::info!("Test: Claim Judge");
 
-    let judge = match ClaimJudge::new() {
+    let judge = match ClaimJudge::new(resolve_judge_base_url(), resolve_judge_api_key()) {
         Ok(j) => j,
         Err(e) => {
             tracing::error!("Failed to create judge: {e}");
@@ -673,11 +708,27 @@ async fn run_mcp_atlas_three_way_evaluation() {
         tracing::trace!("KONTEXT_CLIENT_SECRET=<your-client-secret>");
         tracing::trace!("KONTEXT_MCP_URL=http://localhost:4000/mcp");
         tracing::trace!("KONTEXT_TOKEN_URL=http://localhost:4000/oauth2/token");
-        tracing::trace!("OPENAI_API_KEY=<your-api-key>");
+        tracing::trace!("EVAL_API_KEY=<your-api-key>    # Any OpenAI-compatible provider");
+        tracing::trace!("Agent / Judge LLM configuration:");
+        tracing::trace!(
+            "EVAL_API_KEY=<key>             # API key for agent LLM (required)"
+        );
+        tracing::trace!(
+            "EVAL_BASE_URL=<url>            # Base URL for agent LLM (OpenAI-compatible)"
+        );
+        tracing::trace!(
+            "JUDGE_API_KEY=<key>            # API key for judge LLM (defaults to EVAL_API_KEY)"
+        );
+        tracing::trace!(
+            "JUDGE_BASE_URL=<url>           # Base URL for judge LLM (falls back to EVAL_BASE_URL)"
+        );
+        tracing::trace!(
+            "JUDGE_MODEL=<model>            # Judge model name (defaults to EVAL_MODEL)"
+        );
         tracing::trace!("Optional configuration:");
         tracing::trace!("EVAL_LIMIT=5                   # Run only N tasks");
         tracing::trace!("EVAL_TASK_PREFIX=task_linear   # Filter by task ID prefix");
-        tracing::trace!("EVAL_MODEL=gpt-4o              # Model for tool-calling client");
+        tracing::trace!("EVAL_MODEL=<model>             # Model for tool-calling client");
         tracing::trace!("EVAL_GATEWAY_TASK_CSV=v1       # gateway_tasks.csv");
         tracing::trace!("EVAL_GATEWAY_TASK_CSV=v2       # gateway_tasks_v2.csv (default)");
         tracing::trace!("EVAL_GATEWAY_TASK_CSV=/path/to/gateway_tasks.csv  # Custom CSV path");
@@ -785,18 +836,31 @@ async fn run_mcp_atlas_three_way_evaluation() {
         };
 
     // Step 4: Setup judge
-    let judge = match ClaimJudge::new() {
+    let judge_model = resolve_judge_model();
+    let judge = match ClaimJudge::with_model(
+        &judge_model,
+        resolve_judge_base_url(),
+        resolve_judge_api_key(),
+    ) {
         Ok(j) => j,
         Err(e) => {
             tracing::error!("Failed to create claim judge: {e}");
             panic!("Failed to create claim judge: {e}");
         }
     };
+    tracing::debug!("Judge model: {judge_model}");
 
     // Step 5: Create runner and discover tools
     tracing::debug!("Discovering available Gateway tools...");
     let agent_model = std::env::var("EVAL_MODEL").unwrap_or_else(|_| "gpt-4o".to_string());
-    let runner = match ToolCallingRunner::new(client.clone(), rlm_router.clone()).await {
+    let runner = match ToolCallingRunner::new(
+        client.clone(),
+        rlm_router.clone(),
+        resolve_eval_base_url(),
+        resolve_eval_api_key(),
+    )
+    .await
+    {
         Ok(r) => r.with_model(&agent_model),
         Err(e) => {
             tracing::error!("Failed to create runner: {e}");
@@ -1036,12 +1100,12 @@ async fn run_mcp_atlas_three_way_evaluation() {
             {
                 Ok(v) => v,
                 Err(e) => {
-                    tracing::error!("Verification failed: {e}");
+                    tracing::error!("Verification failed: {e:#}");
                     ClaimVerificationResult {
                         scores: vec![],
                         coverage: 0.0,
                         passed: false,
-                        raw_response: e.to_string(),
+                        raw_response: format!("{e:#}"),
                     }
                 }
             };
@@ -1557,7 +1621,14 @@ async fn analyze_solvable_tasks() {
     }
 
     // Create runner to discover tools
-    let runner = match ToolCallingRunner::new(client.clone(), None).await {
+    let runner = match ToolCallingRunner::new(
+        client.clone(),
+        None,
+        resolve_eval_base_url(),
+        resolve_eval_api_key(),
+    )
+    .await
+    {
         Ok(r) => r,
         Err(e) => {
             tracing::error!("Failed to create runner: {e}");
@@ -1862,7 +1933,7 @@ async fn run_verbose_debug_evaluation() {
 
     // Step 4: Setup judge
     tracing::debug!("[STEP 4] Setting up claim judge...");
-    let judge = match ClaimJudge::new() {
+    let judge = match ClaimJudge::new(resolve_judge_base_url(), resolve_judge_api_key()) {
         Ok(j) => {
             tracing::debug!("Claim judge created");
             j
@@ -1875,7 +1946,14 @@ async fn run_verbose_debug_evaluation() {
 
     // Step 5: Discover tools
     tracing::debug!("[STEP 5] Discovering Gateway tools...");
-    let runner = match ToolCallingRunner::new(client.clone(), rlm_router.clone()).await {
+    let runner = match ToolCallingRunner::new(
+        client.clone(),
+        rlm_router.clone(),
+        resolve_eval_base_url(),
+        resolve_eval_api_key(),
+    )
+    .await
+    {
         Ok(r) => r,
         Err(e) => {
             tracing::error!("Failed to create runner: {e}");
@@ -1984,7 +2062,7 @@ async fn run_verbose_debug_evaluation() {
         let mode = ToolCallingMode::BaselineRlm;
 
         tracing::trace!("EXECUTION ({})", mode);
-        tracing::debug!("Sending prompt to agent (GPT-4o)...");
+        tracing::debug!("Sending prompt to agent...");
 
         let start = Instant::now();
         let task_result = runner.run_task(task, mode).await;
@@ -2048,7 +2126,7 @@ async fn run_verbose_debug_evaluation() {
 
         // Show claim verification
         tracing::trace!("CLAIM VERIFICATION");
-        tracing::debug!("Sending to judge (GPT-4o)...");
+        tracing::debug!("Sending to judge...");
 
         let verify_start = Instant::now();
         let verification = match judge
@@ -2177,7 +2255,7 @@ async fn print_setup_instructions() {
     tracing::trace!("MCP-Atlas Evaluation - Setup Instructions");
     tracing::trace!("This evaluation requires:");
     tracing::trace!("1. Kontext Gateway credentials");
-    tracing::trace!("2. OpenAI API key (for agent and judge)");
+    tracing::trace!("2. LLM API key (any OpenAI-compatible provider)");
     tracing::trace!("3. MCP-Atlas dataset");
     tracing::trace!("Setup:");
     tracing::trace!("# Create .env file:");
@@ -2185,7 +2263,7 @@ async fn print_setup_instructions() {
     tracing::trace!("KONTEXT_CLIENT_SECRET=<your-client-secret>");
     tracing::trace!("KONTEXT_MCP_URL=http://localhost:4000/mcp");
     tracing::trace!("KONTEXT_TOKEN_URL=http://localhost:4000/oauth2/token");
-    tracing::trace!("OPENAI_API_KEY=<your-openai-key>");
+    tracing::trace!("EVAL_API_KEY=<your-api-key>");
     tracing::trace!("EVAL_GATEWAY_TASK_CSV=v2");
     tracing::trace!("# Optional alternate dataset:");
     tracing::trace!(

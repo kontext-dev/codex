@@ -6,7 +6,7 @@
 //!
 //! ## Tool-Calling Client (ToolCallingRunner)
 //!
-//! Uses OpenAI function calling with modes:
+//! Uses LLM function calling with modes:
 //! - **Baseline**: Direct EXECUTE_TOOL calls with full results in context
 //! - **CodeMode**: EXECUTE_CODE with summarized results
 //! - **BaselineRlm**: EXECUTE_TOOL with RLM routing for large results
@@ -14,7 +14,7 @@
 //!
 //! ## Scoring
 //!
-//! Claims-based scoring using GPT-4o as judge:
+//! Claims-based scoring using LLM as judge:
 //! - `fulfilled` = 1.0
 //! - `partially_fulfilled` = 0.5
 //! - `not_fulfilled` = 0.0

@@ -113,15 +113,27 @@ async fn list_all_gateway_tools() {
                             .unwrap_or_default()
                     };
 
+                    // Collect servers with errors (e.g. oauth_required_not_connected)
+                    let mut errored_servers: std::collections::HashSet<String> =
+                        std::collections::HashSet::new();
                     if let Some(errors) = tools_payload.get("errors").and_then(|v| v.as_array())
                         && !errors.is_empty()
                     {
-                        tracing::error!("Gateway search errors: {errors:?}");
+                        for err in errors {
+                            let server = err
+                                .get("serverName")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("unknown");
+                            let reason = err
+                                .get("reason")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("unknown");
+                            errored_servers.insert(server.to_string());
+                            tracing::error!("  {server}: NOT CONNECTED ({reason})");
+                        }
                     }
 
                     if !tools.is_empty() || tools_payload.get("items").is_some() {
-                        tracing::warn!("Found {} tools", tools.len());
-
                         assert!(!tools.is_empty(), "Should discover at least one tool");
 
                         // Group by server
@@ -145,13 +157,21 @@ async fn list_all_gateway_tools() {
                                 .push(tool_name.to_string());
                         }
 
+                        let connected_count = by_server.len();
+                        let errored_count = errored_servers.len();
+                        let total_servers = connected_count + errored_count;
+                        tracing::warn!(
+                            "{connected_count}/{total_servers} servers connected, {} tools available",
+                            tools.len()
+                        );
+
                         for (server, tools) in by_server.iter() {
-                            tracing::warn!("  {} ({} tools)", server, tools.len());
+                            tracing::warn!("  {server}: OK ({} tools)", tools.len());
                             for tool in tools.iter().take(30) {
-                                tracing::debug!("- {tool}");
+                                tracing::debug!("    - {tool}");
                             }
                             if tools.len() > 30 {
-                                tracing::debug!("... and {} more", tools.len() - 30);
+                                tracing::debug!("    ... and {} more", tools.len() - 30);
                             }
                         }
                     } else {
