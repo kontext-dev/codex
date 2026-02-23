@@ -24,7 +24,8 @@ client_id = "<application-client-id>"
 # client_secret = "<application-client-secret>"
 
 # optional; defaults shown
-scope = "openid offline"
+# leave empty unless your app explicitly allows OAuth scopes
+scope = ""
 resource = "mcp-gateway"
 server_name = "kontext-dev"
 auth_timeout_seconds = 300

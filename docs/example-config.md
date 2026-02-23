@@ -10,7 +10,8 @@ server = "https://api.kontext.dev"
 client_id = "<application-client-id>"
 
 # optional values (defaults shown)
-scope = "openid offline"
+# leave empty unless your app explicitly allows OAuth scopes
+scope = ""
 resource = "mcp-gateway"
 server_name = "kontext-dev"
 open_connect_page_on_login = true

@@ -28,7 +28,8 @@ client_id = "<application_client_id>"
 # client_secret = "<application_client_secret>" # optional (confidential clients)
 
 # optional values (defaults shown)
-scope = "openid offline"
+# leave empty unless your app explicitly allows OAuth scopes
+scope = ""
 resource = "mcp-gateway"
 server_name = "kontext-dev"
 auth_timeout_seconds = 300
