@@ -39,7 +39,6 @@ mod file_watcher;
 mod flags;
 pub mod git_info;
 mod kontext_dev;
-pub mod hooks;
 pub mod instructions;
 pub mod landlock;
 pub mod mcp;

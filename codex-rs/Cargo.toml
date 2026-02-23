@@ -92,7 +92,7 @@ codex-client = { path = "codex-client" }
 codex-cloud-requirements = { path = "cloud-requirements" }
 codex-config = { path = "config" }
 codex-core = { path = "core" }
-kontext-dev = "0.2.1"
+kontext-dev = "0.3.0"
 codex-exec = { path = "exec" }
 codex-execpolicy = { path = "execpolicy" }
 codex-experimental-api-macros = { path = "codex-experimental-api-macros" }
@@ -362,6 +362,8 @@ opt-level = 0
 [patch.crates-io]
 # Uncomment to debug local changes.
 # ratatui = { path = "../../ratatui" }
+kontext-dev = { path = "../../kontext-dev-sdk/crates/kontext-dev" }
+kontext-dev-core = { path = "../../kontext-dev-sdk/crates/kontext-dev-core" }
 crossterm = { git = "https://github.com/nornagon/crossterm", branch = "nornagon/color-query" }
 ratatui = { git = "https://github.com/nornagon/ratatui", branch = "nornagon-v0.29.0-patch" }
 tokio-tungstenite = { git = "https://github.com/openai-oss-forks/tokio-tungstenite", rev = "132f5b39c862e3a970f731d709608b3e6276d5f6" }
