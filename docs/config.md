@@ -14,7 +14,7 @@ Codex can connect to MCP servers configured in `~/.codex/config.toml`. See the c
 
 ### Kontext-Dev fork configuration
 
-This fork also supports a top-level `[kontext-dev]` table. It authenticates with PKCE, exchanges an identity token for an `mcp-gateway` token, and injects a streamable HTTP MCP server automatically.
+This fork also supports a top-level `[kontext-dev]` table. It authenticates with PKCE, exchanges an identity token for an `mcp-gateway` token, and injects Kontext tools directly as regular function tools (not as a raw MCP server entry).
 
 ```toml
 [kontext-dev]
@@ -33,6 +33,8 @@ open_connect_page_on_login = true
 integration_ui_url = "https://app.kontext.dev"
 # integration_return_to = "https://app.kontext.dev/oauth/complete"
 # token_cache_path = "/Users/<you>/.codex/kontext-dev-token.json"
+# required by OAuth app registration; must match one of your registered callbacks
+# redirect_uri = "http://localhost:3000/callback"
 ```
 
 ## Apps (Connectors)

@@ -27,8 +27,8 @@ use crate::exec_policy::ExecPolicyManager;
 use crate::features::FEATURES;
 use crate::features::Feature;
 use crate::features::Features;
-use crate::kontext_dev;
 use crate::features::maybe_push_unstable_features_warning;
+use crate::kontext_dev;
 use crate::models_manager::manager::ModelsManager;
 use crate::parse_command::parse_command;
 use crate::parse_turn_item;
@@ -310,10 +310,10 @@ impl Codex {
         dynamic_tools: Vec<DynamicToolSpec>,
         persist_extended_history: bool,
     ) -> CodexResult<CodexSpawnOk> {
-        kontext_dev::attach_kontext_dev_mcp_server(&mut config)
+        let kontext_dev_runtime = kontext_dev::initialize_kontext_dev_runtime(&mut config)
             .await
             .map_err(|err| {
-                CodexErr::Fatal(format!("failed to attach Kontext-Dev MCP server: {err:#}"))
+                CodexErr::Fatal(format!("failed to initialize Kontext-Dev runtime: {err:#}"))
             })?;
 
         let (tx_sub, rx_sub) = async_channel::bounded(SUBMISSION_CHANNEL_CAPACITY);
@@ -434,6 +434,7 @@ impl Codex {
         let session = Session::new(
             session_configuration,
             config.clone(),
+            kontext_dev_runtime,
             auth_manager.clone(),
             models_manager.clone(),
             exec_policy,
@@ -1010,6 +1011,7 @@ impl Session {
     async fn new(
         mut session_configuration: SessionConfiguration,
         config: Arc<Config>,
+        kontext_dev_runtime: Option<Arc<kontext_dev::KontextDevRuntime>>,
         auth_manager: Arc<AuthManager>,
         models_manager: Arc<ModelsManager>,
         exec_policy: ExecPolicyManager,
@@ -1312,6 +1314,7 @@ impl Session {
                 &config.permissions.approval_policy,
             ))),
             mcp_startup_cancellation_token: Mutex::new(CancellationToken::new()),
+            kontext_dev_runtime,
             unified_exec_manager: UnifiedExecProcessManager::new(
                 config.background_terminal_max_timeout,
             ),
@@ -5266,6 +5269,15 @@ async fn built_tools(
     skills_outcome: Option<&SkillLoadOutcome>,
     cancellation_token: &CancellationToken,
 ) -> CodexResult<Arc<ToolRouter>> {
+    let kontext_tools = if let Some(runtime) = sess.services.kontext_dev_runtime.clone() {
+        runtime
+            .list_tool_specs()
+            .await
+            .map_err(|err| CodexErr::Fatal(format!("failed to refresh Kontext tools: {err:#}")))?
+    } else {
+        Vec::new()
+    };
+
     let mcp_connection_manager = sess.services.mcp_connection_manager.read().await;
     let has_mcp_servers = mcp_connection_manager.has_servers();
     let mut mcp_tools = mcp_connection_manager
@@ -5327,6 +5339,7 @@ async fn built_tools(
         }),
         app_tools,
         turn_context.dynamic_tools.as_slice(),
+        kontext_tools.as_slice(),
     )))
 }
 
@@ -7802,6 +7815,7 @@ mod tests {
         let result = Session::new(
             session_configuration,
             Arc::clone(&config),
+            None,
             auth_manager,
             models_manager,
             ExecPolicyManager::default(),
@@ -7899,6 +7913,7 @@ mod tests {
                 ),
             )),
             mcp_startup_cancellation_token: Mutex::new(CancellationToken::new()),
+            kontext_dev_runtime: None,
             unified_exec_manager: UnifiedExecProcessManager::new(
                 config.background_terminal_max_timeout,
             ),
@@ -8052,6 +8067,7 @@ mod tests {
                 ),
             )),
             mcp_startup_cancellation_token: Mutex::new(CancellationToken::new()),
+            kontext_dev_runtime: None,
             unified_exec_manager: UnifiedExecProcessManager::new(
                 config.background_terminal_max_timeout,
             ),
@@ -8683,6 +8699,7 @@ mod tests {
             ),
             app_tools,
             turn_context.dynamic_tools.as_slice(),
+            &[],
         );
         let item = ResponseItem::CustomToolCall {
             id: None,

@@ -26,6 +26,7 @@ use tokio_util::sync::CancellationToken;
 pub(crate) struct SessionServices {
     pub(crate) mcp_connection_manager: Arc<RwLock<McpConnectionManager>>,
     pub(crate) mcp_startup_cancellation_token: Mutex<CancellationToken>,
+    pub(crate) kontext_dev_runtime: Option<Arc<crate::kontext_dev::KontextDevRuntime>>,
     pub(crate) unified_exec_manager: UnifiedExecProcessManager,
     pub(crate) zsh_exec_bridge: ZshExecBridge,
     pub(crate) analytics_events_client: AnalyticsEventsClient,

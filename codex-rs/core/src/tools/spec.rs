@@ -5,6 +5,7 @@ use crate::client_common::tools::ToolSpec;
 use crate::config::AgentRoleConfig;
 use crate::features::Feature;
 use crate::features::Features;
+use crate::kontext_dev::InjectedKontextToolSpec;
 use crate::mcp_connection_manager::ToolInfo;
 use crate::tools::handlers::PLAN_TOOL;
 use crate::tools::handlers::SEARCH_TOOL_BM25_DEFAULT_LIMIT;
@@ -1428,12 +1429,14 @@ pub(crate) fn build_specs(
     mcp_tools: Option<HashMap<String, rmcp::model::Tool>>,
     app_tools: Option<HashMap<String, ToolInfo>>,
     dynamic_tools: &[DynamicToolSpec],
+    kontext_tools: &[InjectedKontextToolSpec],
 ) -> ToolRegistryBuilder {
     use crate::tools::handlers::ApplyPatchHandler;
     use crate::tools::handlers::DynamicToolHandler;
     use crate::tools::handlers::GrepFilesHandler;
     use crate::tools::handlers::JsReplHandler;
     use crate::tools::handlers::JsReplResetHandler;
+    use crate::tools::handlers::KontextDevHandler;
     use crate::tools::handlers::ListDirHandler;
     use crate::tools::handlers::McpHandler;
     use crate::tools::handlers::McpResourceHandler;
@@ -1456,6 +1459,7 @@ pub(crate) fn build_specs(
     let plan_handler = Arc::new(PlanHandler);
     let apply_patch_handler = Arc::new(ApplyPatchHandler);
     let dynamic_tool_handler = Arc::new(DynamicToolHandler);
+    let kontext_dev_handler = Arc::new(KontextDevHandler);
     let view_image_handler = Arc::new(ViewImageHandler);
     let mcp_handler = Arc::new(McpHandler);
     let mcp_resource_handler = Arc::new(McpResourceHandler);
@@ -1623,6 +1627,31 @@ pub(crate) fn build_specs(
                 }
                 Err(e) => {
                     tracing::error!("Failed to convert {name:?} MCP tool to OpenAI tool: {e:?}");
+                }
+            }
+        }
+    }
+
+    if !kontext_tools.is_empty() {
+        let mut entries = kontext_tools.to_vec();
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
+
+        for tool in entries {
+            match parse_tool_input_schema(&tool.input_schema) {
+                Ok(parameters) => {
+                    builder.push_spec(ToolSpec::Function(ResponsesApiTool {
+                        name: tool.name.clone(),
+                        description: tool.description,
+                        strict: false,
+                        parameters,
+                    }));
+                    builder.register_handler(tool.name, kontext_dev_handler.clone());
+                }
+                Err(e) => {
+                    tracing::error!(
+                        "Failed to parse Kontext tool schema for {:?}: {e:?}",
+                        tool.name
+                    );
                 }
             }
         }
@@ -1812,7 +1841,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Live),
         });
-        let (tools, _) = build_specs(&config, None, None, &[]).build();
+        let (tools, _) = build_specs(&config, None, None, &[], &[]).build();
 
         // Build actual map name -> spec
         use std::collections::BTreeMap;
@@ -1874,7 +1903,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
         });
-        let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
+        let (tools, _) = build_specs(&tools_config, None, None, &[], &[]).build();
         assert_contains_tool_names(
             &tools,
             &[
@@ -1899,7 +1928,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
         });
-        let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
+        let (tools, _) = build_specs(&tools_config, None, None, &[], &[]).build();
         assert!(
             !tools.iter().any(|t| t.spec.name() == "request_user_input"),
             "request_user_input should be disabled when collaboration_modes feature is off"
@@ -1911,7 +1940,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
         });
-        let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
+        let (tools, _) = build_specs(&tools_config, None, None, &[], &[]).build();
         assert_contains_tool_names(&tools, &["request_user_input"]);
     }
 
@@ -1927,7 +1956,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
         });
-        let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
+        let (tools, _) = build_specs(&tools_config, None, None, &[], &[]).build();
 
         assert!(
             !tools.iter().any(|tool| tool.spec.name() == "js_repl"),
@@ -1952,7 +1981,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
         });
-        let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
+        let (tools, _) = build_specs(&tools_config, None, None, &[], &[]).build();
         assert_contains_tool_names(&tools, &["js_repl", "js_repl_reset"]);
     }
 
@@ -1983,7 +2012,7 @@ mod tests {
             features,
             web_search_mode,
         });
-        let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
+        let (tools, _) = build_specs(&tools_config, None, None, &[], &[]).build();
         let tool_names = tools.iter().map(|t| t.spec.name()).collect::<Vec<_>>();
         assert_eq!(&tool_names, &expected_tools,);
     }
@@ -2016,7 +2045,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
         });
-        let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
+        let (tools, _) = build_specs(&tools_config, None, None, &[], &[]).build();
 
         let tool = find_tool(&tools, "web_search");
         assert_eq!(
@@ -2039,7 +2068,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Live),
         });
-        let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
+        let (tools, _) = build_specs(&tools_config, None, None, &[], &[]).build();
 
         let tool = find_tool(&tools, "web_search");
         assert_eq!(
@@ -2062,7 +2091,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
         });
-        let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
+        let (tools, _) = build_specs(&tools_config, None, None, &[], &[]).build();
 
         assert!(
             !tools.iter().any(|tool| matches!(
@@ -2085,7 +2114,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
         });
-        let (tools, _) = build_specs(&tools_config, Some(HashMap::new()), None, &[]).build();
+        let (tools, _) = build_specs(&tools_config, Some(HashMap::new()), None, &[], &[]).build();
 
         assert_contains_tool_names(
             &tools,
@@ -2284,7 +2313,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Live),
         });
-        let (tools, _) = build_specs(&tools_config, Some(HashMap::new()), None, &[]).build();
+        let (tools, _) = build_specs(&tools_config, Some(HashMap::new()), None, &[], &[]).build();
 
         // Only check the shell variant and a couple of core tools.
         let mut subset = vec!["exec_command", "write_stdin", "update_plan"];
@@ -2324,7 +2353,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
         });
-        let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
+        let (tools, _) = build_specs(&tools_config, None, None, &[], &[]).build();
 
         assert!(find_tool(&tools, "exec_command").supports_parallel_tool_calls);
         assert!(!find_tool(&tools, "write_stdin").supports_parallel_tool_calls);
@@ -2348,7 +2377,7 @@ mod tests {
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
         });
-        let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
+        let (tools, _) = build_specs(&tools_config, None, None, &[], &[]).build();
 
         assert!(
             tools
@@ -2405,6 +2434,7 @@ mod tests {
                 ),
             )])),
             None,
+            &[],
             &[],
         )
         .build();
@@ -2482,7 +2512,7 @@ mod tests {
             ),
         ]);
 
-        let (tools, _) = build_specs(&tools_config, Some(tools_map), None, &[]).build();
+        let (tools, _) = build_specs(&tools_config, Some(tools_map), None, &[], &[]).build();
 
         // Only assert that the MCP tools themselves are sorted by fully-qualified name.
         let mcp_names: Vec<_> = tools
@@ -2554,6 +2584,7 @@ mod tests {
                 ),
             ])),
             &[],
+            &[],
         )
         .build();
 
@@ -2594,6 +2625,7 @@ mod tests {
                 ),
             )])),
             None,
+            &[],
             &[],
         )
         .build();
@@ -2647,6 +2679,7 @@ mod tests {
             )])),
             None,
             &[],
+            &[],
         )
         .build();
 
@@ -2697,6 +2730,7 @@ mod tests {
                 ),
             )])),
             None,
+            &[],
             &[],
         )
         .build();
@@ -2752,6 +2786,7 @@ mod tests {
                 ),
             )])),
             None,
+            &[],
             &[],
         )
         .build();
@@ -2879,6 +2914,7 @@ Examples of valid command strings:
                 ),
             )])),
             None,
+            &[],
             &[],
         )
         .build();

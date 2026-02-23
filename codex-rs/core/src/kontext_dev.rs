@@ -1,223 +1,415 @@
-use std::collections::HashMap;
-use std::time::Duration;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
-use anyhow::Result;
-use anyhow::anyhow;
-use serde::Deserialize;
-use tracing::debug;
-use tracing::info;
-use tracing::warn;
+use anyhow::{Result, anyhow};
+use kontext_dev::KontextClientConfig;
+use kontext_dev::client::KontextClient;
+use kontext_dev::create_kontext_client;
+use kontext_dev::orchestrator::KontextTool;
+use serde_json::{Map, Value, json};
+use sha1::{Digest, Sha1};
+use tokio::sync::RwLock;
+use tracing::{debug, info, warn};
 
 use crate::config::Config;
-use crate::config::types::McpServerConfig;
-use crate::config::types::McpServerTransportConfig;
-use kontext_dev::KontextDevClient;
-use kontext_dev::resolve_server_base_url;
 
-#[derive(Debug, Deserialize)]
-struct KontextIntegrationsResponse {
-    #[serde(default)]
-    items: Vec<KontextIntegrationItem>,
+const MAX_TOOL_NAME_LENGTH: usize = 64;
+const TOOL_NAME_PREFIX: &str = "kontext__";
+const REQUEST_CAPABILITY_TOOL_NAME: &str = "kontext__request_capability";
+
+#[derive(Clone, Debug)]
+pub(crate) struct InjectedKontextToolSpec {
+    pub(crate) name: String,
+    pub(crate) description: String,
+    pub(crate) input_schema: Value,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct KontextIntegrationItem {
-    #[serde(default)]
-    requires_oauth: bool,
-    #[serde(default)]
-    connection: Option<KontextIntegrationConnection>,
+#[derive(Clone, Debug)]
+struct DisconnectedCapability {
+    id: String,
+    name: String,
+    connect_url: String,
 }
 
-#[derive(Debug, Deserialize)]
-struct KontextIntegrationConnection {
-    #[serde(default)]
-    connected: bool,
+#[derive(Clone, Debug, Default)]
+struct ToolState {
+    tool_id_by_name: HashMap<String, String>,
+    disconnected_capabilities: Vec<DisconnectedCapability>,
 }
 
-fn has_pending_oauth_integrations(response: &KontextIntegrationsResponse) -> bool {
-    response.items.iter().any(|integration| {
-        integration.requires_oauth
-            && integration
-                .connection
-                .as_ref()
-                .map(|connection| !connection.connected)
-                .unwrap_or(true)
-    })
+pub(crate) struct KontextDevRuntime {
+    client: KontextClient,
+    settings: kontext_dev::KontextDevConfig,
+    state: Arc<RwLock<ToolState>>,
 }
 
-async fn fetch_pending_oauth_integrations(
-    client: &KontextDevClient,
-    gateway_access_token: &str,
-) -> Result<bool> {
-    let server_base = resolve_server_base_url(client.config())?;
-    let url = format!("{}/mcp/integrations", server_base.trim_end_matches('/'));
-
-    let response = reqwest::Client::new()
-        .get(url.clone())
-        .bearer_auth(gateway_access_token)
-        .send()
-        .await
-        .map_err(|err| anyhow!("Kontext integration list request failed for {url}: {err}"))?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        return Err(anyhow!(
-            "Kontext integration list request returned {status} at {url}: {body}"
-        ));
-    }
-
-    let payload: KontextIntegrationsResponse = response
-        .json()
-        .await
-        .map_err(|err| anyhow!("failed to decode Kontext integrations response at {url}: {err}"))?;
-
-    Ok(has_pending_oauth_integrations(&payload))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::KontextIntegrationsResponse;
-    use super::has_pending_oauth_integrations;
-
-    #[test]
-    fn detects_pending_oauth_integrations() {
-        let payload = serde_json::from_str::<KontextIntegrationsResponse>(
-            r#"{
-              "items": [
-                {
-                  "id": "a",
-                  "requiresOauth": true,
-                  "connection": { "connected": false }
-                },
-                {
-                  "id": "b",
-                  "requiresOauth": false,
-                  "connection": { "connected": false }
-                }
-              ]
-            }"#,
-        )
-        .expect("valid integrations payload");
-
-        assert!(has_pending_oauth_integrations(&payload));
-    }
-
-    #[test]
-    fn ignores_connected_or_non_oauth_integrations() {
-        let payload = serde_json::from_str::<KontextIntegrationsResponse>(
-            r#"{
-              "items": [
-                {
-                  "id": "a",
-                  "requiresOauth": true,
-                  "connection": { "connected": true }
-                },
-                {
-                  "id": "b",
-                  "requiresOauth": false
-                }
-              ]
-            }"#,
-        )
-        .expect("valid integrations payload");
-
-        assert!(!has_pending_oauth_integrations(&payload));
-    }
-}
-
-pub(crate) async fn attach_kontext_dev_mcp_server(config: &mut Config) -> Result<()> {
-    let Some(settings) = config.kontext_dev.clone() else {
-        debug!("Kontext-Dev not configured; skipping attachment.");
-        return Ok(());
-    };
-
-    let client = KontextDevClient::new(settings.clone());
-    let session = client.authenticate_mcp().await?;
-    let url = client.mcp_url()?;
-    let server_name = settings.server_name.clone();
-
-    let mut http_headers = HashMap::new();
-    http_headers.insert(
-        "Authorization".to_string(),
-        format!("Bearer {}", session.gateway_token.access_token),
-    );
-
-    let transport = McpServerTransportConfig::StreamableHttp {
-        url,
-        bearer_token_env_var: None,
-        http_headers: Some(http_headers),
-        env_http_headers: None,
-    };
-
-    let server_config = McpServerConfig {
-        transport,
-        enabled: true,
-        required: false,
-        disabled_reason: None,
-        startup_timeout_sec: Some(Duration::from_secs_f64(30.0)),
-        tool_timeout_sec: None,
-        enabled_tools: None,
-        disabled_tools: None,
-        scopes: None,
-    };
-
-    let mut mcp_servers = (*config.mcp_servers).clone();
-    mcp_servers.insert(server_name.clone(), server_config);
-    config
-        .mcp_servers
-        .set(mcp_servers)
-        .map_err(|err| anyhow!("failed to set Kontext-Dev MCP server config: {err}"))?;
-
-    info!("Attached Kontext-Dev MCP server '{server_name}'.");
-
-    let pending_integrations = match fetch_pending_oauth_integrations(
-        &client,
-        &session.gateway_token.access_token,
-    )
-    .await
-    {
-        Ok(pending) => pending,
-        Err(err) => {
-            warn!("Unable to determine Kontext integration connection state: {err:#}");
-            false
-        }
-    };
-
-    let should_open_connect_page = settings.open_connect_page_on_login
-        && (session.browser_auth_performed || pending_integrations);
-
-    if should_open_connect_page {
-        match client
-            .open_integration_connect_page(&session.gateway_token.access_token)
+impl KontextDevRuntime {
+    pub(crate) async fn list_tool_specs(&self) -> Result<Vec<InjectedKontextToolSpec>> {
+        let tools = self
+            .client
+            .tools_list()
             .await
-        {
-            Ok(connect_url) => {
-                info!("Opened Kontext integration connect page: {connect_url}");
-            }
+            .map_err(|err| anyhow!("failed to list Kontext tools: {err}"))?;
+
+        let mut seen_names = HashSet::new();
+        let mut tool_specs = Vec::new();
+        let mut tool_id_by_name = HashMap::new();
+
+        for tool in tools {
+            let (name, spec) = map_kontext_tool(tool, &mut seen_names)?;
+            tool_id_by_name.insert(name.clone(), spec.id);
+            tool_specs.push(InjectedKontextToolSpec {
+                name,
+                description: spec.description,
+                input_schema: spec.input_schema,
+            });
+        }
+
+        let disconnected_capabilities = match self.client.integrations_list().await {
+            Ok(integrations) => integrations
+                .into_iter()
+                .filter_map(|integration| {
+                    if integration.connected {
+                        return None;
+                    }
+                    integration
+                        .connect_url
+                        .map(|connect_url| DisconnectedCapability {
+                            id: integration.id,
+                            name: integration.name,
+                            connect_url,
+                        })
+                })
+                .collect::<Vec<_>>(),
             Err(err) => {
-                warn!("Failed to open Kontext integration connect page: {err:#}");
-                if let Ok(connect_url) = client
-                    .create_integration_connect_url(&session.gateway_token.access_token)
-                    .await
-                {
+                warn!("Unable to list Kontext integrations: {err}");
+                Vec::new()
+            }
+        };
+
+        if !disconnected_capabilities.is_empty() {
+            tool_specs.push(request_capability_tool_spec(&disconnected_capabilities));
+        }
+
+        tool_specs.sort_by(|a, b| a.name.cmp(&b.name));
+
+        let mut state = self.state.write().await;
+        state.tool_id_by_name = tool_id_by_name;
+        state.disconnected_capabilities = disconnected_capabilities;
+
+        Ok(tool_specs)
+    }
+
+    pub(crate) async fn execute_tool(
+        &self,
+        model_tool_name: &str,
+        args: Map<String, Value>,
+    ) -> Result<String> {
+        if model_tool_name == REQUEST_CAPABILITY_TOOL_NAME {
+            return self.execute_request_capability(args).await;
+        }
+
+        let mut tool_id = {
+            let state = self.state.read().await;
+            state.tool_id_by_name.get(model_tool_name).cloned()
+        };
+
+        if tool_id.is_none() {
+            let _ = self.list_tool_specs().await;
+            let state = self.state.read().await;
+            tool_id = state.tool_id_by_name.get(model_tool_name).cloned();
+        }
+
+        let Some(tool_id) = tool_id else {
+            return Err(anyhow!(
+                "Unknown Kontext tool `{model_tool_name}`. Run tools.list() again to refresh inventory."
+            ));
+        };
+
+        let result = self
+            .client
+            .tools_execute(tool_id.as_str(), Some(args))
+            .await
+            .map_err(|err| anyhow!("Kontext tool execution failed for `{tool_id}`: {err}"))?;
+
+        Ok(result.content)
+    }
+
+    pub(crate) async fn maybe_show_connect_guidance(&self, config: &mut Config) {
+        let disconnected = {
+            let state = self.state.read().await;
+            state.disconnected_capabilities.clone()
+        };
+
+        if disconnected.is_empty() {
+            return;
+        }
+
+        if self.settings.open_connect_page_on_login {
+            match self.client.get_connect_page_url().await {
+                Ok(connect) => {
+                    info!(
+                        "Kontext integrations are disconnected. Open this URL to connect: {}",
+                        connect.connect_url
+                    );
                     config.startup_warnings.push(format!(
-                        "Kontext integration setup is pending. Open this URL to finish connecting integrations: {connect_url}"
+                        "Kontext integrations require connection. Open this URL to finish setup: {}",
+                        connect.connect_url
                     ));
                 }
+                Err(err) => {
+                    warn!("Unable to generate Kontext connect URL: {err}");
+                }
             }
+            return;
         }
-    } else if pending_integrations {
-        if let Ok(connect_url) = client
-            .create_integration_connect_url(&session.gateway_token.access_token)
-            .await
-        {
+
+        if let Some(first) = disconnected.first() {
             config.startup_warnings.push(format!(
-                "Kontext integrations require OAuth connection. Open this URL to connect: {connect_url}"
+                "Kontext integration `{}` is disconnected. Open this URL to connect: {}",
+                first.name, first.connect_url
             ));
         }
     }
 
-    Ok(())
+    async fn execute_request_capability(&self, args: Map<String, Value>) -> Result<String> {
+        let requested = args
+            .get("capability_name")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+
+        let disconnected = {
+            let state = self.state.read().await;
+            state.disconnected_capabilities.clone()
+        };
+
+        if disconnected.is_empty() {
+            return Ok("All Kontext integrations are already connected.".to_string());
+        }
+
+        if requested.is_empty()
+            && disconnected.len() == 1
+            && let Some(capability) = disconnected.first()
+        {
+            return Ok(format!(
+                "{} requires authorization. Connect it here: {}",
+                capability.name, capability.connect_url
+            ));
+        }
+
+        let requested_lower = requested.to_ascii_lowercase();
+        if let Some(capability) = disconnected.iter().find(|capability| {
+            capability.name.to_ascii_lowercase() == requested_lower
+                || capability.id.to_ascii_lowercase() == requested_lower
+        }) {
+            return Ok(format!(
+                "{} requires authorization. Connect it here: {}",
+                capability.name, capability.connect_url
+            ));
+        }
+
+        let available = disconnected
+            .iter()
+            .map(|capability| capability.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        if requested.is_empty() {
+            Ok(format!(
+                "Please specify `capability_name`. Disconnected capabilities: {available}."
+            ))
+        } else {
+            Ok(format!(
+                "Capability `{requested}` is not disconnected or not recognized. Disconnected capabilities: {available}."
+            ))
+        }
+    }
+}
+
+pub(crate) async fn initialize_kontext_dev_runtime(
+    config: &mut Config,
+) -> Result<Option<Arc<KontextDevRuntime>>> {
+    let Some(settings) = config.kontext_dev.clone() else {
+        debug!("Kontext-Dev not configured; skipping runtime initialization.");
+        return Ok(None);
+    };
+
+    let client = create_kontext_client(KontextClientConfig {
+        client_id: settings.client_id.clone(),
+        redirect_uri: settings.redirect_uri.clone(),
+        url: None,
+        server_url: Some(settings.server.clone()),
+        client_secret: settings.client_secret.clone(),
+        scope: Some(settings.scope.clone()),
+        resource: Some(settings.resource.clone()),
+        integration_ui_url: settings.integration_ui_url.clone(),
+        integration_return_to: settings.integration_return_to.clone(),
+        auth_timeout_seconds: Some(settings.auth_timeout_seconds),
+        token_cache_path: settings.token_cache_path.clone(),
+    });
+
+    client
+        .connect()
+        .await
+        .map_err(|err| anyhow!("Kontext authentication failed: {err}"))?;
+
+    let runtime = Arc::new(KontextDevRuntime {
+        client,
+        settings,
+        state: Arc::new(RwLock::new(ToolState::default())),
+    });
+
+    runtime.list_tool_specs().await?;
+    runtime.maybe_show_connect_guidance(config).await;
+
+    Ok(Some(runtime))
+}
+
+fn map_kontext_tool(
+    tool: KontextTool,
+    seen_names: &mut HashSet<String>,
+) -> Result<(String, MappedKontextTool)> {
+    let raw_name = format!("{TOOL_NAME_PREFIX}{}", tool.name);
+    let name = unique_tool_name(raw_name.as_str(), seen_names);
+
+    let description = tool
+        .description
+        .unwrap_or_else(|| format!("Execute Kontext tool `{}`.", tool.name));
+
+    let input_schema = normalize_input_schema(tool.input_schema);
+
+    Ok((
+        name,
+        MappedKontextTool {
+            id: tool.id,
+            description,
+            input_schema,
+        },
+    ))
+}
+
+fn request_capability_tool_spec(
+    disconnected: &[DisconnectedCapability],
+) -> InjectedKontextToolSpec {
+    let names = disconnected
+        .iter()
+        .map(|capability| capability.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let description = format!(
+        "Request authorization for a disconnected Kontext integration. Disconnected integrations: {names}."
+    );
+
+    InjectedKontextToolSpec {
+        name: REQUEST_CAPABILITY_TOOL_NAME.to_string(),
+        description,
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "capability_name": {
+                    "type": "string",
+                    "description": "Integration name to connect, for example `Linear`"
+                }
+            },
+            "required": ["capability_name"]
+        }),
+    }
+}
+
+#[derive(Debug)]
+struct MappedKontextTool {
+    id: String,
+    description: String,
+    input_schema: Value,
+}
+
+fn normalize_input_schema(input_schema: Option<Value>) -> Value {
+    let mut schema = input_schema.unwrap_or_else(|| json!({ "type": "object" }));
+
+    if let Value::Object(map) = &mut schema {
+        if map.get("type").and_then(Value::as_str).is_none() {
+            map.insert("type".to_string(), Value::String("object".to_string()));
+        }
+        if map.get("properties").is_none_or(Value::is_null) {
+            map.insert("properties".to_string(), Value::Object(Map::new()));
+        }
+    }
+
+    schema
+}
+
+fn unique_tool_name(raw: &str, seen_names: &mut HashSet<String>) -> String {
+    let mut candidate = sanitize_responses_api_tool_name(raw);
+    if candidate.len() > MAX_TOOL_NAME_LENGTH {
+        let sha1 = sha1_hex(raw);
+        let prefix_len = MAX_TOOL_NAME_LENGTH - sha1.len();
+        candidate = format!("{}{}", &candidate[..prefix_len], sha1);
+    }
+
+    if seen_names.insert(candidate.clone()) {
+        return candidate;
+    }
+
+    let sha1 = sha1_hex(raw);
+    let max_prefix_len = MAX_TOOL_NAME_LENGTH.saturating_sub(sha1.len());
+    let prefix = if candidate.len() > max_prefix_len {
+        &candidate[..max_prefix_len]
+    } else {
+        &candidate
+    };
+    let deduped = format!("{prefix}{sha1}");
+    seen_names.insert(deduped.clone());
+    deduped
+}
+
+fn sanitize_responses_api_tool_name(name: &str) -> String {
+    let mut sanitized = String::with_capacity(name.len());
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+            sanitized.push(c);
+        } else {
+            sanitized.push('_');
+        }
+    }
+
+    if sanitized.is_empty() {
+        "_".to_string()
+    } else {
+        sanitized
+    }
+}
+
+fn sha1_hex(value: &str) -> String {
+    let mut hasher = Sha1::new();
+    hasher.update(value.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unique_tool_name_sanitizes_and_dedupes() {
+        let mut seen = HashSet::new();
+
+        let first = unique_tool_name("kontext__tool.with.dot", &mut seen);
+        let second = unique_tool_name("kontext__tool_with_dot", &mut seen);
+
+        assert_eq!(first, "kontext__tool_with_dot");
+        assert_ne!(first, second);
+        assert!(second.starts_with("kontext__tool_with_dot"));
+    }
+
+    #[test]
+    fn normalize_input_schema_inserts_defaults() {
+        let normalized = normalize_input_schema(Some(json!({ "type": "object" })));
+        let properties = normalized
+            .get("properties")
+            .expect("properties should be present");
+        assert_eq!(properties, &Value::Object(Map::new()));
+    }
 }
