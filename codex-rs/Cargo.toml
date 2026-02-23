@@ -92,7 +92,7 @@ codex-client = { path = "codex-client" }
 codex-cloud-requirements = { path = "cloud-requirements" }
 codex-config = { path = "config" }
 codex-core = { path = "core" }
-kontext-dev = "0.4.2"
+kontext-dev = { git = "https://github.com/kontext-dev/kontext-dev-sdk-rs", rev = "04423c47cd8a7a566f0c435810b3d77e33b3d9cb" }
 codex-exec = { path = "exec" }
 codex-execpolicy = { path = "execpolicy" }
 codex-experimental-api-macros = { path = "codex-experimental-api-macros" }
