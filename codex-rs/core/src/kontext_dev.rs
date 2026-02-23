@@ -152,6 +152,13 @@ impl KontextDevRuntime {
                         "Kontext integrations are disconnected. Open this URL to connect: {}",
                         connect.connect_url
                     );
+                    if let Err(err) = webbrowser::open(&connect.connect_url) {
+                        warn!(
+                            "Failed to open Kontext connect URL in browser (showing URL instead): {err}"
+                        );
+                    } else {
+                        info!("Opened Kontext integration connect page in browser.");
+                    }
                     config.startup_warnings.push(format!(
                         "Kontext integrations require connection. Open this URL to finish setup: {}",
                         connect.connect_url
