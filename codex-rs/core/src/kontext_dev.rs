@@ -5,9 +5,9 @@ use std::sync::Arc;
 use anyhow::Result;
 use anyhow::anyhow;
 use kontext_dev::KontextClientConfig;
-use kontext_dev::client::KontextClient;
-use kontext_dev::create_kontext_client;
-use kontext_dev::orchestrator::KontextTool;
+use kontext_dev::create_kontext_orchestrator;
+use kontext_dev::mcp::KontextTool;
+use kontext_dev::orchestrator::KontextOrchestrator;
 use serde_json::Map;
 use serde_json::Value;
 use serde_json::json;
@@ -45,7 +45,7 @@ struct ToolState {
 }
 
 pub(crate) struct KontextDevRuntime {
-    client: KontextClient,
+    client: KontextOrchestrator,
     settings: kontext_dev::KontextDevConfig,
     state: Arc<RwLock<ToolState>>,
 }
@@ -116,16 +116,16 @@ impl KontextDevRuntime {
             return self.execute_request_capability(args).await;
         }
 
-        let mut tool_id = {
+        // Keep tool routing fresh on every execution so newly connected
+        // integrations and newly discovered tools are immediately available.
+        if let Err(err) = self.list_tool_specs().await {
+            warn!("Unable to refresh Kontext tool inventory before execute: {err}");
+        }
+
+        let tool_id = {
             let state = self.state.read().await;
             state.tool_id_by_name.get(model_tool_name).cloned()
         };
-
-        if tool_id.is_none() {
-            let _ = self.list_tool_specs().await;
-            let state = self.state.read().await;
-            tool_id = state.tool_id_by_name.get(model_tool_name).cloned();
-        }
 
         let Some(tool_id) = tool_id else {
             return Err(anyhow!(
@@ -148,20 +148,20 @@ impl KontextDevRuntime {
             state.disconnected_capabilities.clone()
         };
 
-        if self.settings.open_connect_page_on_login {
+        if disconnected.is_empty() {
+            return;
+        }
+
+        if should_auto_open_connect_page(
+            self.settings.open_connect_page_on_login,
+            disconnected.as_slice(),
+        ) {
             match self.client.get_connect_page_url().await {
                 Ok(connect) => {
-                    if disconnected.is_empty() {
-                        info!(
-                            "Opening Kontext integration page after login: {}",
-                            connect.connect_url
-                        );
-                    } else {
-                        info!(
-                            "Kontext integrations are disconnected. Open this URL to connect: {}",
-                            connect.connect_url
-                        );
-                    }
+                    info!(
+                        "Kontext integrations are disconnected. Open this URL to connect: {}",
+                        connect.connect_url
+                    );
                     if let Err(err) = webbrowser::open(&connect.connect_url) {
                         warn!(
                             "Failed to open Kontext connect URL in browser (showing URL instead): {err}"
@@ -169,26 +169,15 @@ impl KontextDevRuntime {
                     } else {
                         info!("Opened Kontext integration connect page in browser.");
                     }
-                    if disconnected.is_empty() {
-                        config.startup_warnings.push(format!(
-                            "Opened Kontext integrations page: {}",
-                            connect.connect_url
-                        ));
-                    } else {
-                        config.startup_warnings.push(format!(
-                            "Kontext integrations require connection. Open this URL to finish setup: {}",
-                            connect.connect_url
-                        ));
-                    }
+                    config.startup_warnings.push(format!(
+                        "Kontext integrations require connection. Open this URL to finish setup: {}",
+                        connect.connect_url
+                    ));
                 }
                 Err(err) => {
                     warn!("Unable to generate Kontext connect URL: {err}");
                 }
             }
-            return;
-        }
-
-        if disconnected.is_empty() {
             return;
         }
 
@@ -264,7 +253,7 @@ pub(crate) async fn initialize_kontext_dev_runtime(
         return Ok(None);
     };
 
-    let client = create_kontext_client(KontextClientConfig {
+    let client = create_kontext_orchestrator(KontextClientConfig {
         client_id: settings.client_id.clone(),
         redirect_uri: settings.redirect_uri.clone(),
         url: None,
@@ -369,6 +358,13 @@ fn normalize_input_schema(input_schema: Option<Value>) -> Value {
     schema
 }
 
+fn should_auto_open_connect_page(
+    open_connect_page_on_login: bool,
+    disconnected: &[DisconnectedCapability],
+) -> bool {
+    open_connect_page_on_login && !disconnected.is_empty()
+}
+
 fn unique_tool_name(raw: &str, seen_names: &mut HashSet<String>) -> String {
     let mut candidate = sanitize_responses_api_tool_name(raw);
     if candidate.len() > MAX_TOOL_NAME_LENGTH {
@@ -439,5 +435,21 @@ mod tests {
             .get("properties")
             .expect("properties should be present");
         assert_eq!(properties, &Value::Object(Map::new()));
+    }
+
+    #[test]
+    fn should_auto_open_connect_page_only_when_disconnected_and_enabled() {
+        let disconnected = vec![DisconnectedCapability {
+            id: "linear".to_string(),
+            name: "Linear".to_string(),
+            connect_url: "https://app.kontext.dev/oauth/connect?session=123".to_string(),
+        }];
+
+        assert!(should_auto_open_connect_page(true, disconnected.as_slice()));
+        assert!(!should_auto_open_connect_page(
+            false,
+            disconnected.as_slice()
+        ));
+        assert!(!should_auto_open_connect_page(true, &[]));
     }
 }

@@ -92,7 +92,7 @@ codex-client = { path = "codex-client" }
 codex-cloud-requirements = { path = "cloud-requirements" }
 codex-config = { path = "config" }
 codex-core = { path = "core" }
-kontext-dev = "0.4.2"
+kontext-dev = { version = "=0.5.0" }
 codex-exec = { path = "exec" }
 codex-execpolicy = { path = "execpolicy" }
 codex-experimental-api-macros = { path = "codex-experimental-api-macros" }
