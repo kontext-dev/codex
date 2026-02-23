@@ -116,16 +116,16 @@ impl KontextDevRuntime {
             return self.execute_request_capability(args).await;
         }
 
-        let mut tool_id = {
+        // Keep tool routing fresh on every execution so newly connected
+        // integrations and newly discovered tools are immediately available.
+        if let Err(err) = self.list_tool_specs().await {
+            warn!("Unable to refresh Kontext tool inventory before execute: {err}");
+        }
+
+        let tool_id = {
             let state = self.state.read().await;
             state.tool_id_by_name.get(model_tool_name).cloned()
         };
-
-        if tool_id.is_none() {
-            let _ = self.list_tool_specs().await;
-            let state = self.state.read().await;
-            tool_id = state.tool_id_by_name.get(model_tool_name).cloned();
-        }
 
         let Some(tool_id) = tool_id else {
             return Err(anyhow!(
