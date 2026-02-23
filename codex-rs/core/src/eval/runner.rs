@@ -276,20 +276,37 @@ impl ToolCallingRunner {
     }
 
     /// Format a tool list section for RLM+CodeMode prompts (TypeScript execute_code style).
+    ///
+    /// Uses `prefixed_name()` (e.g. `Linear_list_projects`) — the same identifiers
+    /// that the Gateway VM resolves — instead of raw UUIDs which are not valid JS
+    /// identifiers and cause repeated "Invalid or unexpected token" errors.
     fn format_tool_list_for_codemode_prompt(&self) -> String {
         if self.gateway_tools.is_empty() {
             return String::new();
         }
 
-        let mut section = String::from("\n\n# Available Gateway Tools\n\nCall these tools via `execute_code()` using TypeScript. Use the EXACT tool_id shown below:\n\n");
+        let mut section = String::from("\n\n# Available Gateway Tools\n\nCall these via `execute_code()` using `codemode.<FunctionName>({...})`. Available functions:\n\n");
         for tool in &self.gateway_tools {
-            section.push_str(&format!("- tool_id: `\"{}\"` — {} (server: {})\n", tool.id, tool.description, tool.server));
+            section.push_str(&format!(
+                "- `codemode.{}({{}})` — {}\n",
+                tool.prefixed_name(),
+                tool.description,
+            ));
         }
-        section.push_str("\nExample:\n```repl\nresult = execute_code('''\nconst data = await tools.EXECUTE_TOOL({ tool_id: \"");
-        if let Some(first) = self.gateway_tools.first() {
-            section.push_str(&first.id);
-        }
-        section.push_str("\", tool_arguments: {} });\nreturn data;\n''')\nprint(result[:500])\n```\n");
+
+        // Pick a representative tool for the example
+        let sample_name = self
+            .gateway_tools
+            .iter()
+            .find(|t| t.name == "list_projects" || t.name.contains("list"))
+            .or(self.gateway_tools.first())
+            .map(|t| t.prefixed_name())
+            .unwrap_or_else(|| "Linear_list_projects".to_string());
+
+        section.push_str(&format!(
+            "\nExample:\n```repl\nresult = execute_code('''\nconst data = await codemode.{sample}({{}});\nreturn {{ summary: data.map(d => d.name || d.title).slice(0, 20) }};\n''')\nprint(result[:500])\n```\n",
+            sample = sample_name,
+        ));
         section
     }
 
@@ -1777,6 +1794,7 @@ Your final answer must be plain text that directly answers the task question, no
         let mut total_llm_tokens: i64 = 0;
         let mut tool_calls = Vec::new();
         let mut last_assistant_content = String::new();
+        let mut last_repl_stdout = String::new();
         let mut llm_time_ms: u64 = 0;
         let mut tool_time_ms: u64 = 0;
         let mut llm_total_calls: u32 = 0;
@@ -1969,6 +1987,11 @@ Your final answer must be plain text that directly answers the task question, no
                 let tool_latency = tool_t.elapsed().as_millis() as u64;
                 tool_time_ms += tool_latency;
 
+                // Track last non-empty REPL stdout for fallback answer
+                if !result.stdout.trim().is_empty() {
+                    last_repl_stdout = result.stdout.clone();
+                }
+
                 tool_calls.push(ToolCallRecord {
                     name: "repl_execute".to_string(),
                     arguments: json!({ "code": code }),
@@ -1995,8 +2018,9 @@ Your final answer must be plain text that directly answers the task question, no
             }
         }
 
-        // Max iterations reached — the last iteration prompt already forced
-        // FINAL(...), so use the last assistant response as the answer.
+        // Max iterations reached without FINAL(). Prefer last REPL stdout
+        // (the model likely printed its answer) over last_assistant_content
+        // (which may just be code blocks).
         let sub_usage = lm_handler.usage().await;
         let total_llm_tokens_final = total_llm_tokens
             + sub_usage.total_input_tokens
@@ -2008,7 +2032,11 @@ Your final answer must be plain text that directly answers the task question, no
 
         TaskResult {
             task_id: task.task_id.clone(),
-            final_answer: last_assistant_content,
+            final_answer: if !last_repl_stdout.trim().is_empty() {
+                last_repl_stdout
+            } else {
+                last_assistant_content
+            },
             tool_calls,
             mode_name: "CodeMode+RLM".to_string(),
             context_tokens: total_context_tokens,
@@ -2250,6 +2278,25 @@ fn unwrap_async_arrow(code: &str) -> String {
     }
 }
 
+/// Normalize TypeScript/JavaScript code for execution in the Gateway VM.
+///
+/// Combines `unwrap_async_arrow` (unwrap `async () => { body }` into bare
+/// statements) with stripping of TypeScript-specific syntax (type annotations
+/// like `: Type` and `as Type` casts) that the Gateway VM cannot handle.
+fn normalize_code_for_async_fn(code: &str) -> String {
+    let unwrapped = unwrap_async_arrow(code);
+
+    // Strip TypeScript type annotations: `: Type` after identifiers (but not in strings)
+    let re_type_ann = Regex::new(r"(?m)(const|let|var)\s+(\w+)\s*:\s*[\w\[\]<>,\s|&]+\s*=").unwrap();
+    let stripped = re_type_ann.replace_all(&unwrapped, "$1 $2 =");
+
+    // Strip `as Type` casts
+    let re_as_cast = Regex::new(r"\s+as\s+\w+").unwrap();
+    let result = re_as_cast.replace_all(&stripped, "");
+
+    result.to_string()
+}
+
 /// Discover available tools from Gateway using SEARCH_TOOLS
 async fn discover_gateway_tools(client: &RmcpClient) -> Result<Vec<GatewayTool>> {
     // Call SEARCH_TOOLS with empty query to get all tools
@@ -2414,7 +2461,8 @@ return { count: projects.length };"#;
     fn test_normalize_async_arrow_expression() {
         let code = "async () => 42";
         let result = normalize_code_for_async_fn(code);
-        assert_eq!(result, "return 42");
+        // unwrap_async_arrow adds a semicolon: `return 42;`
+        assert_eq!(result, "return 42;");
     }
 
     #[test]

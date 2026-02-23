@@ -25,22 +25,23 @@ pub fn build_kontext_config() -> Option<KontextDevConfig> {
     let client_id = env::var("KONTEXT_CLIENT_ID").ok()?;
     let client_secret = env::var("KONTEXT_CLIENT_SECRET").ok()?;
 
+    let server_base = if let Ok(base_url) = env::var("KONTEXT_GATEWAY_URL") {
+        base_url.trim_end_matches('/').to_string()
+    } else {
+        "http://localhost:4000".to_string()
+    };
+
     let (mcp_url, token_url) = if let (Ok(mcp), Ok(token)) =
         (env::var("KONTEXT_MCP_URL"), env::var("KONTEXT_TOKEN_URL"))
     {
         (mcp, token)
-    } else if let Ok(base_url) = env::var("KONTEXT_GATEWAY_URL") {
-        let base = base_url.trim_end_matches('/');
+    } else {
+        let base = server_base.trim_end_matches('/');
         if let Some(prefix) = base.strip_suffix("/mcp") {
             (base.to_string(), format!("{prefix}/oauth2/token"))
         } else {
             (format!("{base}/mcp"), format!("{base}/oauth2/token"))
         }
-    } else {
-        (
-            "http://localhost:4000/mcp".to_string(),
-            "http://localhost:4000/oauth2/token".to_string(),
-        )
     };
 
     Some(KontextDevConfig {
@@ -50,7 +51,7 @@ pub fn build_kontext_config() -> Option<KontextDevConfig> {
         token_url: Some(token_url),
         scope: "mcp:invoke".to_string(),
         server_name: DEFAULT_SERVER_NAME.to_string(),
-        server: None,
+        server: Some(server_base),
         resource: kontext_dev::DEFAULT_RESOURCE.to_string(),
         integration_ui_url: None,
         integration_return_to: None,

@@ -82,65 +82,52 @@ Think step by step carefully, plan, and execute this plan immediately in your re
 /// This extends the base RLM prompt with `execute_code()`, `corpus_search()`,
 /// and `corpus_get_chunk()` functions that allow the REPL to call Gateway
 /// tools (Linear, GitHub, etc.) via server-side code execution.
-pub const RLM_CODEMODE_SYSTEM_PROMPT: &str = r#"You are tasked with answering a query by combining a persistent Python REPL with Gateway tool execution. You have access to both recursive sub-LLM reasoning AND direct tool calls via code execution.
+pub const RLM_CODEMODE_SYSTEM_PROMPT: &str = r#"You are tasked with answering a query using a Python REPL that can execute Gateway tools via TypeScript and call sub-LLMs for reasoning.
 
-Your REPL environment is initialized with the following:
-1. `context` — a variable containing the task description and any associated information.
-2. `llm_query(prompt: str, model: str = None) -> str` — query a sub-LLM for reasoning, analysis, or synthesis.
-3. `llm_query_batched(prompts: list[str], model: str = None) -> list[str]` — query multiple prompts concurrently.
-4. `execute_code(ts_code: str) -> str` — **execute TypeScript/JavaScript code on the Gateway**. The code runs in a sandboxed VM with a typed `codemode` object for calling any available tool (Linear, GitHub, DeepWiki, etc.) — e.g. `codemode.Linear_list_projects({})`. Large results are automatically stored in the corpus and a summary is returned.
-5. `corpus_search(query: str, max_results: int = 5) -> list[dict]` — search stored results for relevant chunks. Returns list of `{"chunk_id", "score", "snippet"}`.
-6. `corpus_get_chunk(chunk_id: str) -> str` — retrieve the full content of a stored chunk.
-7. `SHOW_VARS()` — list all variables in the REPL namespace.
+Your REPL environment provides:
+1. `context` — the task description (you already see it in the user prompt, so do NOT waste a step printing it).
+2. `execute_code(ts_code: str) -> str` — execute TypeScript on the Gateway. Use `codemode.*` methods to call tools (Linear, GitHub, DeepWiki, etc.). In your JS, extract only the fields you need using `.map()` — do NOT return raw tool results.
+3. `llm_query(prompt: str, model: str = None) -> str` — query a sub-LLM. Use ONLY when you need to reason over large content (>2000 chars) that cannot be processed in JS. Never use it just to reformat data you already have.
+4. `llm_query_batched(prompts: list[str], model: str = None) -> list[str]` — query multiple prompts concurrently for parallel analysis.
+5. `corpus_search(query: str, max_results: int = 5) -> list[dict]` — search stored results. Only use if you see "stored in corpus" in a result. Do not speculatively search the corpus.
+6. `corpus_get_chunk(chunk_id: str) -> str` — retrieve full content of a stored chunk.
+7. `SHOW_VARS()` — list all REPL variables.
 8. `print()` — standard output (captured and returned to you).
 
-IMPORTANT:
-- Use `execute_code()` to interact with external tools (Linear, GitHub, etc.) — write TypeScript that calls `codemode.*` methods.
-- Use `llm_query()` for reasoning, synthesis, and analysis of data you've collected.
-- Large tool results are automatically stored in the corpus. Use `corpus_search()` and `corpus_get_chunk()` to access them.
+KEY RULES:
+- For tasks answerable with a single tool call, call `execute_code()` once, read the result, and answer directly with `FINAL()` — do NOT use `llm_query()` for simple formatting or extraction.
+- In your `execute_code()` TypeScript, extract only the fields you need using `.map()`, `.filter()`, or direct property access. Do NOT return full JSON payloads.
+- Use `llm_query()` ONLY when you need to reason over large content (>2000 chars) that cannot be processed in JS. Never use it just to reformat data you already have.
+- Large results are auto-stored in corpus. Only use `corpus_search()`/`corpus_get_chunk()` if you see "stored in corpus" in the result.
 - All code MUST be wrapped in triple backticks with the `repl` language identifier.
-- You will only see truncated outputs — use `llm_query()` on variables to analyze data in detail.
 
-Example workflow:
-
-**Step 1 — Examine the task:**
+Example — single tool call task:
 ```repl
-print(context)
+result = execute_code('''
+const projects = await codemode.Linear_list_projects({});
+return { names: projects.map(p => p.name).slice(0, 20) };
+''')
+print(result)
 ```
+FINAL(Based on the result, the projects are: ...)
 
-**Step 2 — Call a tool via execute_code:**
+Example — multi-step analysis:
 ```repl
-# List open issues from a Linear project (use codemode.* with typed methods)
 result = execute_code('''
 const issues = await codemode.Linear_list_issues({
   filter: { state: { name: { eq: "In Progress" } } },
   first: 10
 });
-return issues;
+return { issues: issues.map(i => ({ title: i.title, assignee: i.assignee?.name })) };
 ''')
-print(result[:500])
+print(result)
 ```
-
-**Step 3 — If results were stored in corpus, search them:**
 ```repl
-# Search corpus for specific data
-results = corpus_search("authentication bug")
-for r in results:
-    print(f"Chunk {r['chunk_id']}: {r['snippet'][:100]}")
-```
-
-**Step 4 — Retrieve full chunk content:**
-```repl
-chunk = corpus_get_chunk(results[0]["chunk_id"])
-analysis = llm_query(f"Summarize the key issues:\n{chunk}")
+# Only if result was too large and stored in corpus
+analysis = llm_query(f"Summarize the key themes from these issues:\n{result}")
 print(analysis)
 ```
-
-**Step 5 — Synthesize and answer:**
-```repl
-answer = llm_query(f"Based on this analysis, provide a comprehensive answer:\n{analysis}")
-final_answer = answer
-```
+FINAL(Here is the summary: ...)
 
 To provide your final answer:
 - `FINAL(your final answer here)` — for direct text answers
@@ -148,7 +135,7 @@ To provide your final answer:
 
 WARNING: FINAL_VAR retrieves an EXISTING variable. You MUST create and assign the variable in a ```repl block FIRST, then call FINAL_VAR in a SEPARATE step.
 
-Think step by step carefully, plan, and execute this plan immediately in your response — do not just say "I will do this"."#;
+Think step by step carefully, plan, and execute immediately — do not just say "I will do this"."#;
 
 /// Build the complete RLM+CodeMode system prompt with context metadata appended.
 pub fn build_rlm_codemode_system_prompt(metadata: &ContextMetadata) -> String {
@@ -279,6 +266,55 @@ mod tests {
         assert!(RLM_SYSTEM_PROMPT.contains("FINAL_VAR("));
         assert!(RLM_SYSTEM_PROMPT.contains("```repl"));
         assert!(RLM_SYSTEM_PROMPT.contains("Think step by step"));
+    }
+
+    #[test]
+    fn test_rlm_codemode_system_prompt_contains_key_sections() {
+        // Must use correct codemode.* API, not tools.EXECUTE_TOOL
+        assert!(RLM_CODEMODE_SYSTEM_PROMPT.contains("codemode."));
+        assert!(!RLM_CODEMODE_SYSTEM_PROMPT.contains("tools.EXECUTE_TOOL"));
+
+        // Must contain field filtering guidance
+        assert!(RLM_CODEMODE_SYSTEM_PROMPT.contains(".map("));
+        assert!(RLM_CODEMODE_SYSTEM_PROMPT.contains("extract only the fields you need"));
+
+        // Must contain FINAL/FINAL_VAR
+        assert!(RLM_CODEMODE_SYSTEM_PROMPT.contains("FINAL("));
+        assert!(RLM_CODEMODE_SYSTEM_PROMPT.contains("FINAL_VAR("));
+
+        // Must contain direct-answer guidance
+        assert!(RLM_CODEMODE_SYSTEM_PROMPT.contains("single tool call"));
+        assert!(RLM_CODEMODE_SYSTEM_PROMPT.contains("answer directly with `FINAL()`"));
+
+        // Must contain corpus guidance
+        assert!(RLM_CODEMODE_SYSTEM_PROMPT.contains("stored in corpus"));
+        assert!(RLM_CODEMODE_SYSTEM_PROMPT.contains("Do not speculatively search the corpus"));
+
+        // Must contain llm_query restriction
+        assert!(RLM_CODEMODE_SYSTEM_PROMPT.contains("ONLY when you need to reason over large content"));
+
+        // Must NOT contain wasteful print(context) step
+        assert!(!RLM_CODEMODE_SYSTEM_PROMPT.contains("print(context)"));
+
+        // Must contain REPL basics
+        assert!(RLM_CODEMODE_SYSTEM_PROMPT.contains("execute_code"));
+        assert!(RLM_CODEMODE_SYSTEM_PROMPT.contains("llm_query"));
+        assert!(RLM_CODEMODE_SYSTEM_PROMPT.contains("```repl"));
+    }
+
+    #[test]
+    fn test_build_rlm_codemode_system_prompt_appends_metadata() {
+        let metadata = ContextMetadata {
+            context_type: "str".to_string(),
+            context_total_length: 50_000,
+            context_lengths: vec![50_000],
+        };
+
+        let prompt = build_rlm_codemode_system_prompt(&metadata);
+        assert!(prompt.starts_with(RLM_CODEMODE_SYSTEM_PROMPT));
+        assert!(prompt.contains("CONTEXT METADATA:"));
+        assert!(prompt.contains("Type: str"));
+        assert!(prompt.contains("Total length: 50000 characters"));
     }
 
     #[test]

@@ -33,8 +33,8 @@
 //! source .env
 //! cargo test -p codex-core --test mcp_atlas_eval run_mcp_atlas_three_way_evaluation -- --nocapture
 //!
-//! # Select gateway task CSV (v1, v2, v3, or custom path)
-//! EVAL_GATEWAY_TASK_CSV=v1 cargo test -p codex-core --test mcp_atlas_eval run_mcp_atlas_three_way_evaluation -- --nocapture
+//! # Select gateway task CSV (v1, v2, v3, v4, or custom path)
+//! EVAL_GATEWAY_TASK_CSV=v3 cargo test -p codex-core --test mcp_atlas_eval run_mcp_atlas_three_way_evaluation -- --nocapture
 //!
 //! # Full evaluation (500 tasks × 3 modes = 1500 runs)
 //! cargo test -p codex-core --test mcp_atlas_eval run_mcp_atlas_three_way_evaluation -- --nocapture --ignored
@@ -83,10 +83,11 @@ fn init_test_tracing() {
 const GATEWAY_TASKS_V1_DATASET_PATH: &str = "../mcp-atlas/services/mcp_eval/gateway_tasks.csv";
 const GATEWAY_TASKS_V2_DATASET_PATH: &str = "../mcp-atlas/services/mcp_eval/gateway_tasks_v2.csv";
 const GATEWAY_TASKS_V3_DATASET_PATH: &str = "../mcp-atlas/services/mcp_eval/gateway_tasks_v3.csv";
+const GATEWAY_TASKS_V4_DATASET_PATH: &str = "../mcp-atlas/services/mcp_eval/gateway_tasks_v4.csv";
 
-/// Default dataset path (v3) can be overridden with `EVAL_GATEWAY_TASK_CSV` or
+/// Default dataset path (v4) can be overridden with `EVAL_GATEWAY_TASK_CSV` or
 /// the legacy `EVAL_DATASET_PATH`.
-const DEFAULT_DATASET_PATH: &str = GATEWAY_TASKS_V3_DATASET_PATH;
+const DEFAULT_DATASET_PATH: &str = GATEWAY_TASKS_V4_DATASET_PATH;
 
 /// Original Arrow dataset path (for reference)
 #[allow(dead_code)]
@@ -150,7 +151,10 @@ fn resolve_judge_model() -> String {
 
 fn resolve_gateway_dataset_path(manifest_dir: &str, selector: &str) -> PathBuf {
     match selector.trim() {
-        "" | "v3" | "gateway_tasks_v3" | "gateway_tasks_v3.csv" => {
+        "" | "v4" | "gateway_tasks_v4" | "gateway_tasks_v4.csv" => {
+            PathBuf::from(manifest_dir).join(GATEWAY_TASKS_V4_DATASET_PATH)
+        }
+        "v3" | "gateway_tasks_v3" | "gateway_tasks_v3.csv" => {
             PathBuf::from(manifest_dir).join(GATEWAY_TASKS_V3_DATASET_PATH)
         }
         "v2" | "gateway_tasks_v2" | "gateway_tasks_v2.csv" => {
@@ -783,8 +787,9 @@ async fn run_mcp_atlas_three_way_evaluation() {
         tracing::trace!("EVAL_LIMIT=5                   # Run only N tasks");
         tracing::trace!("EVAL_TASK_PREFIX=task_linear   # Filter by task ID prefix");
         tracing::trace!("EVAL_MODEL=<model>             # Model for tool-calling client");
-        tracing::trace!("EVAL_GATEWAY_TASK_CSV=v3       # gateway_tasks_v3.csv (default)");
-        tracing::trace!("EVAL_GATEWAY_TASK_CSV=v2       # gateway_tasks_v2.csv (legacy)");
+        tracing::trace!("EVAL_GATEWAY_TASK_CSV=v4       # gateway_tasks_v4.csv (default)");
+        tracing::trace!("EVAL_GATEWAY_TASK_CSV=v3       # gateway_tasks_v3.csv");
+        tracing::trace!("EVAL_GATEWAY_TASK_CSV=v2       # gateway_tasks_v2.csv");
         tracing::trace!("EVAL_GATEWAY_TASK_CSV=v1       # gateway_tasks.csv");
         tracing::trace!("EVAL_GATEWAY_TASK_CSV=/path/to/gateway_tasks.csv  # Custom CSV path");
         tracing::trace!("EVAL_DATASET_PATH=/path/to/dataset.csv            # Legacy override");
@@ -2489,8 +2494,11 @@ async fn print_setup_instructions() {
     tracing::trace!("KONTEXT_MCP_URL=http://localhost:4000/mcp");
     tracing::trace!("KONTEXT_TOKEN_URL=http://localhost:4000/oauth2/token");
     tracing::trace!("EVAL_API_KEY=<your-api-key>");
-    tracing::trace!("EVAL_GATEWAY_TASK_CSV=v3");
+    tracing::trace!("EVAL_GATEWAY_TASK_CSV=v4");
     tracing::trace!("# Optional alternate dataset:");
+    tracing::trace!(
+        "# EVAL_GATEWAY_TASK_CSV=v3  (maps to ../mcp-atlas/services/mcp_eval/gateway_tasks_v3.csv)"
+    );
     tracing::trace!(
         "# EVAL_GATEWAY_TASK_CSV=v2  (maps to ../mcp-atlas/services/mcp_eval/gateway_tasks_v2.csv)"
     );
