@@ -141,17 +141,20 @@ impl KontextDevRuntime {
             state.disconnected_capabilities.clone()
         };
 
-        if disconnected.is_empty() {
-            return;
-        }
-
         if self.settings.open_connect_page_on_login {
             match self.client.get_connect_page_url().await {
                 Ok(connect) => {
-                    info!(
-                        "Kontext integrations are disconnected. Open this URL to connect: {}",
-                        connect.connect_url
-                    );
+                    if disconnected.is_empty() {
+                        info!(
+                            "Opening Kontext integration page after login: {}",
+                            connect.connect_url
+                        );
+                    } else {
+                        info!(
+                            "Kontext integrations are disconnected. Open this URL to connect: {}",
+                            connect.connect_url
+                        );
+                    }
                     if let Err(err) = webbrowser::open(&connect.connect_url) {
                         warn!(
                             "Failed to open Kontext connect URL in browser (showing URL instead): {err}"
@@ -159,15 +162,26 @@ impl KontextDevRuntime {
                     } else {
                         info!("Opened Kontext integration connect page in browser.");
                     }
-                    config.startup_warnings.push(format!(
-                        "Kontext integrations require connection. Open this URL to finish setup: {}",
-                        connect.connect_url
-                    ));
+                    if disconnected.is_empty() {
+                        config.startup_warnings.push(format!(
+                            "Opened Kontext integrations page: {}",
+                            connect.connect_url
+                        ));
+                    } else {
+                        config.startup_warnings.push(format!(
+                            "Kontext integrations require connection. Open this URL to finish setup: {}",
+                            connect.connect_url
+                        ));
+                    }
                 }
                 Err(err) => {
                     warn!("Unable to generate Kontext connect URL: {err}");
                 }
             }
+            return;
+        }
+
+        if disconnected.is_empty() {
             return;
         }
 
