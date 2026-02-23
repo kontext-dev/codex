@@ -4,7 +4,7 @@ use app_test_support::test_path_buf_with_windows;
 use app_test_support::test_tmp_path_buf;
 use app_test_support::to_response;
 use codex_app_server_protocol::AppConfig;
-use codex_app_server_protocol::AppDisabledReason;
+use codex_app_server_protocol::AppToolApproval;
 use codex_app_server_protocol::AppsConfig;
 use codex_app_server_protocol::AskForApproval;
 use codex_app_server_protocol::ConfigBatchWriteParams;
@@ -22,7 +22,6 @@ use codex_app_server_protocol::SandboxMode;
 use codex_app_server_protocol::ToolsV2;
 use codex_app_server_protocol::WriteStatus;
 use codex_core::config::set_project_trust_level;
-use codex_core::config_loader::SYSTEM_CONFIG_TOML_FILE_UNIX;
 use codex_protocol::config_types::TrustLevel;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -157,7 +156,8 @@ async fn config_read_includes_apps() -> Result<()> {
         r#"
 [apps.app1]
 enabled = false
-disabled_reason = "user"
+destructive_enabled = false
+default_tools_approval_mode = "prompt"
 "#,
     )?;
     let codex_home_path = codex_home.path().canonicalize()?;
@@ -186,11 +186,16 @@ disabled_reason = "user"
     assert_eq!(
         config.apps,
         Some(AppsConfig {
+            default: None,
             apps: std::collections::HashMap::from([(
                 "app1".to_string(),
                 AppConfig {
                     enabled: false,
-                    disabled_reason: Some(AppDisabledReason::User),
+                    destructive_enabled: Some(false),
+                    open_world_enabled: None,
+                    default_tools_approval_mode: Some(AppToolApproval::Prompt),
+                    default_tools_enabled: None,
+                    tools: None,
                 },
             )]),
         })
@@ -203,7 +208,16 @@ disabled_reason = "user"
     );
     assert_eq!(
         origins
-            .get("apps.app1.disabled_reason")
+            .get("apps.app1.destructive_enabled")
+            .expect("origin")
+            .name,
+        ConfigLayerSource::User {
+            file: user_file.clone(),
+        }
+    );
+    assert_eq!(
+        origins
+            .get("apps.app1.default_tools_approval_mode")
             .expect("origin")
             .name,
         ConfigLayerSource::User {
@@ -561,18 +575,22 @@ fn assert_layers_user_then_optional_system(
     layers: &[codex_app_server_protocol::ConfigLayer],
     user_file: AbsolutePathBuf,
 ) -> Result<()> {
-    if cfg!(unix) {
-        let system_file = AbsolutePathBuf::from_absolute_path(SYSTEM_CONFIG_TOML_FILE_UNIX)?;
-        assert_eq!(layers.len(), 2);
-        assert_eq!(layers[0].name, ConfigLayerSource::User { file: user_file });
-        assert_eq!(
-            layers[1].name,
-            ConfigLayerSource::System { file: system_file }
-        );
-    } else {
-        assert_eq!(layers.len(), 1);
-        assert_eq!(layers[0].name, ConfigLayerSource::User { file: user_file });
+    let mut first_index = 0;
+    if matches!(
+        layers.first().map(|layer| &layer.name),
+        Some(ConfigLayerSource::LegacyManagedConfigTomlFromMdm)
+    ) {
+        first_index = 1;
     }
+    assert_eq!(layers.len(), first_index + 2);
+    assert_eq!(
+        layers[first_index].name,
+        ConfigLayerSource::User { file: user_file }
+    );
+    assert!(matches!(
+        layers[first_index + 1].name,
+        ConfigLayerSource::System { .. }
+    ));
     Ok(())
 }
 
@@ -581,25 +599,25 @@ fn assert_layers_managed_user_then_optional_system(
     managed_file: AbsolutePathBuf,
     user_file: AbsolutePathBuf,
 ) -> Result<()> {
-    if cfg!(unix) {
-        let system_file = AbsolutePathBuf::from_absolute_path(SYSTEM_CONFIG_TOML_FILE_UNIX)?;
-        assert_eq!(layers.len(), 3);
-        assert_eq!(
-            layers[0].name,
-            ConfigLayerSource::LegacyManagedConfigTomlFromFile { file: managed_file }
-        );
-        assert_eq!(layers[1].name, ConfigLayerSource::User { file: user_file });
-        assert_eq!(
-            layers[2].name,
-            ConfigLayerSource::System { file: system_file }
-        );
-    } else {
-        assert_eq!(layers.len(), 2);
-        assert_eq!(
-            layers[0].name,
-            ConfigLayerSource::LegacyManagedConfigTomlFromFile { file: managed_file }
-        );
-        assert_eq!(layers[1].name, ConfigLayerSource::User { file: user_file });
+    let mut first_index = 0;
+    if matches!(
+        layers.first().map(|layer| &layer.name),
+        Some(ConfigLayerSource::LegacyManagedConfigTomlFromMdm)
+    ) {
+        first_index = 1;
     }
+    assert_eq!(layers.len(), first_index + 3);
+    assert_eq!(
+        layers[first_index].name,
+        ConfigLayerSource::LegacyManagedConfigTomlFromFile { file: managed_file }
+    );
+    assert_eq!(
+        layers[first_index + 1].name,
+        ConfigLayerSource::User { file: user_file }
+    );
+    assert!(matches!(
+        layers[first_index + 2].name,
+        ConfigLayerSource::System { .. }
+    ));
     Ok(())
 }

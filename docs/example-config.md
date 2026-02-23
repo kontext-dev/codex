@@ -10,8 +10,13 @@ server = "https://api.kontext.dev"
 client_id = "<application-client-id>"
 
 # optional values (defaults shown)
-scope = "openid offline"
+# leave empty unless your app explicitly allows OAuth scopes
+scope = ""
 resource = "mcp-gateway"
 server_name = "kontext-dev"
 open_connect_page_on_login = true
+# redirect_uri must match your OAuth app configuration
+redirect_uri = "http://localhost:3000/callback"
 ```
+
+With this configuration, Kontext tools are added directly to the normal Codex tool list (they do not appear under MCP server inventory).

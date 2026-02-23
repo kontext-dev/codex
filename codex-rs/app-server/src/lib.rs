@@ -1,18 +1,21 @@
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 
 use codex_cloud_requirements::cloud_requirements_loader;
-use codex_common::CliConfigOverrides;
 use codex_core::AuthManager;
 use codex_core::config::Config;
 use codex_core::config::ConfigBuilder;
 use codex_core::config_loader::CloudRequirementsLoader;
 use codex_core::config_loader::ConfigLayerStackOrdering;
 use codex_core::config_loader::LoaderOverrides;
+use codex_utils_cli::CliConfigOverrides;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::io::ErrorKind;
 use std::io::Result as IoResult;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::RwLock;
+use std::sync::atomic::AtomicBool;
 
 use crate::message_processor::MessageProcessor;
 use crate::message_processor::MessageProcessorArgs;
@@ -21,8 +24,8 @@ use crate::outgoing_message::OutgoingEnvelope;
 use crate::outgoing_message::OutgoingMessageSender;
 use crate::transport::CHANNEL_CAPACITY;
 use crate::transport::ConnectionState;
+use crate::transport::OutboundConnectionState;
 use crate::transport::TransportEvent;
-use crate::transport::has_initialized_connections;
 use crate::transport::route_outgoing_envelope;
 use crate::transport::start_stdio_connection;
 use crate::transport::start_websocket_acceptor;
@@ -38,6 +41,7 @@ use codex_core::config_loader::TextRange as CoreTextRange;
 use codex_feedback::CodexFeedback;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 use toml::Value as TomlValue;
 use tracing::error;
 use tracing::info;
@@ -45,6 +49,7 @@ use tracing::warn;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::Layer;
 use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::registry::Registry;
 use tracing_subscriber::util::SubscriberInitExt;
 
 mod bespoke_event_handling;
@@ -57,9 +62,43 @@ mod fuzzy_file_search;
 mod message_processor;
 mod models;
 mod outgoing_message;
+mod thread_state;
+mod thread_status;
 mod transport;
 
 pub use crate::transport::AppServerTransport;
+
+const LOG_FORMAT_ENV_VAR: &str = "LOG_FORMAT";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LogFormat {
+    Default,
+    Json,
+}
+
+type StderrLogLayer = Box<dyn Layer<Registry> + Send + Sync + 'static>;
+
+/// Control-plane messages from the processor/transport side to the outbound router task.
+///
+/// `run_main_with_transport` now uses two loops/tasks:
+/// - processor loop: handles incoming JSON-RPC and request dispatch
+/// - outbound loop: performs potentially slow writes to per-connection writers
+///
+/// `OutboundControlEvent` keeps those loops coordinated without sharing mutable
+/// connection state directly. In particular, the outbound loop needs to know
+/// when a connection opens/closes so it can route messages correctly.
+enum OutboundControlEvent {
+    /// Register a new writer for an opened connection.
+    Opened {
+        connection_id: ConnectionId,
+        writer: mpsc::Sender<crate::outgoing_message::OutgoingMessage>,
+        disconnect_sender: Option<CancellationToken>,
+        initialized: Arc<AtomicBool>,
+        opted_out_notification_methods: Arc<RwLock<HashSet<String>>>,
+    },
+    /// Remove state for a closed/disconnected connection.
+    Closed { connection_id: ConnectionId },
+}
 
 fn config_warning_from_error(
     summary: impl Into<String>,
@@ -171,6 +210,20 @@ fn project_config_warning(config: &Config) -> Option<ConfigWarningNotification> 
     })
 }
 
+impl LogFormat {
+    fn from_env_value(value: Option<&str>) -> Self {
+        match value.map(str::trim).map(str::to_ascii_lowercase) {
+            Some(value) if value == "json" => Self::Json,
+            _ => Self::Default,
+        }
+    }
+}
+
+fn log_format_from_env() -> LogFormat {
+    let value = std::env::var(LOG_FORMAT_ENV_VAR).ok();
+    LogFormat::from_env_value(value.as_deref())
+}
+
 pub async fn run_main(
     codex_linux_sandbox_exe: Option<PathBuf>,
     cli_config_overrides: CliConfigOverrides,
@@ -197,6 +250,8 @@ pub async fn run_main_with_transport(
     let (transport_event_tx, mut transport_event_rx) =
         mpsc::channel::<TransportEvent>(CHANNEL_CAPACITY);
     let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<OutgoingEnvelope>(CHANNEL_CAPACITY);
+    let (outbound_control_tx, mut outbound_control_rx) =
+        mpsc::channel::<OutboundControlEvent>(CHANNEL_CAPACITY);
 
     let mut stdio_handles = Vec::<JoinHandle<()>>::new();
     let mut websocket_accept_handle = None;
@@ -209,7 +264,8 @@ pub async fn run_main_with_transport(
                 Some(start_websocket_acceptor(bind_address, transport_event_tx.clone()).await?);
         }
     }
-    let shutdown_when_no_connections = matches!(transport, AppServerTransport::Stdio);
+    let single_client_mode = matches!(transport, AppServerTransport::Stdio);
+    let shutdown_when_no_connections = single_client_mode;
 
     // Parse CLI overrides once and derive the base Config eagerly so later
     // components do not need to work with raw TOML values.
@@ -248,7 +304,11 @@ pub async fn run_main_with_transport(
                 false,
                 config.cli_auth_credentials_store_mode,
             );
-            cloud_requirements_loader(auth_manager, config.chatgpt_base_url)
+            cloud_requirements_loader(
+                auth_manager,
+                config.chatgpt_base_url,
+                config.codex_home.clone(),
+            )
         }
         Err(err) => {
             warn!(error = %err, "Failed to preload config for cloud requirements");
@@ -308,18 +368,26 @@ pub async fn run_main_with_transport(
         )
     })?;
 
-    // Install a simple subscriber so `tracing` output is visible.  Users can
-    // control the log level with `RUST_LOG`.
-    let stderr_fmt = tracing_subscriber::fmt::layer()
-        .with_writer(std::io::stderr)
-        .with_span_events(tracing_subscriber::fmt::format::FmtSpan::FULL)
-        .with_filter(EnvFilter::from_default_env());
+    // Install a simple subscriber so `tracing` output is visible. Users can
+    // control the log level with `RUST_LOG` and switch to JSON logs with
+    // `LOG_FORMAT=json`.
+    let stderr_fmt: StderrLogLayer = match log_format_from_env() {
+        LogFormat::Json => tracing_subscriber::fmt::layer()
+            .json()
+            .with_writer(std::io::stderr)
+            .with_span_events(tracing_subscriber::fmt::format::FmtSpan::FULL)
+            .with_filter(EnvFilter::from_default_env())
+            .boxed(),
+        LogFormat::Default => tracing_subscriber::fmt::layer()
+            .with_writer(std::io::stderr)
+            .with_span_events(tracing_subscriber::fmt::format::FmtSpan::FULL)
+            .with_filter(EnvFilter::from_default_env())
+            .boxed(),
+    };
 
     let feedback_layer = feedback.logger_layer();
     let feedback_metadata_layer = feedback.metadata_layer();
-
     let otel_logger_layer = otel.as_ref().and_then(|o| o.logger_layer());
-
     let otel_tracing_layer = otel.as_ref().and_then(|o| o.tracing_layer());
 
     let _ = tracing_subscriber::registry()
@@ -336,14 +404,59 @@ pub async fn run_main_with_transport(
         }
     }
 
+    let outbound_handle = tokio::spawn(async move {
+        let mut outbound_connections = HashMap::<ConnectionId, OutboundConnectionState>::new();
+        loop {
+            tokio::select! {
+                    biased;
+                    event = outbound_control_rx.recv() => {
+                        let Some(event) = event else {
+                            break;
+                        };
+                        match event {
+                            OutboundControlEvent::Opened {
+                                connection_id,
+                                writer,
+                                disconnect_sender,
+                                initialized,
+                                opted_out_notification_methods,
+                            } => {
+                                outbound_connections.insert(
+                                    connection_id,
+                                    OutboundConnectionState::new(
+                                        writer,
+                                        initialized,
+                                        opted_out_notification_methods,
+                                        disconnect_sender,
+                                    ),
+                                );
+                            }
+                            OutboundControlEvent::Closed { connection_id } => {
+                                outbound_connections.remove(&connection_id);
+                            }
+                        }
+                    }
+                    envelope = outgoing_rx.recv() => {
+                    let Some(envelope) = envelope else {
+                        break;
+                    };
+                    route_outgoing_envelope(&mut outbound_connections, envelope).await;
+                }
+            }
+        }
+        info!("outbound router task exited (channel closed)");
+    });
+
     let processor_handle = tokio::spawn({
         let outgoing_message_sender = Arc::new(OutgoingMessageSender::new(outgoing_tx));
+        let outbound_control_tx = outbound_control_tx;
         let cli_overrides: Vec<(String, TomlValue)> = cli_kv_overrides.clone();
         let loader_overrides = loader_overrides_for_config_api;
         let mut processor = MessageProcessor::new(MessageProcessorArgs {
             outgoing: outgoing_message_sender,
             codex_linux_sandbox_exe,
             config: Arc::new(config),
+            single_client_mode,
             cli_overrides,
             loader_overrides,
             cloud_requirements: cloud_requirements.clone(),
@@ -361,11 +474,49 @@ pub async fn run_main_with_transport(
                             break;
                         };
                         match event {
-                            TransportEvent::ConnectionOpened { connection_id, writer } => {
-                                connections.insert(connection_id, ConnectionState::new(writer));
+                            TransportEvent::ConnectionOpened {
+                                connection_id,
+                                writer,
+                                disconnect_sender,
+                            } => {
+                                let outbound_initialized = Arc::new(AtomicBool::new(false));
+                                let outbound_opted_out_notification_methods =
+                                    Arc::new(RwLock::new(HashSet::new()));
+                                if outbound_control_tx
+                                    .send(OutboundControlEvent::Opened {
+                                        connection_id,
+                                        writer,
+                                        disconnect_sender,
+                                        initialized: Arc::clone(&outbound_initialized),
+                                        opted_out_notification_methods: Arc::clone(
+                                            &outbound_opted_out_notification_methods,
+                                        ),
+                                    })
+                                    .await
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                                connections.insert(
+                                    connection_id,
+                                    ConnectionState::new(
+                                        outbound_initialized,
+                                        outbound_opted_out_notification_methods,
+                                    ),
+                                );
                             }
                             TransportEvent::ConnectionClosed { connection_id } => {
-                                connections.remove(&connection_id);
+                                if connections.remove(&connection_id).is_none() {
+                                    continue;
+                                }
+                                if outbound_control_tx
+                                    .send(OutboundControlEvent::Closed { connection_id })
+                                    .await
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                                processor.connection_closed(connection_id).await;
                                 if shutdown_when_no_connections && connections.is_empty() {
                                     break;
                                 }
@@ -374,42 +525,75 @@ pub async fn run_main_with_transport(
                                 match message {
                                     JSONRPCMessage::Request(request) => {
                                         let Some(connection_state) = connections.get_mut(&connection_id) else {
-                                            warn!("dropping request from unknown connection: {:?}", connection_id);
+                                            warn!("dropping request from unknown connection: {connection_id:?}");
                                             continue;
                                         };
+                                        let was_initialized = connection_state.session.initialized;
                                         processor
                                             .process_request(
                                                 connection_id,
                                                 request,
                                                 &mut connection_state.session,
+                                                &connection_state.outbound_initialized,
                                             )
                                             .await;
+                                        if let Ok(mut opted_out_notification_methods) = connection_state
+                                            .outbound_opted_out_notification_methods
+                                            .write()
+                                        {
+                                            *opted_out_notification_methods = connection_state
+                                                .session
+                                                .opted_out_notification_methods
+                                                .clone();
+                                        } else {
+                                            warn!(
+                                                "failed to update outbound opted-out notifications"
+                                            );
+                                        }
+                                        if !was_initialized && connection_state.session.initialized {
+                                            processor.send_initialize_notifications().await;
+                                        }
                                     }
                                     JSONRPCMessage::Response(response) => {
+                                        if !connections.contains_key(&connection_id) {
+                                            warn!("dropping response from unknown connection: {connection_id:?}");
+                                            continue;
+                                        }
                                         processor.process_response(response).await;
                                     }
                                     JSONRPCMessage::Notification(notification) => {
+                                        if !connections.contains_key(&connection_id) {
+                                            warn!("dropping notification from unknown connection: {connection_id:?}");
+                                            continue;
+                                        }
                                         processor.process_notification(notification).await;
                                     }
                                     JSONRPCMessage::Error(err) => {
+                                        if !connections.contains_key(&connection_id) {
+                                            warn!("dropping error from unknown connection: {connection_id:?}");
+                                            continue;
+                                        }
                                         processor.process_error(err).await;
                                     }
                                 }
                             }
                         }
                     }
-                    envelope = outgoing_rx.recv() => {
-                        let Some(envelope) = envelope else {
-                            break;
-                        };
-                        route_outgoing_envelope(&mut connections, envelope).await;
-                    }
                     created = thread_created_rx.recv(), if listen_for_threads => {
                         match created {
                             Ok(thread_id) => {
-                                if has_initialized_connections(&connections) {
-                                    processor.try_attach_thread_listener(thread_id).await;
-                                }
+                                let initialized_connection_ids: Vec<ConnectionId> = connections
+                                    .iter()
+                                    .filter_map(|(connection_id, connection_state)| {
+                                        connection_state.session.initialized.then_some(*connection_id)
+                                    })
+                                    .collect();
+                                processor
+                                    .try_attach_thread_listener(
+                                        thread_id,
+                                        initialized_connection_ids,
+                                    )
+                                    .await;
                             }
                             Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                                 // TODO(jif) handle lag.
@@ -433,6 +617,7 @@ pub async fn run_main_with_transport(
     drop(transport_event_tx);
 
     let _ = processor_handle.await;
+    let _ = outbound_handle.await;
 
     if let Some(handle) = websocket_accept_handle {
         handle.abort();
@@ -443,4 +628,25 @@ pub async fn run_main_with_transport(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LogFormat;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn log_format_from_env_value_matches_json_values_case_insensitively() {
+        assert_eq!(LogFormat::from_env_value(Some("json")), LogFormat::Json);
+        assert_eq!(LogFormat::from_env_value(Some("JSON")), LogFormat::Json);
+        assert_eq!(LogFormat::from_env_value(Some("  Json  ")), LogFormat::Json);
+    }
+
+    #[test]
+    fn log_format_from_env_value_defaults_for_non_json_values() {
+        assert_eq!(LogFormat::from_env_value(None), LogFormat::Default);
+        assert_eq!(LogFormat::from_env_value(Some("")), LogFormat::Default);
+        assert_eq!(LogFormat::from_env_value(Some("text")), LogFormat::Default);
+        assert_eq!(LogFormat::from_env_value(Some("jsonl")), LogFormat::Default);
+    }
 }

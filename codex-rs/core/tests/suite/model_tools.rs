@@ -68,22 +68,20 @@ async fn model_selects_expected_tools() {
     skip_if_no_network!();
     use pretty_assertions::assert_eq;
 
-    let codex_tools = collect_tool_identifiers_for_model("codex-mini-latest").await;
+    let gpt51_codex_max_tools = collect_tool_identifiers_for_model("gpt-5.1-codex-max").await;
     assert_eq!(
-        codex_tools,
+        gpt51_codex_max_tools,
         expected_default_tools(
-            "local_shell",
+            "shell_command",
             &[
-                "list_mcp_resources",
-                "list_mcp_resource_templates",
-                "read_mcp_resource",
                 "update_plan",
                 "request_user_input",
+                "apply_patch",
                 "web_search",
                 "view_image",
             ],
         ),
-        "codex-mini-latest should expose the local shell tool",
+        "gpt-5.1-codex-max should expose the apply_patch tool",
     );
 
     let gpt5_codex_tools = collect_tool_identifiers_for_model("gpt-5-codex").await;
@@ -92,9 +90,6 @@ async fn model_selects_expected_tools() {
         expected_default_tools(
             "shell_command",
             &[
-                "list_mcp_resources",
-                "list_mcp_resource_templates",
-                "read_mcp_resource",
                 "update_plan",
                 "request_user_input",
                 "apply_patch",
@@ -111,9 +106,6 @@ async fn model_selects_expected_tools() {
         expected_default_tools(
             "shell_command",
             &[
-                "list_mcp_resources",
-                "list_mcp_resource_templates",
-                "read_mcp_resource",
                 "update_plan",
                 "request_user_input",
                 "apply_patch",
@@ -130,9 +122,6 @@ async fn model_selects_expected_tools() {
         expected_default_tools(
             "shell",
             &[
-                "list_mcp_resources",
-                "list_mcp_resource_templates",
-                "read_mcp_resource",
                 "update_plan",
                 "request_user_input",
                 "web_search",
@@ -148,9 +137,6 @@ async fn model_selects_expected_tools() {
         expected_default_tools(
             "shell_command",
             &[
-                "list_mcp_resources",
-                "list_mcp_resource_templates",
-                "read_mcp_resource",
                 "update_plan",
                 "request_user_input",
                 "apply_patch",
@@ -159,22 +145,5 @@ async fn model_selects_expected_tools() {
             ],
         ),
         "gpt-5.1 should expose the apply_patch tool",
-    );
-    let exp_tools = collect_tool_identifiers_for_model("exp-5.1").await;
-    assert_eq!(
-        exp_tools,
-        vec![
-            "exec_command".to_string(),
-            "write_stdin".to_string(),
-            "list_mcp_resources".to_string(),
-            "list_mcp_resource_templates".to_string(),
-            "read_mcp_resource".to_string(),
-            "update_plan".to_string(),
-            "request_user_input".to_string(),
-            "apply_patch".to_string(),
-            "web_search".to_string(),
-            "view_image".to_string()
-        ],
-        "exp-5.1 should expose the apply_patch tool",
     );
 }

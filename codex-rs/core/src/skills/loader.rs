@@ -1,4 +1,5 @@
 use crate::config::Config;
+use crate::config::Permissions;
 use crate::config_loader::ConfigLayerStack;
 use crate::config_loader::ConfigLayerStackOrdering;
 use crate::config_loader::default_project_root_markers;
@@ -9,7 +10,10 @@ use crate::skills::model::SkillError;
 use crate::skills::model::SkillInterface;
 use crate::skills::model::SkillLoadOutcome;
 use crate::skills::model::SkillMetadata;
+use crate::skills::model::SkillPolicy;
 use crate::skills::model::SkillToolDependency;
+use crate::skills::permissions::SkillManifestPermissions;
+use crate::skills::permissions::compile_permission_profile;
 use crate::skills::system::system_cache_root_dir;
 use codex_app_server_protocol::ConfigLayerSource;
 use codex_protocol::protocol::SkillScope;
@@ -47,6 +51,10 @@ struct SkillMetadataFile {
     interface: Option<Interface>,
     #[serde(default)]
     dependencies: Option<Dependencies>,
+    #[serde(default)]
+    policy: Option<Policy>,
+    #[serde(default)]
+    permissions: Option<SkillManifestPermissions>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -63,6 +71,12 @@ struct Interface {
 struct Dependencies {
     #[serde(default)]
     tools: Vec<DependencyTool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Policy {
+    #[serde(default)]
+    allow_implicit_invocation: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -123,7 +137,17 @@ impl fmt::Display for SkillParseError {
 impl Error for SkillParseError {}
 
 pub fn load_skills(config: &Config) -> SkillLoadOutcome {
-    load_skills_from_roots(skill_roots(config))
+    load_skills_with_home_dir(config, home_dir().as_deref())
+}
+
+fn load_skills_with_home_dir(config: &Config, home_dir: Option<&Path>) -> SkillLoadOutcome {
+    let mut roots = skill_roots_from_layer_stack_inner(&config.config_layer_stack, home_dir);
+    roots.extend(repo_agents_skill_roots(
+        &config.config_layer_stack,
+        &config.cwd,
+    ));
+    dedupe_skill_roots_by_path(&mut roots);
+    load_skills_from_roots(roots)
 }
 
 pub(crate) struct SkillRoot {
@@ -226,6 +250,7 @@ fn skill_roots_from_layer_stack_inner(
     roots
 }
 
+#[cfg(test)]
 fn skill_roots(config: &Config) -> Vec<SkillRoot> {
     skill_roots_from_layer_stack_with_agents(&config.config_layer_stack, &config.cwd)
 }
@@ -481,7 +506,7 @@ fn parse_skill_file(path: &Path, scope: SkillScope) -> Result<SkillMetadata, Ski
         .as_deref()
         .map(sanitize_single_line)
         .filter(|value| !value.is_empty());
-    let (interface, dependencies) = load_skill_metadata(path);
+    let (interface, dependencies, policy, permissions) = load_skill_metadata(path);
 
     validate_len(&name, MAX_NAME_LEN, "name")?;
     validate_len(&description, MAX_DESCRIPTION_LEN, "description")?;
@@ -501,21 +526,30 @@ fn parse_skill_file(path: &Path, scope: SkillScope) -> Result<SkillMetadata, Ski
         short_description,
         interface,
         dependencies,
+        policy,
+        permissions,
         path: resolved_path,
         scope,
     })
 }
 
-fn load_skill_metadata(skill_path: &Path) -> (Option<SkillInterface>, Option<SkillDependencies>) {
+fn load_skill_metadata(
+    skill_path: &Path,
+) -> (
+    Option<SkillInterface>,
+    Option<SkillDependencies>,
+    Option<SkillPolicy>,
+    Option<Permissions>,
+) {
     // Fail open: optional metadata should not block loading SKILL.md.
     let Some(skill_dir) = skill_path.parent() else {
-        return (None, None);
+        return (None, None, None, None);
     };
     let metadata_path = skill_dir
         .join(SKILLS_METADATA_DIR)
         .join(SKILLS_METADATA_FILENAME);
     if !metadata_path.exists() {
-        return (None, None);
+        return (None, None, None, None);
     }
 
     let contents = match fs::read_to_string(&metadata_path) {
@@ -526,7 +560,7 @@ fn load_skill_metadata(skill_path: &Path) -> (Option<SkillInterface>, Option<Ski
                 path = metadata_path.display(),
                 label = SKILLS_METADATA_FILENAME
             );
-            return (None, None);
+            return (None, None, None, None);
         }
     };
 
@@ -538,13 +572,22 @@ fn load_skill_metadata(skill_path: &Path) -> (Option<SkillInterface>, Option<Ski
                 path = metadata_path.display(),
                 label = SKILLS_METADATA_FILENAME
             );
-            return (None, None);
+            return (None, None, None, None);
         }
     };
 
+    let SkillMetadataFile {
+        interface,
+        dependencies,
+        policy,
+        permissions,
+    } = parsed;
+
     (
-        resolve_interface(parsed.interface, skill_dir),
-        resolve_dependencies(parsed.dependencies),
+        resolve_interface(interface, skill_dir),
+        resolve_dependencies(dependencies),
+        resolve_policy(policy),
+        compile_permission_profile(skill_dir, permissions),
     )
 }
 
@@ -591,6 +634,12 @@ fn resolve_dependencies(dependencies: Option<Dependencies>) -> Option<SkillDepen
     } else {
         Some(SkillDependencies { tools })
     }
+}
+
+fn resolve_policy(policy: Option<Policy>) -> Option<SkillPolicy> {
+    policy.map(|policy| SkillPolicy {
+        allow_implicit_invocation: policy.allow_implicit_invocation,
+    })
 }
 
 fn resolve_dependency_tool(tool: DependencyTool) -> Option<SkillToolDependency> {
@@ -768,15 +817,17 @@ fn extract_frontmatter(contents: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::CONFIG_TOML_FILE;
     use crate::config::ConfigBuilder;
     use crate::config::ConfigOverrides;
     use crate::config::ConfigToml;
+    use crate::config::Constrained;
     use crate::config::ProjectConfig;
+    use crate::config::types::ShellEnvironmentPolicy;
     use crate::config_loader::ConfigLayerEntry;
     use crate::config_loader::ConfigLayerStack;
     use crate::config_loader::ConfigRequirements;
     use crate::config_loader::ConfigRequirementsToml;
+    use codex_config::CONFIG_TOML_FILE;
     use codex_protocol::config_types::TrustLevel;
     use codex_protocol::protocol::SkillScope;
     use codex_utils_absolute_path::AbsolutePathBuf;
@@ -825,6 +876,11 @@ mod tests {
             .build()
             .await
             .expect("defaults for test should always succeed")
+    }
+
+    fn load_skills_for_test(config: &Config) -> SkillLoadOutcome {
+        // Keep unit tests hermetic by never scanning the real `$HOME/.agents/skills`.
+        super::load_skills_with_home_dir(config, None)
     }
 
     fn mark_as_git_repo(dir: &Path) {
@@ -991,6 +1047,8 @@ mod tests {
                 short_description: None,
                 interface: None,
                 dependencies: None,
+                policy: None,
+                permissions: None,
                 path: normalized(&skill_path),
                 scope: SkillScope::User,
             }]
@@ -1087,7 +1145,7 @@ mod tests {
         );
 
         let cfg = make_config(&codex_home).await;
-        let outcome = load_skills(&cfg);
+        let outcome = load_skills_for_test(&cfg);
 
         assert!(
             outcome.errors.is_empty(),
@@ -1137,6 +1195,8 @@ mod tests {
                         },
                     ],
                 }),
+                policy: None,
+                permissions: None,
                 path: normalized(&skill_path),
                 scope: SkillScope::User,
             }]
@@ -1164,7 +1224,7 @@ interface:
         );
 
         let cfg = make_config(&codex_home).await;
-        let outcome = load_skills(&cfg);
+        let outcome = load_skills_for_test(&cfg);
 
         assert!(
             outcome.errors.is_empty(),
@@ -1191,9 +1251,294 @@ interface:
                     default_prompt: Some("default prompt".to_string()),
                 }),
                 dependencies: None,
+                policy: None,
+                permissions: None,
                 path: normalized(skill_path.as_path()),
                 scope: SkillScope::User,
             }]
+        );
+    }
+
+    #[tokio::test]
+    async fn loads_skill_policy_from_yaml() {
+        let codex_home = tempfile::tempdir().expect("tempdir");
+        let skill_path = write_skill(&codex_home, "demo", "policy-skill", "from json");
+        let skill_dir = skill_path.parent().expect("skill dir");
+
+        write_skill_metadata_at(
+            skill_dir,
+            r#"
+policy:
+  allow_implicit_invocation: false
+"#,
+        );
+
+        let cfg = make_config(&codex_home).await;
+        let outcome = load_skills_for_test(&cfg);
+
+        assert!(
+            outcome.errors.is_empty(),
+            "unexpected errors: {:?}",
+            outcome.errors
+        );
+        assert_eq!(outcome.skills.len(), 1);
+        assert_eq!(
+            outcome.skills[0].policy,
+            Some(SkillPolicy {
+                allow_implicit_invocation: Some(false),
+            })
+        );
+        assert!(outcome.allowed_skills_for_implicit_invocation().is_empty());
+    }
+
+    #[tokio::test]
+    async fn empty_skill_policy_defaults_to_allow_implicit_invocation() {
+        let codex_home = tempfile::tempdir().expect("tempdir");
+        let skill_path = write_skill(&codex_home, "demo", "policy-empty", "from json");
+        let skill_dir = skill_path.parent().expect("skill dir");
+
+        write_skill_metadata_at(
+            skill_dir,
+            r#"
+policy: {}
+"#,
+        );
+
+        let cfg = make_config(&codex_home).await;
+        let outcome = load_skills_for_test(&cfg);
+
+        assert!(
+            outcome.errors.is_empty(),
+            "unexpected errors: {:?}",
+            outcome.errors
+        );
+        assert_eq!(outcome.skills.len(), 1);
+        assert_eq!(
+            outcome.skills[0].policy,
+            Some(SkillPolicy {
+                allow_implicit_invocation: None,
+            })
+        );
+        assert_eq!(
+            outcome.allowed_skills_for_implicit_invocation(),
+            outcome.skills
+        );
+    }
+
+    #[tokio::test]
+    async fn loads_skill_permissions_from_yaml() {
+        let codex_home = tempfile::tempdir().expect("tempdir");
+        let skill_path = write_skill(&codex_home, "demo", "permissions-skill", "from yaml");
+        let skill_dir = skill_path.parent().expect("skill dir");
+        fs::create_dir_all(skill_dir.join("data")).expect("create read path");
+        fs::create_dir_all(skill_dir.join("output")).expect("create write path");
+
+        write_skill_metadata_at(
+            skill_dir,
+            r#"
+permissions:
+  network: true
+  file_system:
+    read:
+      - "./data"
+      - "./data"
+    write:
+      - "./output"
+"#,
+        );
+
+        let cfg = make_config(&codex_home).await;
+        let outcome = load_skills_for_test(&cfg);
+
+        assert!(
+            outcome.errors.is_empty(),
+            "unexpected errors: {:?}",
+            outcome.errors
+        );
+        assert_eq!(outcome.skills.len(), 1);
+        #[cfg(target_os = "macos")]
+        let macos_seatbelt_profile_extensions =
+            Some(crate::seatbelt_permissions::MacOsSeatbeltProfileExtensions::default());
+        #[cfg(not(target_os = "macos"))]
+        let macos_seatbelt_profile_extensions = None;
+        assert_eq!(
+            outcome.skills[0].permissions,
+            Some(Permissions {
+                approval_policy: Constrained::allow_any(crate::protocol::AskForApproval::Never),
+                sandbox_policy: Constrained::allow_any(
+                    crate::protocol::SandboxPolicy::WorkspaceWrite {
+                        writable_roots: vec![
+                            AbsolutePathBuf::try_from(normalized(
+                                skill_dir.join("output").as_path(),
+                            ))
+                            .expect("absolute output path")
+                        ],
+                        read_only_access: crate::protocol::ReadOnlyAccess::Restricted {
+                            include_platform_defaults: true,
+                            readable_roots: vec![
+                                AbsolutePathBuf::try_from(normalized(
+                                    skill_dir.join("data").as_path(),
+                                ))
+                                .expect("absolute data path")
+                            ],
+                        },
+                        network_access: true,
+                        exclude_tmpdir_env_var: false,
+                        exclude_slash_tmp: false,
+                    }
+                ),
+                network: None,
+                allow_login_shell: true,
+                shell_environment_policy: ShellEnvironmentPolicy::default(),
+                windows_sandbox_mode: None,
+                macos_seatbelt_profile_extensions,
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_skill_permissions_do_not_create_profile() {
+        let codex_home = tempfile::tempdir().expect("tempdir");
+        let skill_path = write_skill(&codex_home, "demo", "permissions-empty", "from yaml");
+        let skill_dir = skill_path.parent().expect("skill dir");
+
+        write_skill_metadata_at(
+            skill_dir,
+            r#"
+permissions: {}
+"#,
+        );
+
+        let cfg = make_config(&codex_home).await;
+        let outcome = load_skills_for_test(&cfg);
+
+        assert!(
+            outcome.errors.is_empty(),
+            "unexpected errors: {:?}",
+            outcome.errors
+        );
+        assert_eq!(outcome.skills.len(), 1);
+        #[cfg(target_os = "macos")]
+        let expected = Some(Permissions {
+            approval_policy: Constrained::allow_any(crate::protocol::AskForApproval::Never),
+            sandbox_policy: Constrained::allow_any(
+                crate::protocol::SandboxPolicy::new_read_only_policy(),
+            ),
+            network: None,
+            allow_login_shell: true,
+            shell_environment_policy: ShellEnvironmentPolicy::default(),
+            windows_sandbox_mode: None,
+            macos_seatbelt_profile_extensions: Some(
+                crate::seatbelt_permissions::MacOsSeatbeltProfileExtensions::default(),
+            ),
+        });
+        #[cfg(not(target_os = "macos"))]
+        let expected = Some(Permissions {
+            approval_policy: Constrained::allow_any(crate::protocol::AskForApproval::Never),
+            sandbox_policy: Constrained::allow_any(
+                crate::protocol::SandboxPolicy::new_read_only_policy(),
+            ),
+            network: None,
+            allow_login_shell: true,
+            shell_environment_policy: ShellEnvironmentPolicy::default(),
+            windows_sandbox_mode: None,
+            macos_seatbelt_profile_extensions: None,
+        });
+        assert_eq!(outcome.skills[0].permissions, expected);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn loads_skill_macos_permissions_from_yaml() {
+        let codex_home = tempfile::tempdir().expect("tempdir");
+        let skill_path = write_skill(&codex_home, "demo", "permissions-macos", "from yaml");
+        let skill_dir = skill_path.parent().expect("skill dir");
+
+        write_skill_metadata_at(
+            skill_dir,
+            r#"
+permissions:
+  macos:
+    preferences: "readwrite"
+    automations:
+      - "com.apple.Notes"
+    accessibility: true
+    calendar: true
+"#,
+        );
+
+        let cfg = make_config(&codex_home).await;
+        let outcome = load_skills_for_test(&cfg);
+
+        assert!(
+            outcome.errors.is_empty(),
+            "unexpected errors: {:?}",
+            outcome.errors
+        );
+        assert_eq!(outcome.skills.len(), 1);
+        let profile = outcome.skills[0]
+            .permissions
+            .as_ref()
+            .expect("permission profile");
+        assert_eq!(
+            profile.macos_seatbelt_profile_extensions,
+            Some(
+                crate::seatbelt_permissions::MacOsSeatbeltProfileExtensions {
+                    macos_preferences:
+                        crate::seatbelt_permissions::MacOsPreferencesPermission::ReadWrite,
+                    macos_automation:
+                        crate::seatbelt_permissions::MacOsAutomationPermission::BundleIds(vec![
+                            "com.apple.Notes".to_string()
+                        ],),
+                    macos_accessibility: true,
+                    macos_calendar: true,
+                }
+            )
+        );
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[tokio::test]
+    async fn loads_skill_macos_permissions_from_yaml_non_macos_does_not_create_profile() {
+        let codex_home = tempfile::tempdir().expect("tempdir");
+        let skill_path = write_skill(&codex_home, "demo", "permissions-macos", "from yaml");
+        let skill_dir = skill_path.parent().expect("skill dir");
+
+        write_skill_metadata_at(
+            skill_dir,
+            r#"
+permissions:
+  macos:
+    preferences: "readwrite"
+    automations:
+      - "com.apple.Notes"
+    accessibility: true
+    calendar: true
+"#,
+        );
+
+        let cfg = make_config(&codex_home).await;
+        let outcome = load_skills_for_test(&cfg);
+
+        assert!(
+            outcome.errors.is_empty(),
+            "unexpected errors: {:?}",
+            outcome.errors
+        );
+        assert_eq!(outcome.skills.len(), 1);
+        assert_eq!(
+            outcome.skills[0].permissions,
+            Some(Permissions {
+                approval_policy: Constrained::allow_any(crate::protocol::AskForApproval::Never),
+                sandbox_policy: Constrained::allow_any(
+                    crate::protocol::SandboxPolicy::new_read_only_policy(),
+                ),
+                network: None,
+                allow_login_shell: true,
+                shell_environment_policy: ShellEnvironmentPolicy::default(),
+                windows_sandbox_mode: None,
+                macos_seatbelt_profile_extensions: None,
+            })
         );
     }
 
@@ -1218,7 +1563,7 @@ interface:
         );
 
         let cfg = make_config(&codex_home).await;
-        let outcome = load_skills(&cfg);
+        let outcome = load_skills_for_test(&cfg);
 
         assert!(
             outcome.errors.is_empty(),
@@ -1240,6 +1585,8 @@ interface:
                     default_prompt: None,
                 }),
                 dependencies: None,
+                policy: None,
+                permissions: None,
                 path: normalized(&skill_path),
                 scope: SkillScope::User,
             }]
@@ -1264,7 +1611,7 @@ interface:
         );
 
         let cfg = make_config(&codex_home).await;
-        let outcome = load_skills(&cfg);
+        let outcome = load_skills_for_test(&cfg);
 
         assert!(
             outcome.errors.is_empty(),
@@ -1279,6 +1626,8 @@ interface:
                 short_description: None,
                 interface: None,
                 dependencies: None,
+                policy: None,
+                permissions: None,
                 path: normalized(&skill_path),
                 scope: SkillScope::User,
             }]
@@ -1309,7 +1658,7 @@ interface:
         );
 
         let cfg = make_config(&codex_home).await;
-        let outcome = load_skills(&cfg);
+        let outcome = load_skills_for_test(&cfg);
 
         assert!(
             outcome.errors.is_empty(),
@@ -1331,6 +1680,8 @@ interface:
                     default_prompt: None,
                 }),
                 dependencies: None,
+                policy: None,
+                permissions: None,
                 path: normalized(&skill_path),
                 scope: SkillScope::User,
             }]
@@ -1356,7 +1707,7 @@ interface:
         );
 
         let cfg = make_config(&codex_home).await;
-        let outcome = load_skills(&cfg);
+        let outcome = load_skills_for_test(&cfg);
 
         assert!(
             outcome.errors.is_empty(),
@@ -1371,6 +1722,8 @@ interface:
                 short_description: None,
                 interface: None,
                 dependencies: None,
+                policy: None,
+                permissions: None,
                 path: normalized(&skill_path),
                 scope: SkillScope::User,
             }]
@@ -1399,7 +1752,7 @@ interface:
         symlink_dir(shared.path(), &codex_home.path().join("skills/shared"));
 
         let cfg = make_config(&codex_home).await;
-        let outcome = load_skills(&cfg);
+        let outcome = load_skills_for_test(&cfg);
 
         assert!(
             outcome.errors.is_empty(),
@@ -1414,6 +1767,8 @@ interface:
                 short_description: None,
                 interface: None,
                 dependencies: None,
+                policy: None,
+                permissions: None,
                 path: normalized(&shared_skill_path),
                 scope: SkillScope::User,
             }]
@@ -1434,7 +1789,7 @@ interface:
         symlink_file(&shared_skill_path, &skill_dir.join(SKILLS_FILENAME));
 
         let cfg = make_config(&codex_home).await;
-        let outcome = load_skills(&cfg);
+        let outcome = load_skills_for_test(&cfg);
 
         assert!(
             outcome.errors.is_empty(),
@@ -1458,7 +1813,7 @@ interface:
         let skill_path = write_skill_at(&cycle_dir, "demo", "cycle-skill", "still loads");
 
         let cfg = make_config(&codex_home).await;
-        let outcome = load_skills(&cfg);
+        let outcome = load_skills_for_test(&cfg);
 
         assert!(
             outcome.errors.is_empty(),
@@ -1473,6 +1828,8 @@ interface:
                 short_description: None,
                 interface: None,
                 dependencies: None,
+                policy: None,
+                permissions: None,
                 path: normalized(&skill_path),
                 scope: SkillScope::User,
             }]
@@ -1508,6 +1865,8 @@ interface:
                 short_description: None,
                 interface: None,
                 dependencies: None,
+                policy: None,
+                permissions: None,
                 path: normalized(&shared_skill_path),
                 scope: SkillScope::Admin,
             }]
@@ -1532,7 +1891,7 @@ interface:
         symlink_dir(shared.path(), &repo_skills_root.join("shared"));
 
         let cfg = make_config_for_cwd(&codex_home, repo_dir.path().to_path_buf()).await;
-        let outcome = load_skills(&cfg);
+        let outcome = load_skills_for_test(&cfg);
 
         assert!(
             outcome.errors.is_empty(),
@@ -1547,6 +1906,8 @@ interface:
                 short_description: None,
                 interface: None,
                 dependencies: None,
+                policy: None,
+                permissions: None,
                 path: normalized(&linked_skill_path),
                 scope: SkillScope::Repo,
             }]
@@ -1565,9 +1926,10 @@ interface:
         fs::create_dir_all(&system_root).unwrap();
         symlink_dir(shared.path(), &system_root.join("shared"));
 
-        let cfg = make_config(&codex_home).await;
-        let outcome = load_skills(&cfg);
-
+        let outcome = load_skills_from_roots([SkillRoot {
+            path: system_root,
+            scope: SkillScope::System,
+        }]);
         assert!(
             outcome.errors.is_empty(),
             "unexpected errors: {:?}",
@@ -1593,8 +1955,11 @@ interface:
             "should not load",
         );
 
-        let cfg = make_config(&codex_home).await;
-        let outcome = load_skills(&cfg);
+        let skills_root = codex_home.path().join("skills");
+        let outcome = load_skills_from_roots([SkillRoot {
+            path: skills_root,
+            scope: SkillScope::User,
+        }]);
 
         assert!(
             outcome.errors.is_empty(),
@@ -1609,6 +1974,8 @@ interface:
                 short_description: None,
                 interface: None,
                 dependencies: None,
+                policy: None,
+                permissions: None,
                 path: normalized(&within_depth_path),
                 scope: SkillScope::User,
             }]
@@ -1621,7 +1988,7 @@ interface:
         let skill_path = write_skill(&codex_home, "demo", "demo-skill", "does things\ncarefully");
         let cfg = make_config(&codex_home).await;
 
-        let outcome = load_skills(&cfg);
+        let outcome = load_skills_for_test(&cfg);
         assert!(
             outcome.errors.is_empty(),
             "unexpected errors: {:?}",
@@ -1635,6 +2002,8 @@ interface:
                 short_description: None,
                 interface: None,
                 dependencies: None,
+                policy: None,
+                permissions: None,
                 path: normalized(&skill_path),
                 scope: SkillScope::User,
             }]
@@ -1651,7 +2020,7 @@ interface:
         fs::write(&skill_path, contents).unwrap();
 
         let cfg = make_config(&codex_home).await;
-        let outcome = load_skills(&cfg);
+        let outcome = load_skills_for_test(&cfg);
         assert!(
             outcome.errors.is_empty(),
             "unexpected errors: {:?}",
@@ -1665,6 +2034,8 @@ interface:
                 short_description: Some("short summary".to_string()),
                 interface: None,
                 dependencies: None,
+                policy: None,
+                permissions: None,
                 path: normalized(&skill_path),
                 scope: SkillScope::User,
             }]
@@ -1683,7 +2054,7 @@ interface:
         fs::write(skill_dir.join(SKILLS_FILENAME), contents).unwrap();
 
         let cfg = make_config(&codex_home).await;
-        let outcome = load_skills(&cfg);
+        let outcome = load_skills_for_test(&cfg);
         assert_eq!(outcome.skills.len(), 0);
         assert_eq!(outcome.errors.len(), 1);
         assert!(
@@ -1712,7 +2083,7 @@ interface:
         fs::write(invalid_dir.join(SKILLS_FILENAME), "---\nname: bad").unwrap();
 
         let cfg = make_config(&codex_home).await;
-        let outcome = load_skills(&cfg);
+        let outcome = load_skills_for_test(&cfg);
         assert_eq!(outcome.skills.len(), 0);
         assert_eq!(outcome.errors.len(), 1);
         assert!(
@@ -1730,7 +2101,7 @@ interface:
         write_skill(&codex_home, "max-len", "max-len", &max_desc);
         let cfg = make_config(&codex_home).await;
 
-        let outcome = load_skills(&cfg);
+        let outcome = load_skills_for_test(&cfg);
         assert!(
             outcome.errors.is_empty(),
             "unexpected errors: {:?}",
@@ -1740,7 +2111,7 @@ interface:
 
         let too_long_desc = "\u{1F4A1}".repeat(MAX_DESCRIPTION_LEN + 1);
         write_skill(&codex_home, "too-long", "too-long", &too_long_desc);
-        let outcome = load_skills(&cfg);
+        let outcome = load_skills_for_test(&cfg);
         assert_eq!(outcome.skills.len(), 1);
         assert_eq!(outcome.errors.len(), 1);
         assert!(
@@ -1762,7 +2133,7 @@ interface:
         let skill_path = write_skill_at(&skills_root, "repo", "repo-skill", "from repo");
         let cfg = make_config_for_cwd(&codex_home, repo_dir.path().to_path_buf()).await;
 
-        let outcome = load_skills(&cfg);
+        let outcome = load_skills_for_test(&cfg);
         assert!(
             outcome.errors.is_empty(),
             "unexpected errors: {:?}",
@@ -1776,6 +2147,8 @@ interface:
                 short_description: None,
                 interface: None,
                 dependencies: None,
+                policy: None,
+                permissions: None,
                 path: normalized(&skill_path),
                 scope: SkillScope::Repo,
             }]
@@ -1796,7 +2169,7 @@ interface:
         );
         let cfg = make_config_for_cwd(&codex_home, repo_dir.path().to_path_buf()).await;
 
-        let outcome = load_skills(&cfg);
+        let outcome = load_skills_for_test(&cfg);
         assert!(
             outcome.errors.is_empty(),
             "unexpected errors: {:?}",
@@ -1810,6 +2183,8 @@ interface:
                 short_description: None,
                 interface: None,
                 dependencies: None,
+                policy: None,
+                permissions: None,
                 path: normalized(&skill_path),
                 scope: SkillScope::Repo,
             }]
@@ -1847,7 +2222,7 @@ interface:
 
         let cfg = make_config_for_cwd(&codex_home, nested_dir).await;
 
-        let outcome = load_skills(&cfg);
+        let outcome = load_skills_for_test(&cfg);
         assert!(
             outcome.errors.is_empty(),
             "unexpected errors: {:?}",
@@ -1862,6 +2237,8 @@ interface:
                     short_description: None,
                     interface: None,
                     dependencies: None,
+                    policy: None,
+                    permissions: None,
                     path: normalized(&nested_skill_path),
                     scope: SkillScope::Repo,
                 },
@@ -1871,6 +2248,8 @@ interface:
                     short_description: None,
                     interface: None,
                     dependencies: None,
+                    policy: None,
+                    permissions: None,
                     path: normalized(&root_skill_path),
                     scope: SkillScope::Repo,
                 },
@@ -1895,7 +2274,7 @@ interface:
 
         let cfg = make_config_for_cwd(&codex_home, work_dir.path().to_path_buf()).await;
 
-        let outcome = load_skills(&cfg);
+        let outcome = load_skills_for_test(&cfg);
         assert!(
             outcome.errors.is_empty(),
             "unexpected errors: {:?}",
@@ -1909,6 +2288,8 @@ interface:
                 short_description: None,
                 interface: None,
                 dependencies: None,
+                policy: None,
+                permissions: None,
                 path: normalized(&skill_path),
                 scope: SkillScope::Repo,
             }]
@@ -1945,6 +2326,8 @@ interface:
                 short_description: None,
                 interface: None,
                 dependencies: None,
+                policy: None,
+                permissions: None,
                 path: normalized(&skill_path),
                 scope: SkillScope::Repo,
             }]
@@ -1970,7 +2353,7 @@ interface:
 
         let cfg = make_config_for_cwd(&codex_home, repo_dir.path().to_path_buf()).await;
 
-        let outcome = load_skills(&cfg);
+        let outcome = load_skills_for_test(&cfg);
         assert!(
             outcome.errors.is_empty(),
             "unexpected errors: {:?}",
@@ -1985,6 +2368,8 @@ interface:
                     short_description: None,
                     interface: None,
                     dependencies: None,
+                    policy: None,
+                    permissions: None,
                     path: normalized(&repo_skill_path),
                     scope: SkillScope::Repo,
                 },
@@ -1994,6 +2379,8 @@ interface:
                     short_description: None,
                     interface: None,
                     dependencies: None,
+                    policy: None,
+                    permissions: None,
                     path: normalized(&user_skill_path),
                     scope: SkillScope::User,
                 },
@@ -2031,7 +2418,7 @@ interface:
         );
 
         let cfg = make_config_for_cwd(&codex_home, nested_dir).await;
-        let outcome = load_skills(&cfg);
+        let outcome = load_skills_for_test(&cfg);
 
         assert!(
             outcome.errors.is_empty(),
@@ -2057,6 +2444,8 @@ interface:
                     short_description: None,
                     interface: None,
                     dependencies: None,
+                    policy: None,
+                    permissions: None,
                     path: first_path,
                     scope: SkillScope::Repo,
                 },
@@ -2066,6 +2455,8 @@ interface:
                     short_description: None,
                     interface: None,
                     dependencies: None,
+                    policy: None,
+                    permissions: None,
                     path: second_path,
                     scope: SkillScope::Repo,
                 },
@@ -2093,7 +2484,7 @@ interface:
 
         let cfg = make_config_for_cwd(&codex_home, repo_dir).await;
 
-        let outcome = load_skills(&cfg);
+        let outcome = load_skills_for_test(&cfg);
         assert!(
             outcome.errors.is_empty(),
             "unexpected errors: {:?}",
@@ -2122,7 +2513,7 @@ interface:
 
         let cfg = make_config_for_cwd(&codex_home, file_path).await;
 
-        let outcome = load_skills(&cfg);
+        let outcome = load_skills_for_test(&cfg);
         assert!(
             outcome.errors.is_empty(),
             "unexpected errors: {:?}",
@@ -2136,6 +2527,8 @@ interface:
                 short_description: None,
                 interface: None,
                 dependencies: None,
+                policy: None,
+                permissions: None,
                 path: normalized(&skill_path),
                 scope: SkillScope::Repo,
             }]
@@ -2161,7 +2554,7 @@ interface:
 
         let cfg = make_config_for_cwd(&codex_home, nested_dir).await;
 
-        let outcome = load_skills(&cfg);
+        let outcome = load_skills_for_test(&cfg);
         assert!(
             outcome.errors.is_empty(),
             "unexpected errors: {:?}",
@@ -2179,7 +2572,7 @@ interface:
 
         let cfg = make_config_for_cwd(&codex_home, work_dir.path().to_path_buf()).await;
 
-        let outcome = load_skills(&cfg);
+        let outcome = load_skills_for_test(&cfg);
         assert!(
             outcome.errors.is_empty(),
             "unexpected errors: {:?}",
@@ -2193,6 +2586,8 @@ interface:
                 short_description: None,
                 interface: None,
                 dependencies: None,
+                policy: None,
+                permissions: None,
                 path: normalized(&skill_path),
                 scope: SkillScope::System,
             }]
@@ -2200,7 +2595,7 @@ interface:
     }
 
     #[tokio::test]
-    async fn skill_roots_include_admin_with_lowest_priority_on_unix() {
+    async fn skill_roots_include_admin_with_lowest_priority() {
         let codex_home = tempfile::tempdir().expect("tempdir");
         let cfg = make_config(&codex_home).await;
 
@@ -2212,9 +2607,7 @@ interface:
         if home_dir().is_some() {
             expected.insert(1, SkillScope::User);
         }
-        if cfg!(unix) {
-            expected.push(SkillScope::Admin);
-        }
+        expected.push(SkillScope::Admin);
         assert_eq!(scopes, expected);
     }
 }
