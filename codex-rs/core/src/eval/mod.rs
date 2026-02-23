@@ -2,7 +2,7 @@
 //!
 //! This module provides evaluation capabilities for benchmarking LLM agent
 //! performance using the MCP-Atlas dataset. It supports the tool-calling client
-//! architecture with four modes:
+//! architecture with multiple modes:
 //!
 //! ## Tool-Calling Client (ToolCallingRunner)
 //!
@@ -10,7 +10,8 @@
 //! - **Baseline**: Direct EXECUTE_TOOL calls with full results in context
 //! - **CodeMode**: EXECUTE_CODE with summarized results
 //! - **BaselineRlm**: EXECUTE_TOOL with RLM routing for large results
-//! - **CodeModeRlm**: EXECUTE_CODE with RLM routing for large results
+//! - **Rlm**: True RLM mode with Python REPL and sub-LLM calls
+//! - **CodeMode+RLM**: RLM REPL with Gateway tool execution via execute_code()
 //!
 //! ## Scoring
 //!

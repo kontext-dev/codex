@@ -8,7 +8,7 @@
 //! - Baseline: Direct EXECUTE_TOOL calls with full results in context
 //! - CodeMode: EXECUTE_CODE with summarized results
 //! - Baseline+RLM: EXECUTE_TOOL with RLM routing for large results
-//! - CodeMode+RLM: EXECUTE_CODE with RLM routing for large results
+//! - CodeMode+RLM: RLM REPL with Gateway tool execution via execute_code()
 //!
 //! ## Codex Client (CodexRunner)
 //! Uses the real Codex agent with full system prompts via ConversationManager.
@@ -203,6 +203,50 @@ async fn create_rlm_router(temp_path: &std::path::Path) -> anyhow::Result<Gatewa
     );
 
     Ok(router)
+}
+
+/// Create a new Gateway session: authenticate, connect MCP client, build runner.
+///
+/// Returns `(client, runner, session_created_at)`.
+/// The returned runner does NOT yet have a model set — call `.with_model()` on it.
+async fn create_gateway_session(
+    config: &kontext_dev::KontextDevConfig,
+    rlm_router: Option<Arc<GatewayResultRouter>>,
+) -> anyhow::Result<(Arc<RmcpClient>, ToolCallingRunner, Instant)> {
+    let token = gateway_auth::authenticate(config).await?;
+    let mcp_url = build_mcp_url(config, &token.access_token)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    let client = Arc::new(
+        RmcpClient::new_streamable_http_client(
+            &config.server_name,
+            &mcp_url,
+            None,
+            None,
+            None,
+            OAuthCredentialsStoreMode::File,
+        )
+        .await?,
+    );
+
+    client
+        .initialize(
+            gateway_auth::create_init_params("mcp-atlas-eval"),
+            Some(Duration::from_secs(30)),
+            gateway_auth::create_elicitation_handler(),
+        )
+        .await?;
+
+    let runner = ToolCallingRunner::new(
+        client.clone(),
+        rlm_router,
+        resolve_eval_base_url(),
+        resolve_eval_api_key(),
+    )
+    .await?;
+
+    tracing::debug!("Gateway session created");
+    Ok((client, runner, Instant::now()))
 }
 
 // =============================================================================
@@ -614,7 +658,7 @@ async fn test_claim_judge() {
     ];
 
     let start = Instant::now();
-    match judge.verify_claims(task_prompt, answer, &claims).await {
+    match judge.verify_claims(task_prompt, answer, &claims, "").await {
         Ok(result) => {
             tracing::info!("Verification completed in {:?}", start.elapsed());
             tracing::info!("Coverage: {:.2}", result.coverage);
@@ -746,7 +790,7 @@ async fn run_mcp_atlas_three_way_evaluation() {
         tracing::trace!("EVAL_DATASET_PATH=/path/to/dataset.csv            # Legacy override");
         tracing::trace!("Tool-calling client modes:");
         tracing::trace!(
-            "EVAL_TOOL_MODES=baseline,codemode  # Comma-separated (baseline,codemode,rlm,rlmcodemode,baselinerlm,codemoderlm,all)"
+            "EVAL_TOOL_MODES=baseline,codemode  # Comma-separated (baseline,codemode,rlm,rlmcodemode,baselinerlm,all)"
         );
         tracing::trace!("Codex client:");
         tracing::trace!("EVAL_USE_CODEX=true            # Enable Codex client");
@@ -786,56 +830,7 @@ async fn run_mcp_atlas_three_way_evaluation() {
 
     tracing::debug!("Loaded {} tasks from dataset", tasks.len());
 
-    // Step 2: Setup Gateway connection
-    let config = gateway_auth::build_kontext_config().expect("Config should be valid");
-    tracing::debug!("Connecting to Gateway...");
-
-    let token = match gateway_auth::authenticate(&config).await {
-        Ok(t) => t,
-        Err(e) if e.to_string().contains("onnection refused") => {
-            tracing::warn!("Skipping: gateway not running");
-            return;
-        }
-        Err(e) => panic!("Auth failed (credentials configured): {e}"),
-    };
-
-    let mcp_url = build_mcp_url(&config, &token.access_token).expect("Failed to build MCP URL");
-
-    let client = match RmcpClient::new_streamable_http_client(
-        &config.server_name,
-        &mcp_url,
-        None,
-        None,
-        None,
-        OAuthCredentialsStoreMode::File,
-    )
-    .await
-    {
-        Ok(c) => Arc::new(c),
-        Err(e) if e.to_string().contains("onnection refused") => {
-            tracing::warn!("Skipping: gateway not running");
-            return;
-        }
-        Err(e) => panic!("MCP client creation failed (credentials configured): {e}"),
-    };
-
-    if let Err(e) = client
-        .initialize(
-            gateway_auth::create_init_params("mcp-atlas-eval"),
-            Some(Duration::from_secs(30)),
-            gateway_auth::create_elicitation_handler(),
-        )
-        .await
-    {
-        if e.to_string().contains("onnection refused") {
-            tracing::warn!("Skipping: gateway not running");
-            return;
-        }
-        panic!("MCP initialization failed: {e}");
-    }
-    tracing::debug!("Gateway connected");
-
-    // Step 3: Setup RLM infrastructure
+    // Step 2: Setup RLM infrastructure (created once, reused across session refreshes)
     let temp_dir = TempDir::new().unwrap();
     let rlm_router: Option<Arc<GatewayResultRouter>> =
         match create_rlm_router(temp_dir.path()).await {
@@ -844,6 +839,23 @@ async fn run_mcp_atlas_three_way_evaluation() {
                 tracing::warn!("RLM router creation failed: {e}");
                 None
             }
+        };
+
+    // Step 3: Setup Gateway connection
+    let config = gateway_auth::build_kontext_config().expect("Config should be valid");
+    tracing::debug!("Connecting to Gateway...");
+
+    // Session refresh threshold: reconnect when 50 minutes have elapsed (token TTL is 60 min)
+    const SESSION_REFRESH_SECS: u64 = 50 * 60;
+
+    let (_client, runner, mut session_created_at) =
+        match create_gateway_session(&config, rlm_router.clone()).await {
+            Ok(v) => v,
+            Err(e) if e.to_string().contains("onnection refused") => {
+                tracing::warn!("Skipping: gateway not running");
+                return;
+            }
+            Err(e) => panic!("Gateway session setup failed: {e}"),
         };
 
     // Step 4: Setup judge
@@ -864,20 +876,7 @@ async fn run_mcp_atlas_three_way_evaluation() {
     // Step 5: Create runner and discover tools
     tracing::debug!("Discovering available Gateway tools...");
     let agent_model = std::env::var("EVAL_MODEL").unwrap_or_else(|_| "gpt-4o".to_string());
-    let runner = match ToolCallingRunner::new(
-        client.clone(),
-        rlm_router.clone(),
-        resolve_eval_base_url(),
-        resolve_eval_api_key(),
-    )
-    .await
-    {
-        Ok(r) => r.with_model(&agent_model),
-        Err(e) => {
-            tracing::error!("Failed to create runner: {e}");
-            panic!("Failed to create runner: {e}");
-        }
-    };
+    let mut runner = runner.with_model(&agent_model);
     tracing::debug!("Using model: {agent_model}");
 
     // Print discovered tools
@@ -1014,7 +1013,7 @@ async fn run_mcp_atlas_three_way_evaluation() {
     }
 
     // Step 7: Parse tool-calling modes from EVAL_TOOL_MODES (comma-separated)
-    // Options: baseline, codemode, rlm, codemoderlm. Default: baseline,codemode,rlm
+    // Options: baseline, codemode, rlm, rlmcodemode, baselinerlm. Default: baseline,codemode,rlm,rlmcodemode
     let tool_modes: Vec<ToolCallingMode> = env::var("EVAL_TOOL_MODES")
         .ok()
         .filter(|s| !s.trim().is_empty())
@@ -1024,9 +1023,8 @@ async fn run_mcp_atlas_three_way_evaluation() {
             "baseline" => Some(ToolCallingMode::Baseline),
             "codemode" | "code" => Some(ToolCallingMode::CodeMode),
             "baselinerlm" | "baseline+rlm" => Some(ToolCallingMode::BaselineRlm),
-            "codemoderlm" | "code+rlm" | "coderlm" => Some(ToolCallingMode::CodeModeRlm),
             "rlm" | "repl" => Some(ToolCallingMode::Rlm),
-            "rlmcodemode" | "rlm+codemode" | "rlm_codemode" => Some(ToolCallingMode::RlmCodeMode),
+            "rlmcodemode" | "rlm+codemode" | "rlm_codemode" | "codemoderlm" | "code+rlm" | "coderlm" | "codemode+rlm" => Some(ToolCallingMode::RlmCodeMode),
             "all" => None, // Handle "all" separately
             _ => None,
         })
@@ -1041,7 +1039,6 @@ async fn run_mcp_atlas_three_way_evaluation() {
             ToolCallingMode::Baseline,
             ToolCallingMode::CodeMode,
             ToolCallingMode::BaselineRlm,
-            ToolCallingMode::CodeModeRlm,
             ToolCallingMode::Rlm,
             ToolCallingMode::RlmCodeMode,
         ]
@@ -1079,6 +1076,7 @@ async fn run_mcp_atlas_three_way_evaluation() {
 
     // Use mode_name strings as keys for results
     let mut all_results: HashMap<String, Vec<EvalResult>> = HashMap::new();
+    let mut incremental_writer = IncrementalWriter::try_new();
 
     // Run tool-calling modes
     for mode in &tool_modes {
@@ -1088,6 +1086,22 @@ async fn run_mcp_atlas_three_way_evaluation() {
         let mut results = Vec::new();
 
         for (i, task) in eval_tasks.iter().enumerate() {
+            // Refresh the Gateway session if nearing token expiration
+            if session_created_at.elapsed() > Duration::from_secs(SESSION_REFRESH_SECS) {
+                tracing::warn!("Session nearing expiration — refreshing Gateway connection...");
+                match create_gateway_session(&config, rlm_router.clone()).await {
+                    Ok((_new_client, new_runner, created_at)) => {
+                        runner = new_runner.with_model(&agent_model);
+                        session_created_at = created_at;
+                        tracing::warn!("Gateway session refreshed successfully");
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to refresh Gateway session: {e}");
+                        tracing::error!("Remaining tasks will likely fail");
+                    }
+                }
+            }
+
             tracing::warn!(
                 "Task {}/{}: {}...",
                 i + 1,
@@ -1108,9 +1122,18 @@ async fn run_mcp_atlas_three_way_evaluation() {
                 tracing::debug!("Tools used: {}", tool_names.join(", "));
             }
 
+            // Build tool results summary for the judge (ground truth)
+            let tool_results_summary: String = task_result
+                .tool_calls
+                .iter()
+                .filter(|t| !t.result.is_empty())
+                .map(|t| format!("[{}] {}", t.name, t.result))
+                .collect::<Vec<_>>()
+                .join("\n\n");
+
             // Judge the answer
             let verification = match judge
-                .verify_claims(&task.prompt, &task_result.final_answer, &task.claims)
+                .verify_claims(&task.prompt, &task_result.final_answer, &task.claims, &tool_results_summary)
                 .await
             {
                 Ok(v) => v,
@@ -1121,15 +1144,23 @@ async fn run_mcp_atlas_three_way_evaluation() {
                         coverage: 0.0,
                         passed: false,
                         raw_response: format!("{e:#}"),
+                        verification_latency_ms: 0,
                     }
                 }
             };
 
             let status = if verification.passed { "PASS" } else { "FAIL" };
-            let latency_secs = task_result.latency_ms as f64 / 1000.0;
             tracing::warn!(
-                "  {} | coverage={:.2} | tokens={} | {:.1}s",
-                status, verification.coverage, task_result.context_tokens, latency_secs
+                "  {} | coverage={:.2} | ctx_tokens={} | total_llm_tokens={}",
+                status, verification.coverage, task_result.context_tokens, task_result.total_llm_tokens,
+            );
+            tracing::warn!(
+                "  wall={}ms llm={}ms tool={}ms setup={}ms judge={}ms",
+                task_result.latency_ms,
+                task_result.llm_time_ms,
+                task_result.tool_time_ms,
+                task_result.setup_ms,
+                verification.verification_latency_ms,
             );
             if let Some(ref err) = task_result.error {
                 tracing::error!("ERROR: {err}");
@@ -1142,6 +1173,16 @@ async fn run_mcp_atlas_three_way_evaluation() {
                 task_result,
                 verification,
             });
+
+            if let Some(ref mut writer) = incremental_writer {
+                let eval_result = results.last().unwrap();
+                if let Err(e) = writer.append_result(eval_result, &mode_name) {
+                    tracing::error!("Incremental write failed: {e}");
+                }
+                if let Err(e) = writer.write_trace(eval_result, &mode_name) {
+                    tracing::error!("Trace write failed: {e}");
+                }
+            }
         }
 
         all_results.insert(mode_name, results);
@@ -1191,9 +1232,8 @@ fn print_comparison(results: &HashMap<String, Vec<EvalResult>>) {
         "Baseline",
         "CodeMode",
         "Baseline+RLM",
-        "CodeMode+RLM",
         "RLM",
-        "RLM+CodeMode",
+        "CodeMode+RLM",
         "Codex",
     ];
 
@@ -1297,107 +1337,49 @@ fn print_comparison(results: &HashMap<String, Vec<EvalResult>>) {
 
     // Per-task comparison
     tracing::info!("## Per-Task Comparison");
-    tracing::info!("| Task | Baseline | CodeMode | Baseline+RLM | CodeMode+RLM | Codex | Winner |");
-    tracing::info!("|------|----------|----------|--------------|--------------|-------|--------|");
+    // Dynamic per-task comparison table using whatever modes are present
+    let present_modes: Vec<&str> = mode_order.iter()
+        .filter(|m| results.contains_key(**m))
+        .copied()
+        .collect();
 
-    let baseline_results = results.get("Baseline");
-    let codemode_results = results.get("CodeMode");
-    let rlm_results = results.get("Baseline+RLM");
-    let codemode_rlm_results = results.get("CodeMode+RLM");
-    let codex_results = results.get("Codex");
+    if !present_modes.is_empty() {
+        let header_cols: Vec<String> = present_modes.iter().map(|m| format!(" {} ", m)).collect();
+        tracing::info!("| Task | {} | Winner |", header_cols.join("|"));
 
-    // Get any available results for iteration
-    let any_results = baseline_results
-        .or(codemode_results)
-        .or(rlm_results)
-        .or(codemode_rlm_results)
-        .or(codex_results);
-
-    if let Some(first_results) = any_results {
+        // Get any available results for iteration
+        let first_results = results.get(present_modes[0]).unwrap();
         for (i, result) in first_results.iter().enumerate() {
-            let b_cov = baseline_results
-                .and_then(|r| r.get(i))
-                .map(|r| r.verification.coverage)
-                .unwrap_or(0.0);
-            let c_cov = codemode_results
-                .and_then(|r| r.get(i))
-                .map(|r| r.verification.coverage)
-                .unwrap_or(0.0);
-            let r_cov = rlm_results
-                .and_then(|r| r.get(i))
-                .map(|r| r.verification.coverage)
-                .unwrap_or(0.0);
-            let cr_cov = codemode_rlm_results
-                .and_then(|r| r.get(i))
-                .map(|r| r.verification.coverage)
-                .unwrap_or(0.0);
-            let codex_cov = codex_results
-                .and_then(|r| r.get(i))
-                .map(|r| r.verification.coverage)
-                .unwrap_or(0.0);
+            let coverages: Vec<f64> = present_modes.iter()
+                .map(|m| results.get(*m)
+                    .and_then(|r| r.get(i))
+                    .map(|r| r.verification.coverage)
+                    .unwrap_or(0.0))
+                .collect();
 
-            let b_status = if b_cov >= PASS_THRESHOLD {
-                "PASS"
-            } else {
-                "FAIL"
-            };
-            let c_status = if c_cov >= PASS_THRESHOLD {
-                "PASS"
-            } else {
-                "FAIL"
-            };
-            let r_status = if r_cov >= PASS_THRESHOLD {
-                "PASS"
-            } else {
-                "FAIL"
-            };
-            let cr_status = if cr_cov >= PASS_THRESHOLD {
-                "PASS"
-            } else {
-                "FAIL"
-            };
-            let codex_status = if codex_cov >= PASS_THRESHOLD {
-                "PASS"
-            } else {
-                "FAIL"
-            };
-
-            // Determine winner based on highest coverage
-            let max_cov = b_cov.max(c_cov).max(r_cov).max(cr_cov).max(codex_cov);
+            let max_cov = coverages.iter().cloned().fold(0.0f64, f64::max);
             let winner = if max_cov == 0.0 {
-                "all fail"
-            } else if codex_cov == max_cov
-                && b_cov == max_cov
-                && c_cov == max_cov
-                && r_cov == max_cov
-                && cr_cov == max_cov
-            {
-                "tie (all)"
-            } else if codex_cov == max_cov {
-                "Codex"
-            } else if b_cov == max_cov {
-                "Baseline"
-            } else if r_cov == max_cov {
-                "Baseline+RLM"
-            } else if cr_cov == max_cov {
-                "CodeMode+RLM"
+                "all fail".to_string()
+            } else if coverages.iter().all(|c| *c == max_cov) {
+                "tie (all)".to_string()
             } else {
-                "CodeMode"
+                present_modes.iter().zip(coverages.iter())
+                    .find(|(_, c)| **c == max_cov)
+                    .map(|(m, _)| m.to_string())
+                    .unwrap_or_else(|| "?".to_string())
             };
+
+            let cols: Vec<String> = coverages.iter()
+                .map(|c| {
+                    let status = if *c >= PASS_THRESHOLD { "PASS" } else { "FAIL" };
+                    format!(" {:.2} {} ", c, status)
+                })
+                .collect();
 
             tracing::info!(
-                "| {} | {:.2} {} | {:.2} {} | {:.2} {} | {:.2} {} | {:.2} {} | {} |",
+                "| {} | {} | {} |",
                 &result.task_id[..result.task_id.len().min(15)],
-                b_cov,
-                b_status,
-                c_cov,
-                c_status,
-                r_cov,
-                r_status,
-                cr_cov,
-                cr_status,
-                codex_cov,
-                codex_status,
+                cols.join("|"),
                 winner
             );
         }
@@ -1405,13 +1387,181 @@ fn print_comparison(results: &HashMap<String, Vec<EvalResult>>) {
 
     tracing::info!("Key Insight");
     tracing::info!("RLM modes aim to achieve significant token reduction while maintaining quality.");
-    tracing::info!("CodeMode+RLM combines code generation with RLM routing for best of both worlds.");
+    tracing::info!("CodeMode+RLM combines RLM REPL with Gateway tool execution for best of both worlds.");
     tracing::info!("Codex client uses the full Codex system prompts and agent loop.");
+}
+
+/// Convert an EvalResult to a JSON value for JSONL / results_full.json.
+fn eval_result_to_json(r: &EvalResult, mode: &str) -> serde_json::Value {
+    let claim_scores: Vec<serde_json::Value> = r
+        .verification
+        .scores
+        .iter()
+        .map(|(claim, score)| {
+            let verdict = match score {
+                ClaimScore::Fulfilled => "FULFILLED",
+                ClaimScore::PartiallyFulfilled => "PARTIAL",
+                ClaimScore::NotFulfilled => "NOT_FULFILLED",
+            };
+            json!({
+                "claim": claim,
+                "verdict": verdict,
+                "score": score.score(),
+            })
+        })
+        .collect();
+
+    let tool_calls_json: Vec<serde_json::Value> = r
+        .task_result
+        .tool_calls
+        .iter()
+        .enumerate()
+        .map(|(i, tc)| {
+            json!({
+                "index": i,
+                "name": tc.name,
+                "arguments": tc.arguments,
+                "result": tc.result,
+                "result_tokens": tc.result_tokens,
+                "stored_in_corpus": tc.stored_in_corpus,
+                "latency_ms": tc.latency_ms,
+            })
+        })
+        .collect();
+
+    json!({
+        "task_id": r.task_id,
+        "mode": mode,
+        "prompt": r.prompt,
+        "claims": r.claims,
+        "task_result": {
+            "task_id": r.task_result.task_id,
+            "mode_name": r.task_result.mode_name,
+            "context_tokens": r.task_result.context_tokens,
+            "total_llm_tokens": r.task_result.total_llm_tokens,
+            "latency_ms": r.task_result.latency_ms,
+            "llm_time_ms": r.task_result.llm_time_ms,
+            "tool_time_ms": r.task_result.tool_time_ms,
+            "setup_ms": r.task_result.setup_ms,
+            "llm_total_calls": r.task_result.llm_total_calls,
+            "llm_input_tokens": r.task_result.llm_input_tokens,
+            "llm_output_tokens": r.task_result.llm_output_tokens,
+            "error": r.task_result.error,
+            "final_answer": r.task_result.final_answer,
+            "num_tool_calls": r.task_result.tool_calls.len(),
+            "tool_calls": tool_calls_json,
+        },
+        "verification": {
+            "coverage": r.verification.coverage,
+            "passed": r.verification.passed,
+            "verification_latency_ms": r.verification.verification_latency_ms,
+            "claim_scores": claim_scores,
+        },
+    })
+}
+
+/// Convert an EvalResult to a trace JSON (same format as collect_results.py extract_traces).
+fn eval_result_to_trace(r: &EvalResult, mode: &str) -> serde_json::Value {
+    let tool_calls_json: Vec<serde_json::Value> = r
+        .task_result
+        .tool_calls
+        .iter()
+        .enumerate()
+        .map(|(i, tc)| {
+            json!({
+                "index": i,
+                "name": tc.name,
+                "arguments": tc.arguments,
+                "result": tc.result,
+                "result_tokens": tc.result_tokens,
+                "stored_in_corpus": tc.stored_in_corpus,
+                "latency_ms": tc.latency_ms,
+            })
+        })
+        .collect();
+
+    json!({
+        "task_id": r.task_id,
+        "mode": mode,
+        "prompt": r.prompt,
+        "claims": r.claims,
+        "final_answer": r.task_result.final_answer,
+        "context_tokens": r.task_result.context_tokens,
+        "total_llm_tokens": r.task_result.total_llm_tokens,
+        "latency_ms": r.task_result.latency_ms,
+        "error": r.task_result.error,
+        "tool_calls": tool_calls_json,
+        "verification": {
+            "coverage": r.verification.coverage,
+            "passed": r.verification.passed,
+            "verification_latency_ms": r.verification.verification_latency_ms,
+            "claim_scores": r.verification.scores.iter().map(|(claim, score)| {
+                let verdict = match score {
+                    ClaimScore::Fulfilled => "FULFILLED",
+                    ClaimScore::PartiallyFulfilled => "PARTIAL",
+                    ClaimScore::NotFulfilled => "NOT_FULFILLED",
+                };
+                json!({
+                    "claim": claim,
+                    "verdict": verdict,
+                    "score": score.score(),
+                })
+            }).collect::<Vec<_>>(),
+        },
+    })
+}
+
+/// Writes results incrementally as each task completes.
+/// Falls back to no-op if EVAL_OUTPUT_DIR is not set.
+struct IncrementalWriter {
+    output_dir: PathBuf,
+    jsonl_file: std::io::BufWriter<std::fs::File>,
+}
+
+impl IncrementalWriter {
+    /// Creates a new writer if EVAL_OUTPUT_DIR is set.
+    fn try_new() -> Option<Self> {
+        let output_dir = PathBuf::from(env::var("EVAL_OUTPUT_DIR").ok()?);
+        if let Err(e) = std::fs::create_dir_all(output_dir.join("logs")) {
+            tracing::warn!("Failed to create logs dir: {e}");
+        }
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(output_dir.join("results.jsonl"))
+            .ok()?;
+        tracing::info!("Incremental writer: {:?}/results.jsonl", output_dir);
+        Some(Self {
+            output_dir,
+            jsonl_file: std::io::BufWriter::new(file),
+        })
+    }
+
+    /// Appends one result as a JSONL line.
+    fn append_result(&mut self, result: &EvalResult, mode: &str) -> std::io::Result<()> {
+        let value = eval_result_to_json(result, mode);
+        let line = serde_json::to_string(&value)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        writeln!(self.jsonl_file, "{}", line)?;
+        self.jsonl_file.flush()
+    }
+
+    /// Writes a trace file for one result.
+    fn write_trace(&self, result: &EvalResult, mode: &str) -> std::io::Result<()> {
+        let safe_mode = mode.replace('+', "_plus_");
+        let filename = format!("{}_{}.json", result.task_id, safe_mode);
+        let trace = eval_result_to_trace(result, mode);
+        let path = self.output_dir.join("logs").join(filename);
+        let content = serde_json::to_string_pretty(&trace)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        std::fs::write(path, content)
+    }
 }
 
 /// Save evaluation results to a JSON file compatible with `scripts/plot_results.py`.
 ///
-/// The file is written to `codex-rs/mcp-atlas/services/mcp_eval/results/` with a
+/// When EVAL_OUTPUT_DIR is set, writes `results_full.json` into that directory.
+/// Otherwise writes to `codex-rs/mcp-atlas/services/mcp_eval/results/` with a
 /// Unix-timestamp suffix so successive runs never collide.
 fn save_results(
     results: &HashMap<String, Vec<EvalResult>>,
@@ -1422,8 +1572,12 @@ fn save_results(
     use_codex: bool,
     eval_limit: usize,
 ) {
-    let results_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
-        .join("../mcp-atlas/services/mcp_eval/results");
+    let results_dir = if let Ok(dir) = env::var("EVAL_OUTPUT_DIR") {
+        PathBuf::from(dir)
+    } else {
+        PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()))
+            .join("../mcp-atlas/services/mcp_eval/results")
+    };
 
     if let Err(e) = std::fs::create_dir_all(&results_dir) {
         tracing::warn!("Could not create results dir {:?}: {}", results_dir, e);
@@ -1439,9 +1593,8 @@ fn save_results(
         "Baseline",
         "CodeMode",
         "Baseline+RLM",
-        "CodeMode+RLM",
         "RLM",
-        "RLM+CodeMode",
+        "CodeMode+RLM",
         "Codex",
     ];
 
@@ -1461,6 +1614,11 @@ fn save_results(
                 .map(|r| r.task_result.context_tokens)
                 .sum::<i64>()
                 / total as i64;
+            let avg_total_llm_tokens: i64 = mode_results
+                .iter()
+                .map(|r| r.task_result.total_llm_tokens)
+                .sum::<i64>()
+                / total as i64;
             let avg_latency_ms: u64 = mode_results
                 .iter()
                 .map(|r| r.task_result.latency_ms)
@@ -1473,6 +1631,7 @@ fn save_results(
                 "pass_rate": pass_count as f64 / total as f64,
                 "avg_coverage": avg_coverage,
                 "avg_context_tokens": avg_tokens,
+                "avg_total_llm_tokens": avg_total_llm_tokens,
                 "avg_latency_ms": avg_latency_ms,
             });
 
@@ -1510,6 +1669,7 @@ fn save_results(
                                 "result": tc.result,
                                 "result_tokens": tc.result_tokens,
                                 "stored_in_corpus": tc.stored_in_corpus,
+                                "latency_ms": tc.latency_ms,
                             })
                         })
                         .collect();
@@ -1522,7 +1682,14 @@ fn save_results(
                             "task_id": r.task_result.task_id,
                             "mode_name": r.task_result.mode_name,
                             "context_tokens": r.task_result.context_tokens,
+                            "total_llm_tokens": r.task_result.total_llm_tokens,
                             "latency_ms": r.task_result.latency_ms,
+                            "llm_time_ms": r.task_result.llm_time_ms,
+                            "tool_time_ms": r.task_result.tool_time_ms,
+                            "setup_ms": r.task_result.setup_ms,
+                            "llm_total_calls": r.task_result.llm_total_calls,
+                            "llm_input_tokens": r.task_result.llm_input_tokens,
+                            "llm_output_tokens": r.task_result.llm_output_tokens,
                             "error": r.task_result.error,
                             "final_answer": r.task_result.final_answer,
                             "num_tool_calls": r.task_result.tool_calls.len(),
@@ -1531,6 +1698,7 @@ fn save_results(
                         "verification": {
                             "coverage": r.verification.coverage,
                             "passed": r.verification.passed,
+                            "verification_latency_ms": r.verification.verification_latency_ms,
                             "claim_scores": claim_scores,
                         },
                     })
@@ -1555,7 +1723,11 @@ fn save_results(
         "results": results_json,
     });
 
-    let path = results_dir.join(format!("mcp_atlas_eval_{ts}.json"));
+    let path = if env::var("EVAL_OUTPUT_DIR").is_ok() {
+        results_dir.join("results_full.json")
+    } else {
+        results_dir.join(format!("mcp_atlas_eval_{ts}.json"))
+    };
     match std::fs::File::create(&path) {
         Ok(mut f) => {
             let pretty =
@@ -2173,9 +2345,16 @@ async fn run_verbose_debug_evaluation() {
         tracing::trace!("CLAIM VERIFICATION");
         tracing::debug!("Sending to judge...");
 
+        let tool_results_summary: String = task_result
+            .tool_calls
+            .iter()
+            .filter(|t| !t.result.is_empty())
+            .map(|t| format!("[{}] {}", t.name, t.result))
+            .collect::<Vec<_>>()
+            .join("\n\n");
         let verify_start = Instant::now();
         let verification = match judge
-            .verify_claims(&task.prompt, &task_result.final_answer, &task.claims)
+            .verify_claims(&task.prompt, &task_result.final_answer, &task.claims, &tool_results_summary)
             .await
         {
             Ok(v) => {
@@ -2189,6 +2368,7 @@ async fn run_verbose_debug_evaluation() {
                     coverage: 0.0,
                     passed: false,
                     raw_response: e.to_string(),
+                    verification_latency_ms: 0,
                 }
             }
         };

@@ -180,7 +180,18 @@ pub fn generate_codemode_js_preamble(tools: &[GatewayTool]) -> String {
   var c2 = raw.content && raw.content[0];
   var inner = c2 && c2.text;
   if (typeof inner === 'string') {
-    try { return JSON.parse(inner); } catch(e) { return inner; }
+    try { raw = JSON.parse(inner); } catch(e) { return inner; }
+  }
+  if (raw && typeof raw === 'object' && !Array.isArray(raw) && raw.error && typeof raw.error === 'string') {
+    throw new Error(raw.message || raw.error);
+  }
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    var arrays = [];
+    var keys = Object.keys(raw);
+    for (var i = 0; i < keys.length; i++) {
+      if (Array.isArray(raw[keys[i]])) arrays.push(keys[i]);
+    }
+    if (arrays.length === 1) return raw[arrays[0]];
   }
   return raw;
 }"#;
@@ -195,8 +206,8 @@ pub fn generate_codemode_js_preamble(tools: &[GatewayTool]) -> String {
             }
             let id_json = serde_json::to_string(&t.id).unwrap_or_else(|_| format!("\"{}\"", t.id));
             format!(
-                "  {}: async function(args) {{ return __extractResult(await tools.EXECUTE_TOOL({{ tool_id: {}, tool_arguments: args || {{}} }})); }}",
-                safe_name, id_json
+                "  {safe}: async function(args) {{ try {{ var r = __extractResult(await tools.EXECUTE_TOOL({{ tool_id: {id}, tool_arguments: args || {{}} }})); if (r == null) throw new Error(\"returned null/empty\"); return r; }} catch(e) {{ throw new Error(\"{safe}: \" + (e && e.message || e)); }} }}",
+                safe = safe_name, id = id_json
             )
         })
         .collect();
@@ -449,6 +460,10 @@ mod tests {
         assert!(output.contains("Linear_list_projects: async function(args)"));
         assert!(output.contains("tool_id: \"Linear:list_projects\""));
         assert!(output.contains("__extractResult(await tools.EXECUTE_TOOL("));
+        // Error handling: proxy wraps in try/catch with tool name
+        assert!(output.contains("\"Linear_list_projects: \""));
+        // Null guard
+        assert!(output.contains("if (r == null) throw new Error"));
     }
 
     #[test]

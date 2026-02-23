@@ -1,9 +1,11 @@
-//! Three-Mode Task Runner
+//! Multi-Mode Task Runner
 //!
-//! Executes MCP-Atlas tasks in three different modes:
+//! Executes MCP-Atlas tasks in different modes:
 //! - Baseline: Direct tool calls with full results in context
 //! - CodeMode: Tool calls via EXECUTE_CODE with summarized results
 //! - BaselineRlm: Tool calls with RLM routing for large results
+//! - Rlm: True RLM mode with Python REPL and sub-LLM calls
+//! - CodeMode+RLM: RLM REPL with Gateway tool execution via execute_code()
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -59,11 +61,9 @@ pub enum ToolCallingMode {
     CodeMode,
     /// EXECUTE_TOOL with RLM routing for large results
     BaselineRlm,
-    /// EXECUTE_CODE with RLM routing for large results (hybrid mode)
-    CodeModeRlm,
     /// True RLM mode: Python REPL with iterative LLM loop and sub-LLM calls
     Rlm,
-    /// RLM + CodeMode: Python REPL with Gateway tool execution via execute_code()
+    /// CodeMode+RLM: Python REPL with Gateway tool execution via execute_code()
     RlmCodeMode,
 }
 
@@ -73,9 +73,8 @@ impl std::fmt::Display for ToolCallingMode {
             ToolCallingMode::Baseline => write!(f, "Baseline"),
             ToolCallingMode::CodeMode => write!(f, "CodeMode"),
             ToolCallingMode::BaselineRlm => write!(f, "Baseline+RLM"),
-            ToolCallingMode::CodeModeRlm => write!(f, "CodeMode+RLM"),
             ToolCallingMode::Rlm => write!(f, "RLM"),
-            ToolCallingMode::RlmCodeMode => write!(f, "RLM+CodeMode"),
+            ToolCallingMode::RlmCodeMode => write!(f, "CodeMode+RLM"),
         }
     }
 }
@@ -91,10 +90,24 @@ pub struct TaskResult {
     pub tool_calls: Vec<ToolCallRecord>,
     /// Execution mode name (e.g., "Baseline", "CodeMode", "Codex")
     pub mode_name: String,
-    /// Total context tokens used
+    /// Total context tokens used (last root LLM turn's usage.total_tokens)
     pub context_tokens: i64,
+    /// Total LLM tokens across all root LLM turns + sub-LM handler tokens
+    pub total_llm_tokens: i64,
     /// Execution latency in milliseconds
     pub latency_ms: u64,
+    /// Sum of all LLM inference call durations in milliseconds
+    pub llm_time_ms: u64,
+    /// Sum of all tool execution call durations in milliseconds
+    pub tool_time_ms: u64,
+    /// RLM setup overhead in milliseconds (0 for non-RLM modes)
+    pub setup_ms: u64,
+    /// Total number of LLM API calls made
+    pub llm_total_calls: u32,
+    /// Total LLM input tokens across all calls
+    pub llm_input_tokens: u64,
+    /// Total LLM output tokens across all calls
+    pub llm_output_tokens: u64,
     /// Error if task failed
     pub error: Option<String>,
 }
@@ -112,6 +125,8 @@ pub struct ToolCallRecord {
     pub result_tokens: i64,
     /// Whether result was stored in corpus (RLM mode)
     pub stored_in_corpus: bool,
+    /// Wall-clock latency of this tool call in milliseconds
+    pub latency_ms: u64,
 }
 
 /// Tool information discovered from Gateway
@@ -283,7 +298,6 @@ impl ToolCallingRunner {
         // Dispatch to mode-specific runners
         match mode {
             ToolCallingMode::CodeMode => return self.run_task_codemode(task).await,
-            ToolCallingMode::CodeModeRlm => return self.run_task_codemode_rlm(task).await,
             ToolCallingMode::Rlm => return self.run_task_rlm(task).await,
             ToolCallingMode::RlmCodeMode => return self.run_task_rlm_codemode(task).await,
             _ => {} // Baseline and BaselineRlm continue below
@@ -293,6 +307,12 @@ impl ToolCallingRunner {
         let start = Instant::now();
         let mut tool_calls = Vec::new();
         let mut total_context_tokens: i64 = 0;
+        let mut total_llm_tokens: i64 = 0;
+        let mut llm_time_ms: u64 = 0;
+        let mut tool_time_ms: u64 = 0;
+        let mut llm_total_calls: u32 = 0;
+        let mut llm_input_tokens: u64 = 0;
+        let mut llm_output_tokens: u64 = 0;
 
         // Build tool definitions - include RLM tools for BaselineRlm mode
         let tools = if mode == ToolCallingMode::BaselineRlm {
@@ -376,16 +396,9 @@ Important:
             ),
         ];
 
-        // Estimate initial context
-        let system_tokens = estimate_tokens(&system_prompt);
-        let prompt_tokens = estimate_tokens(&task.prompt);
-        let tool_def_tokens = estimate_tokens(&serde_json::to_string(&tools).unwrap_or_default());
-        total_context_tokens += system_tokens;
-        total_context_tokens += prompt_tokens;
-
         tracing::trace!(
-            "[TOKEN DEBUG] Task: {}, Mode: {:?}, System: {}, Prompt: {}, ToolDefs: {}",
-            task.task_id, mode, system_tokens, prompt_tokens, tool_def_tokens
+            "[TOKEN DEBUG] Task: {}, Mode: {:?}",
+            task.task_id, mode
         );
 
         // Agent loop
@@ -406,13 +419,21 @@ Important:
                         tool_calls,
                         mode_name: mode.to_string(),
                         context_tokens: total_context_tokens,
+                        total_llm_tokens,
                         latency_ms: start.elapsed().as_millis() as u64,
+                        llm_time_ms,
+                        tool_time_ms,
+                        setup_ms: 0,
+                        llm_total_calls,
+                        llm_input_tokens,
+                        llm_output_tokens,
                         error: Some(format!("Failed to build request: {e}")),
                     };
                 }
             };
 
             // Call the agent LLM
+            let llm_t = Instant::now();
             let response = match self.llm_client.chat().create(request).await {
                 Ok(r) => r,
                 Err(e) => {
@@ -422,15 +443,27 @@ Important:
                         tool_calls,
                         mode_name: mode.to_string(),
                         context_tokens: total_context_tokens,
+                        total_llm_tokens,
                         latency_ms: start.elapsed().as_millis() as u64,
+                        llm_time_ms,
+                        tool_time_ms,
+                        setup_ms: 0,
+                        llm_total_calls,
+                        llm_input_tokens,
+                        llm_output_tokens,
                         error: Some(format!("Agent LLM call failed: {e}")),
                     };
                 }
             };
+            llm_time_ms += llm_t.elapsed().as_millis() as u64;
+            llm_total_calls += 1;
 
             // Track token usage
             if let Some(usage) = &response.usage {
                 total_context_tokens = usage.total_tokens as i64;
+                total_llm_tokens += usage.total_tokens as i64;
+                llm_input_tokens += usage.prompt_tokens as u64;
+                llm_output_tokens += usage.completion_tokens as u64;
             }
 
             let choice = match response.choices.first() {
@@ -442,7 +475,14 @@ Important:
                         tool_calls,
                         mode_name: mode.to_string(),
                         context_tokens: total_context_tokens,
+                        total_llm_tokens,
                         latency_ms: start.elapsed().as_millis() as u64,
+                        llm_time_ms,
+                        tool_time_ms,
+                        setup_ms: 0,
+                        llm_total_calls,
+                        llm_input_tokens,
+                        llm_output_tokens,
                         error: Some("No response from agent".to_string()),
                     };
                 }
@@ -456,7 +496,10 @@ Important:
                 let mut tool_results = Vec::new();
 
                 for call in calls {
+                    let tool_t = Instant::now();
                     let result = self.execute_tool_call(call, mode, &task.task_id).await;
+                    let tool_latency = tool_t.elapsed().as_millis() as u64;
+                    tool_time_ms += tool_latency;
 
                     // Track the call
                     let record = ToolCallRecord {
@@ -466,20 +509,15 @@ Important:
                         result: result.content.clone(),
                         result_tokens: result.tokens,
                         stored_in_corpus: result.stored_in_corpus,
+                        latency_ms: tool_latency,
                     };
                     tool_calls.push(record);
 
-                    // Add to context unless stored in corpus
-                    if !result.stored_in_corpus {
-                        total_context_tokens += result.tokens;
-                    }
-
                     tracing::trace!(
-                        "[TOKEN DEBUG] Tool: {}, ResultTokens: {}, StoredInCorpus: {}, TotalNow: {}",
+                        "[TOKEN DEBUG] Tool: {}, ResultTokens: {}, StoredInCorpus: {}",
                         call.function.name,
                         result.tokens,
                         result.stored_in_corpus,
-                        total_context_tokens
                     );
 
                     tool_results.push((call.id.clone(), result.content));
@@ -516,7 +554,14 @@ Important:
                 tool_calls,
                 mode_name: mode.to_string(),
                 context_tokens: total_context_tokens,
+                total_llm_tokens,
                 latency_ms: start.elapsed().as_millis() as u64,
+                llm_time_ms,
+                tool_time_ms,
+                setup_ms: 0,
+                llm_total_calls,
+                llm_input_tokens,
+                llm_output_tokens,
                 error: None,
             };
         }
@@ -531,7 +576,14 @@ Important:
             tool_calls,
             mode_name: mode.to_string(),
             context_tokens: total_context_tokens,
+            total_llm_tokens,
             latency_ms: start.elapsed().as_millis() as u64,
+            llm_time_ms,
+            tool_time_ms,
+            setup_ms: 0,
+            llm_total_calls,
+            llm_input_tokens,
+            llm_output_tokens,
             error: Some("Max turns reached".to_string()),
         }
     }
@@ -567,7 +619,6 @@ Important:
     }
 
     /// Build only the RLM corpus access tool definitions (without Gateway tools)
-    /// Used by CodeModeRlm where Gateway tools are accessed via code, not function calls
     fn build_rlm_tool_definitions(&self) -> Vec<ChatCompletionTool> {
         let mut tools = Vec::new();
 
@@ -794,9 +845,7 @@ Important:
                 // Rlm is dispatched to run_task_rlm() directly and does not use tool calls
                 self.execute_baseline(&tool_id, &args).await
             }
-            ToolCallingMode::BaselineRlm | ToolCallingMode::CodeModeRlm => {
-                // CodeModeRlm is dispatched to run_task_codemode_rlm() directly,
-                // but handle it here for completeness (same RLM routing behavior)
+            ToolCallingMode::BaselineRlm => {
                 self.execute_with_rlm(&tool_id, &args, task_id, &call.id)
                     .await
             }
@@ -989,11 +1038,13 @@ async () => {{
 - Write an async arrow function: `async () => {{ ... }}`. Do NOT write bare statements.
 - Call tools via `codemode.<ToolName>({{ ... }})` — NOT via `tools.EXECUTE_TOOL`.
 - `codemode.*` calls return clean, unwrapped data. List endpoints return arrays directly — use `.map()`, `.filter()`, `.length` on the result immediately. Do NOT access `.nodes`, `.items`, or other wrapper properties.
+- `codemode.*` calls throw on errors with a descriptive message. If a call fails, the error will tell you which tool and what went wrong.
 - Chain ALL tool calls in one code block. Do NOT make one call per block.
 - Extract only the fields you need and return a compact summary. Do NOT return raw tool results.
 - When the task asks for a count, compute it in code and include it in your return value.
 - Do not ask follow-up questions. Answer using only the data from tool calls.
 - Write plain JavaScript only. Do NOT use TypeScript syntax (no type annotations, no `as` casts, no interfaces).
+- When accessing nested properties (e.g. `item.status.name`), guard against undefined: use `item.status && item.status.name` or optional chaining `item?.status?.name`.
 
 # Workflow
 
@@ -1001,60 +1052,6 @@ async () => {{
 2. Read the compact result and provide a plain text answer to the task
 
 Your final answer must be plain text that directly answers the task question, not a code block."#
-        )
-    }
-
-    /// Build system prompt for CodeModeRlm - combines CodeMode code generation with RLM corpus access
-    fn build_codemode_rlm_system_prompt(&self) -> String {
-        let generated_types =
-            super::codemode_types::generate_codemode_types(&self.gateway_tools);
-
-        // Get a sample tool name for the example
-        let sample_name = self
-            .gateway_tools
-            .iter()
-            .find(|t| t.name == "list_projects" || t.name.contains("list"))
-            .map(|t| t.prefixed_name())
-            .unwrap_or_else(|| "Linear_list_projects".to_string());
-
-        format!(
-            r#"You are an AI assistant. Complete tasks by writing JavaScript code.
-
-# Available Gateway Tools (type reference)
-
-{generated_types}
-
-# How to Call Gateway Tools
-
-Write a SINGLE ```javascript code block containing an async arrow function that calls the `codemode` object. `codemode.*` calls return clean, unwrapped data — if the upstream API returns a single list, you get the array directly.
-
-```javascript
-async () => {{
-  const items = await codemode.{sample_name}({{}});
-  // items is typically an array — map directly
-  const names = items.map(i => i.name ?? i.title ?? i.key);
-  return {{ count: names.length, names }};
-}}
-```
-
-# Rules
-
-- Write an async arrow function: `async () => {{ ... }}`. Do NOT write bare statements.
-- Call tools via `codemode.<ToolName>({{ ... }})` — NOT via `tools.EXECUTE_TOOL`.
-- `codemode.*` calls return clean, unwrapped data. List endpoints return arrays directly — use `.map()`, `.filter()`, `.length` on the result immediately. Do NOT access `.nodes`, `.items`, or other wrapper properties.
-- Chain ALL tool calls in one code block. Do NOT make one call per block.
-- Extract only the fields you need and return a compact summary. Do NOT return raw tool results.
-- When the task asks for a count, compute it in code and include it in your return value.
-- Do not ask follow-up questions. Answer using only the data from tool calls.
-- Write plain JavaScript only. Do NOT use TypeScript syntax (no type annotations, no `as` casts, no interfaces).
-
-# Workflow
-
-1. Write ONE ```javascript code block with an async arrow function that calls all needed tools via `codemode.*` and returns extracted data
-2. Read the compact result and provide a plain text answer to the task
-
-Your final answer must be plain text that directly answers the task question, not a code block.
-In rare cases a tool result may be summarized automatically. If so, you can use rlm_search, rlm_get_chunk, or rlm_list_chunks to retrieve the full data."#
         )
     }
 
@@ -1081,80 +1078,6 @@ In rare cases a tool result may be summarized automatically. If so, you can use 
         }
     }
 
-    /// Execute code via EXECUTE_CODE and route result through RLM.
-    async fn execute_code_with_rlm(
-        &self,
-        code: &str,
-        task_id: &str,
-        call_index: usize,
-    ) -> ToolCallResult {
-        let code = unwrap_async_arrow(code);
-        let result = match self
-            .mcp_client
-            .call_tool(
-                "EXECUTE_CODE".to_string(),
-                Some(json!({ "code": code })),
-                Some(Duration::from_secs(120)),
-            )
-            .await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                return ToolCallResult {
-                    content: format!("Code execution failed: {e}"),
-                    tokens: 10,
-                    stored_in_corpus: false,
-                };
-            }
-        };
-
-        let content = extract_execute_code_result(&result);
-
-        // Route through RLM if available
-        if let Some(ref router) = self.rlm_router {
-            let evidence_id = format!("{task_id}_code_{call_index}");
-            match router
-                .process_result(&evidence_id, "kontext-dev", "EXECUTE_CODE", &content)
-                .await
-            {
-                Ok(ProcessedResult::StoredInCorpus { summary, .. }) => {
-                    // Large result stored - return summary
-                    ToolCallResult {
-                        content: summary,
-                        tokens: 100, // Summary is small
-                        stored_in_corpus: true,
-                    }
-                }
-                Ok(ProcessedResult::PassThrough { content }) => {
-                    // Small result passed through
-                    let tokens = estimate_tokens(&content);
-                    ToolCallResult {
-                        content,
-                        tokens,
-                        stored_in_corpus: false,
-                    }
-                }
-                Err(_) => {
-                    // RLM error - fall back to full content
-                    let tokens = estimate_tokens(&content);
-                    ToolCallResult {
-                        content,
-                        tokens,
-                        stored_in_corpus: false,
-                    }
-                }
-            }
-        } else {
-            // No RLM - return full content
-            let tokens = estimate_tokens(&content);
-            ToolCallResult {
-                content,
-                tokens,
-                stored_in_corpus: false,
-            }
-        }
-    }
-
     /// Execute a task in CodeMode - LLM generates code, we execute it
     pub async fn run_task_codemode(&self, task: &McpAtlasTask) -> TaskResult {
         let start = Instant::now();
@@ -1166,7 +1089,13 @@ In rare cases a tool result may be summarized automatically. If so, you can use 
             system_prompt.contains("declare const codemode"),
         );
         let mut total_context_tokens: i64 = 0;
+        let mut total_llm_tokens: i64 = 0;
         let mut tool_calls = Vec::new();
+        let mut llm_time_ms: u64 = 0;
+        let mut tool_time_ms: u64 = 0;
+        let mut llm_total_calls: u32 = 0;
+        let mut llm_input_tokens: u64 = 0;
+        let mut llm_output_tokens: u64 = 0;
 
         // Build initial messages - NO tool definitions, we want code generation
         let mut messages: Vec<ChatCompletionRequestMessage> = vec![
@@ -1183,9 +1112,6 @@ In rare cases a tool result may be summarized automatically. If so, you can use 
                     .unwrap(),
             ),
         ];
-
-        total_context_tokens += estimate_tokens(&system_prompt);
-        total_context_tokens += estimate_tokens(&task.prompt);
 
         // Agent loop
         for turn in 0..self.max_turns {
@@ -1205,31 +1131,80 @@ In rare cases a tool result may be summarized automatically. If so, you can use 
                         tool_calls,
                         mode_name: "CodeMode".to_string(),
                         context_tokens: total_context_tokens,
+                        total_llm_tokens,
                         latency_ms: start.elapsed().as_millis() as u64,
+                        llm_time_ms,
+                        tool_time_ms,
+                        setup_ms: 0,
+                        llm_total_calls,
+                        llm_input_tokens,
+                        llm_output_tokens,
                         error: Some(format!("Failed to build request: {e}")),
                     };
                 }
             };
 
-            // Call the agent LLM
-            let response = match self.llm_client.chat().create(request).await {
-                Ok(r) => r,
-                Err(e) => {
-                    return TaskResult {
-                        task_id: task.task_id.clone(),
-                        final_answer: String::new(),
-                        tool_calls,
-                        mode_name: "CodeMode".to_string(),
-                        context_tokens: total_context_tokens,
-                        latency_ms: start.elapsed().as_millis() as u64,
-                        error: Some(format!("Agent LLM call failed: {e}")),
-                    };
+            // Call the agent LLM (with retry for transient errors / empty completions)
+            let llm_t = Instant::now();
+            let response = {
+                let mut last_err = String::new();
+                let mut resp = None;
+                for attempt in 0..3u32 {
+                    if attempt > 0 {
+                        let delay = Duration::from_millis(1000 * 2u64.pow(attempt - 1));
+                        tokio::time::sleep(delay).await;
+                        tracing::warn!("  [codemode] retrying LLM call (attempt {}/3)...", attempt + 1);
+                    }
+                    match self.llm_client.chat().create(request.clone()).await {
+                        Ok(r) => {
+                            let has_content = r.choices.first()
+                                .and_then(|c| c.message.content.as_ref())
+                                .map(|s| !s.is_empty())
+                                .unwrap_or(false);
+                            if has_content || attempt == 2 {
+                                resp = Some(r);
+                                break;
+                            }
+                            tracing::warn!("  [codemode] empty completion on attempt {}", attempt + 1);
+                            resp = Some(r);
+                        }
+                        Err(e) => {
+                            last_err = format!("Agent LLM call failed: {e}");
+                            tracing::warn!("  [codemode] {last_err} (attempt {})", attempt + 1);
+                        }
+                    }
+                }
+                match resp {
+                    Some(r) => r,
+                    None => {
+                        return TaskResult {
+                            task_id: task.task_id.clone(),
+                            final_answer: String::new(),
+                            tool_calls,
+                            mode_name: "CodeMode".to_string(),
+                            context_tokens: total_context_tokens,
+                            total_llm_tokens,
+                            latency_ms: start.elapsed().as_millis() as u64,
+                            llm_time_ms,
+                            tool_time_ms,
+                            setup_ms: 0,
+                            llm_total_calls,
+                            llm_input_tokens,
+                            llm_output_tokens,
+                            error: Some(last_err),
+                        };
+                    }
                 }
             };
+            llm_time_ms += llm_t.elapsed().as_millis() as u64;
+            llm_total_calls += 1;
 
             // Track token usage
             if let Some(usage) = &response.usage {
                 total_context_tokens = usage.total_tokens as i64;
+                total_llm_tokens += usage.total_tokens as i64;
+                llm_input_tokens += usage.prompt_tokens as u64;
+                llm_output_tokens += usage.completion_tokens as u64;
             }
 
             let choice = match response.choices.first() {
@@ -1241,7 +1216,14 @@ In rare cases a tool result may be summarized automatically. If so, you can use 
                         tool_calls,
                         mode_name: "CodeMode".to_string(),
                         context_tokens: total_context_tokens,
+                        total_llm_tokens,
                         latency_ms: start.elapsed().as_millis() as u64,
+                        llm_time_ms,
+                        tool_time_ms,
+                        setup_ms: 0,
+                        llm_total_calls,
+                        llm_input_tokens,
+                        llm_output_tokens,
                         error: Some("No response from agent".to_string()),
                     };
                 }
@@ -1264,7 +1246,10 @@ In rare cases a tool result may be summarized automatically. If so, you can use 
                     &code[..code.len().min(500)],
                 );
                 // Execute the code via EXECUTE_CODE
+                let tool_t = Instant::now();
                 let exec_result = self.execute_code(&code).await;
+                let tool_latency = tool_t.elapsed().as_millis() as u64;
+                tool_time_ms += tool_latency;
                 tracing::warn!(
                     "  [codemode] EXECUTE_CODE returned ({} chars)",
                     exec_result.len(),
@@ -1276,9 +1261,8 @@ In rare cases a tool result may be summarized automatically. If so, you can use 
                     result: exec_result.clone(),
                     result_tokens: estimate_tokens(&exec_result),
                     stored_in_corpus: false,
+                    latency_ms: tool_latency,
                 });
-
-                total_context_tokens += estimate_tokens(&exec_result);
 
                 // Add assistant message
                 messages.push(ChatCompletionRequestMessage::Assistant(
@@ -1309,7 +1293,14 @@ In rare cases a tool result may be summarized automatically. If so, you can use 
                 tool_calls,
                 mode_name: "CodeMode".to_string(),
                 context_tokens: total_context_tokens,
+                total_llm_tokens,
                 latency_ms: start.elapsed().as_millis() as u64,
+                llm_time_ms,
+                tool_time_ms,
+                setup_ms: 0,
+                llm_total_calls,
+                llm_input_tokens,
+                llm_output_tokens,
                 error: None,
             };
         }
@@ -1324,241 +1315,14 @@ In rare cases a tool result may be summarized automatically. If so, you can use 
             tool_calls,
             mode_name: "CodeMode".to_string(),
             context_tokens: total_context_tokens,
+            total_llm_tokens,
             latency_ms: start.elapsed().as_millis() as u64,
-            error: Some("Max turns reached".to_string()),
-        }
-    }
-
-    /// Execute a task in CodeModeRlm - hybrid mode with code generation and RLM routing
-    /// LLM generates TypeScript code for Gateway tools, RLM tools via function calling
-    pub async fn run_task_codemode_rlm(&self, task: &McpAtlasTask) -> TaskResult {
-        let start = Instant::now();
-        let system_prompt = self.build_codemode_rlm_system_prompt();
-        let mut total_context_tokens: i64 = 0;
-        let mut tool_calls = Vec::new();
-        let mut code_call_index: usize = 0;
-
-        // Build RLM tool definitions only (Gateway tools accessed via code)
-        let rlm_tools = self.build_rlm_tool_definitions();
-
-        // Build initial messages
-        let mut messages: Vec<ChatCompletionRequestMessage> = vec![
-            ChatCompletionRequestMessage::System(
-                ChatCompletionRequestSystemMessageArgs::default()
-                    .content(system_prompt.clone())
-                    .build()
-                    .unwrap(),
-            ),
-            ChatCompletionRequestMessage::User(
-                ChatCompletionRequestUserMessageArgs::default()
-                    .content(task.prompt.clone())
-                    .build()
-                    .unwrap(),
-            ),
-        ];
-
-        total_context_tokens += estimate_tokens(&system_prompt);
-        total_context_tokens += estimate_tokens(&task.prompt);
-
-        // Agent loop
-        for _turn in 0..self.max_turns {
-            // Build request WITH RLM tools only
-            let request_result = CreateChatCompletionRequestArgs::default()
-                .model(&self.agent_model)
-                .messages(messages.clone())
-                .tools(rlm_tools.clone())
-                .build();
-
-            let request = match request_result {
-                Ok(r) => r,
-                Err(e) => {
-                    return TaskResult {
-                        task_id: task.task_id.clone(),
-                        final_answer: String::new(),
-                        tool_calls,
-                        mode_name: "CodeMode+RLM".to_string(),
-                        context_tokens: total_context_tokens,
-                        latency_ms: start.elapsed().as_millis() as u64,
-                        error: Some(format!("Failed to build request: {e}")),
-                    };
-                }
-            };
-
-            // Call the agent LLM
-            let response = match self.llm_client.chat().create(request).await {
-                Ok(r) => r,
-                Err(e) => {
-                    return TaskResult {
-                        task_id: task.task_id.clone(),
-                        final_answer: String::new(),
-                        tool_calls,
-                        mode_name: "CodeMode+RLM".to_string(),
-                        context_tokens: total_context_tokens,
-                        latency_ms: start.elapsed().as_millis() as u64,
-                        error: Some(format!("Agent LLM call failed: {e}")),
-                    };
-                }
-            };
-
-            // Track token usage
-            if let Some(usage) = &response.usage {
-                total_context_tokens = usage.total_tokens as i64;
-            }
-
-            let choice = match response.choices.first() {
-                Some(c) => c,
-                None => {
-                    return TaskResult {
-                        task_id: task.task_id.clone(),
-                        final_answer: String::new(),
-                        tool_calls,
-                        mode_name: "CodeMode+RLM".to_string(),
-                        context_tokens: total_context_tokens,
-                        latency_ms: start.elapsed().as_millis() as u64,
-                        error: Some("No response from agent".to_string()),
-                    };
-                }
-            };
-
-            let content = choice.message.content.clone().unwrap_or_default();
-
-            // Check for RLM tool calls first
-            if let Some(ref calls) = choice.message.tool_calls
-                && !calls.is_empty()
-            {
-                // Process each RLM tool call
-                let mut tool_results = Vec::new();
-
-                for call in calls {
-                    let tool_name = &call.function.name;
-                    let args: serde_json::Value =
-                        serde_json::from_str(&call.function.arguments).unwrap_or(json!({}));
-
-                    // Execute RLM tool
-                    let result = match tool_name.as_str() {
-                        "rlm_search" => self.execute_rlm_search(&args).await,
-                        "rlm_get_chunk" => self.execute_rlm_get_chunk(&args).await,
-                        "rlm_list_chunks" => self.execute_rlm_list_chunks().await,
-                        _ => ToolCallResult {
-                            content: format!("Unknown RLM tool: {tool_name}"),
-                            tokens: 10,
-                            stored_in_corpus: false,
-                        },
-                    };
-
-                    // Track the call
-                    let record = ToolCallRecord {
-                        name: call.function.name.clone(),
-                        arguments: args,
-                        result: result.content.clone(),
-                        result_tokens: result.tokens,
-                        stored_in_corpus: result.stored_in_corpus,
-                    };
-                    tool_calls.push(record);
-
-                    // Add tokens (RLM tool results are small, always add)
-                    total_context_tokens += result.tokens;
-
-                    tool_results.push((call.id.clone(), result.content));
-                }
-
-                // Add assistant message with tool calls
-                messages.push(ChatCompletionRequestMessage::Assistant(
-                    ChatCompletionRequestAssistantMessageArgs::default()
-                        .tool_calls(calls.clone())
-                        .build()
-                        .unwrap(),
-                ));
-
-                // Add tool result messages
-                for (tool_call_id, result_content) in tool_results {
-                    messages.push(ChatCompletionRequestMessage::Tool(
-                        ChatCompletionRequestToolMessageArgs::default()
-                            .tool_call_id(tool_call_id)
-                            .content(result_content)
-                            .build()
-                            .unwrap(),
-                    ));
-                }
-
-                continue;
-            }
-
-            // Check if response contains code block
-            if let Some(code) = extract_code_block(&content) {
-                // Execute the code via EXECUTE_CODE with RLM routing
-                let exec_result = self
-                    .execute_code_with_rlm(&code, &task.task_id, code_call_index)
-                    .await;
-                code_call_index += 1;
-
-                tool_calls.push(ToolCallRecord {
-                    name: "EXECUTE_CODE".to_string(),
-                    arguments: json!({ "code": code }),
-                    result: exec_result.content.clone(),
-                    result_tokens: exec_result.tokens,
-                    stored_in_corpus: exec_result.stored_in_corpus,
-                });
-
-                // Only add tokens if not stored in corpus
-                if !exec_result.stored_in_corpus {
-                    total_context_tokens += exec_result.tokens;
-                }
-
-                // Add assistant message
-                messages.push(ChatCompletionRequestMessage::Assistant(
-                    ChatCompletionRequestAssistantMessageArgs::default()
-                        .content(content.clone())
-                        .build()
-                        .unwrap(),
-                ));
-
-                // Add execution result as user message
-                let result_message = if exec_result.stored_in_corpus {
-                    format!(
-                        "Code execution result (large result stored in corpus):\n{}\n\nUse rlm_search or rlm_get_chunk to access specific data from the stored result.",
-                        exec_result.content
-                    )
-                } else {
-                    format!(
-                        "Code execution result:\n```json\n{}\n```",
-                        exec_result.content
-                    )
-                };
-
-                messages.push(ChatCompletionRequestMessage::User(
-                    ChatCompletionRequestUserMessageArgs::default()
-                        .content(result_message)
-                        .build()
-                        .unwrap(),
-                ));
-
-                continue;
-            }
-
-            // No code block or tool calls - this is the final answer
-            return TaskResult {
-                task_id: task.task_id.clone(),
-                final_answer: content,
-                tool_calls,
-                mode_name: "CodeMode+RLM".to_string(),
-                context_tokens: total_context_tokens,
-                latency_ms: start.elapsed().as_millis() as u64,
-                error: None,
-            };
-        }
-
-        // Max turns reached
-        TaskResult {
-            task_id: task.task_id.clone(),
-            final_answer: format!(
-                "Max turns ({}) reached without final answer",
-                self.max_turns
-            ),
-            tool_calls,
-            mode_name: "CodeMode+RLM".to_string(),
-            context_tokens: total_context_tokens,
-            latency_ms: start.elapsed().as_millis() as u64,
+            llm_time_ms,
+            tool_time_ms,
+            setup_ms: 0,
+            llm_total_calls,
+            llm_input_tokens,
+            llm_output_tokens,
             error: Some("Max turns reached".to_string()),
         }
     }
@@ -1572,6 +1336,7 @@ In rare cases a tool result may be summarized automatically. If so, you can use 
     /// max iterations are reached.
     pub async fn run_task_rlm(&self, task: &McpAtlasTask) -> TaskResult {
         let start = Instant::now();
+        let setup_t = Instant::now();
 
         // 1. Create budget manager and LM handler for sub-LLM calls
         let rlm_config = RlmConfig::default();
@@ -1628,9 +1393,16 @@ In rare cases a tool result may be summarized automatically. If so, you can use 
         // Inject available tools into the system prompt so the LLM knows what to call
         let tool_list_section = self.format_tool_list_for_prompt();
         let system_prompt = format!("{}{}", build_rlm_system_prompt(&metadata), tool_list_section);
-        let mut total_context_tokens: i64 = estimate_tokens(&system_prompt);
+        let setup_ms = setup_t.elapsed().as_millis() as u64;
+        let mut total_context_tokens: i64 = 0;
+        let mut total_llm_tokens: i64 = 0;
         let mut tool_calls = Vec::new();
         let mut last_assistant_content = String::new();
+        let mut llm_time_ms: u64 = 0;
+        let mut tool_time_ms: u64 = 0;
+        let mut llm_total_calls: u32 = 0;
+        let mut llm_input_tokens: u64 = 0;
+        let mut llm_output_tokens: u64 = 0;
 
         // 5. Build conversation messages
         let mut messages: Vec<ChatCompletionRequestMessage> = vec![
@@ -1652,7 +1424,6 @@ In rare cases a tool result may be summarized automatically. If so, you can use 
                     .build()
                     .unwrap(),
             ));
-            total_context_tokens += estimate_tokens(&user_prompt);
 
             // Call LLM (NO tools — we want free-form text with ```repl blocks)
             let request = match CreateChatCompletionRequestArgs::default()
@@ -1673,17 +1444,52 @@ In rare cases a tool result may be summarized automatically. If so, you can use 
                 }
             };
 
-            let response = match self.llm_client.chat().create(request).await {
-                Ok(r) => r,
-                Err(e) => {
-                    repl.cleanup().await;
-                    lm_handler.stop().await;
-                    return error_result(task, "RLM", start, &format!("LLM call failed: {e}"));
+            let llm_t = Instant::now();
+            let response = {
+                let mut last_err = String::new();
+                let mut resp = None;
+                for attempt in 0..3u32 {
+                    if attempt > 0 {
+                        let delay = Duration::from_millis(1000 * 2u64.pow(attempt - 1));
+                        tokio::time::sleep(delay).await;
+                        tracing::warn!("  [rlm] retrying LLM call (attempt {}/3)...", attempt + 1);
+                    }
+                    match self.llm_client.chat().create(request.clone()).await {
+                        Ok(r) => {
+                            let has_content = r.choices.first()
+                                .and_then(|c| c.message.content.as_ref())
+                                .map(|s| !s.is_empty())
+                                .unwrap_or(false);
+                            if has_content || attempt == 2 {
+                                resp = Some(r);
+                                break;
+                            }
+                            tracing::warn!("  [rlm] empty completion on attempt {}", attempt + 1);
+                            resp = Some(r);
+                        }
+                        Err(e) => {
+                            last_err = format!("LLM call failed: {e}");
+                            tracing::warn!("  [rlm] {last_err} (attempt {})", attempt + 1);
+                        }
+                    }
+                }
+                match resp {
+                    Some(r) => r,
+                    None => {
+                        repl.cleanup().await;
+                        lm_handler.stop().await;
+                        return error_result(task, "RLM", start, &last_err);
+                    }
                 }
             };
+            llm_time_ms += llm_t.elapsed().as_millis() as u64;
+            llm_total_calls += 1;
 
             if let Some(usage) = &response.usage {
                 total_context_tokens = usage.total_tokens as i64;
+                total_llm_tokens += usage.total_tokens as i64;
+                llm_input_tokens += usage.prompt_tokens as u64;
+                llm_output_tokens += usage.completion_tokens as u64;
             }
 
             let content = response
@@ -1692,6 +1498,11 @@ In rare cases a tool result may be summarized automatically. If so, you can use 
                 .and_then(|c| c.message.content.clone())
                 .unwrap_or_default();
             last_assistant_content = content.clone();
+
+            if content.is_empty() {
+                tracing::warn!("  [rlm] empty LLM response on iteration {}", iteration);
+                continue;
+            }
 
             // Add assistant message
             messages.push(ChatCompletionRequestMessage::Assistant(
@@ -1712,7 +1523,12 @@ In rare cases a tool result may be summarized automatically. If so, you can use 
                     }
                 };
 
-                let _usage = lm_handler.usage().await;
+                let sub_usage = lm_handler.usage().await;
+                let total_llm_tokens_final = total_llm_tokens
+                    + sub_usage.total_input_tokens
+                    + sub_usage.total_output_tokens;
+                let sub_input = sub_usage.total_input_tokens as u64;
+                let sub_output = sub_usage.total_output_tokens as u64;
                 repl.cleanup().await;
                 lm_handler.stop().await;
 
@@ -1722,7 +1538,14 @@ In rare cases a tool result may be summarized automatically. If so, you can use 
                     tool_calls,
                     mode_name: "RLM".to_string(),
                     context_tokens: total_context_tokens,
+                    total_llm_tokens: total_llm_tokens_final,
                     latency_ms: start.elapsed().as_millis() as u64,
+                    llm_time_ms,
+                    tool_time_ms,
+                    setup_ms,
+                    llm_total_calls,
+                    llm_input_tokens: llm_input_tokens + sub_input,
+                    llm_output_tokens: llm_output_tokens + sub_output,
                     error: None,
                 };
             }
@@ -1731,6 +1554,12 @@ In rare cases a tool result may be summarized automatically. If so, you can use 
             let code_blocks = find_code_blocks(&content);
             if code_blocks.is_empty() && iteration > 0 {
                 // No code blocks and no FINAL — use content as answer
+                let sub_usage = lm_handler.usage().await;
+                let total_llm_tokens_final = total_llm_tokens
+                    + sub_usage.total_input_tokens
+                    + sub_usage.total_output_tokens;
+                let sub_input = sub_usage.total_input_tokens as u64;
+                let sub_output = sub_usage.total_output_tokens as u64;
                 repl.cleanup().await;
                 lm_handler.stop().await;
                 return TaskResult {
@@ -1739,13 +1568,21 @@ In rare cases a tool result may be summarized automatically. If so, you can use 
                     tool_calls,
                     mode_name: "RLM".to_string(),
                     context_tokens: total_context_tokens,
+                    total_llm_tokens: total_llm_tokens_final,
                     latency_ms: start.elapsed().as_millis() as u64,
+                    llm_time_ms,
+                    tool_time_ms,
+                    setup_ms,
+                    llm_total_calls,
+                    llm_input_tokens: llm_input_tokens + sub_input,
+                    llm_output_tokens: llm_output_tokens + sub_output,
                     error: None,
                 };
             }
 
             // Execute each code block
             for code in &code_blocks {
+                let tool_t = Instant::now();
                 let result = match repl.execute(code).await {
                     Ok(r) => r,
                     Err(e) => ReplResult {
@@ -1755,6 +1592,8 @@ In rare cases a tool result may be summarized automatically. If so, you can use 
                         execution_time_ms: 0,
                     },
                 };
+                let tool_latency = tool_t.elapsed().as_millis() as u64;
+                tool_time_ms += tool_latency;
 
                 tool_calls.push(ToolCallRecord {
                     name: "repl_execute".to_string(),
@@ -1762,6 +1601,7 @@ In rare cases a tool result may be summarized automatically. If so, you can use 
                     result: result.stdout.clone(),
                     result_tokens: estimate_tokens(&result.stdout),
                     stored_in_corpus: false,
+                    latency_ms: tool_latency,
                 });
 
                 // Format feedback for LLM
@@ -1779,12 +1619,17 @@ In rare cases a tool result may be summarized automatically. If so, you can use 
                         .build()
                         .unwrap(),
                 ));
-                total_context_tokens += estimate_tokens(&feedback);
             }
         }
 
         // Max iterations reached — the last iteration prompt already forced
         // FINAL(...), so use the last assistant response as the answer.
+        let sub_usage = lm_handler.usage().await;
+        let total_llm_tokens_final = total_llm_tokens
+            + sub_usage.total_input_tokens
+            + sub_usage.total_output_tokens;
+        let sub_input = sub_usage.total_input_tokens as u64;
+        let sub_output = sub_usage.total_output_tokens as u64;
         repl.cleanup().await;
         lm_handler.stop().await;
 
@@ -1794,7 +1639,14 @@ In rare cases a tool result may be summarized automatically. If so, you can use 
             tool_calls,
             mode_name: "RLM".to_string(),
             context_tokens: total_context_tokens,
+            total_llm_tokens: total_llm_tokens_final,
             latency_ms: start.elapsed().as_millis() as u64,
+            llm_time_ms,
+            tool_time_ms,
+            setup_ms,
+            llm_total_calls,
+            llm_input_tokens: llm_input_tokens + sub_input,
+            llm_output_tokens: llm_output_tokens + sub_output,
             error: None,
         }
     }
@@ -1808,6 +1660,7 @@ In rare cases a tool result may be summarized automatically. If so, you can use 
     /// that were auto-stored in the corpus.
     pub async fn run_task_rlm_codemode(&self, task: &McpAtlasTask) -> TaskResult {
         let start = Instant::now();
+        let setup_t = Instant::now();
 
         // 1. Create RLM infrastructure
         let rlm_config = RlmConfig::default();
@@ -1822,7 +1675,7 @@ In rare cases a tool result may be summarized automatically. If so, you can use 
             Err(e) => {
                 return error_result(
                     task,
-                    "RLM+CodeMode",
+                    "CodeMode+RLM",
                     start,
                     &format!("Temp dir creation failed: {e}"),
                 );
@@ -1838,7 +1691,7 @@ In rare cases a tool result may be summarized automatically. If so, you can use 
             Err(e) => {
                 return error_result(
                     task,
-                    "RLM+CodeMode",
+                    "CodeMode+RLM",
                     start,
                     &format!("Corpus creation failed: {e}"),
                 );
@@ -1847,7 +1700,7 @@ In rare cases a tool result may be summarized automatically. If so, you can use 
         if let Err(e) = corpus.ingest_prompt(&task.prompt).await {
             return error_result(
                 task,
-                "RLM+CodeMode",
+                "CodeMode+RLM",
                 start,
                 &format!("Corpus ingest failed: {e}"),
             );
@@ -1877,7 +1730,7 @@ In rare cases a tool result may be summarized automatically. If so, you can use 
             Err(e) => {
                 return error_result(
                     task,
-                    "RLM+CodeMode",
+                    "CodeMode+RLM",
                     start,
                     &format!("LM handler start failed: {e}"),
                 );
@@ -1891,7 +1744,7 @@ In rare cases a tool result may be summarized automatically. If so, you can use 
                 lm_handler.stop().await;
                 return error_result(
                     task,
-                    "RLM+CodeMode",
+                    "CodeMode+RLM",
                     start,
                     &format!("REPL start failed: {e}"),
                 );
@@ -1904,7 +1757,7 @@ In rare cases a tool result may be summarized automatically. If so, you can use 
             lm_handler.stop().await;
             return error_result(
                 task,
-                "RLM+CodeMode",
+                "CodeMode+RLM",
                 start,
                 &format!("Set context failed: {e}"),
             );
@@ -1919,9 +1772,16 @@ In rare cases a tool result may be summarized automatically. If so, you can use 
 
         let tool_list_section = self.format_tool_list_for_codemode_prompt();
         let system_prompt = format!("{}{}", build_rlm_codemode_system_prompt(&metadata), tool_list_section);
-        let mut total_context_tokens: i64 = estimate_tokens(&system_prompt);
+        let setup_ms = setup_t.elapsed().as_millis() as u64;
+        let mut total_context_tokens: i64 = 0;
+        let mut total_llm_tokens: i64 = 0;
         let mut tool_calls = Vec::new();
         let mut last_assistant_content = String::new();
+        let mut llm_time_ms: u64 = 0;
+        let mut tool_time_ms: u64 = 0;
+        let mut llm_total_calls: u32 = 0;
+        let mut llm_input_tokens: u64 = 0;
+        let mut llm_output_tokens: u64 = 0;
 
         let mut messages: Vec<ChatCompletionRequestMessage> = vec![
             ChatCompletionRequestMessage::System(
@@ -1941,7 +1801,6 @@ In rare cases a tool result may be summarized automatically. If so, you can use 
                     .build()
                     .unwrap(),
             ));
-            total_context_tokens += estimate_tokens(&user_prompt);
 
             // Call LLM (NO tools — free-form text with ```repl blocks)
             let request = match CreateChatCompletionRequestArgs::default()
@@ -1955,29 +1814,59 @@ In rare cases a tool result may be summarized automatically. If so, you can use 
                     lm_handler.stop().await;
                     return error_result(
                         task,
-                        "RLM+CodeMode",
+                        "CodeMode+RLM",
                         start,
                         &format!("Request build failed: {e}"),
                     );
                 }
             };
 
-            let response = match self.llm_client.chat().create(request).await {
-                Ok(r) => r,
-                Err(e) => {
-                    repl.cleanup().await;
-                    lm_handler.stop().await;
-                    return error_result(
-                        task,
-                        "RLM+CodeMode",
-                        start,
-                        &format!("LLM call failed: {e}"),
-                    );
+            let llm_t = Instant::now();
+            let response = {
+                let mut last_err = String::new();
+                let mut resp = None;
+                for attempt in 0..3u32 {
+                    if attempt > 0 {
+                        let delay = Duration::from_millis(1000 * 2u64.pow(attempt - 1));
+                        tokio::time::sleep(delay).await;
+                        tracing::warn!("  [rlm-code] retrying LLM call (attempt {}/3)...", attempt + 1);
+                    }
+                    match self.llm_client.chat().create(request.clone()).await {
+                        Ok(r) => {
+                            let has_content = r.choices.first()
+                                .and_then(|c| c.message.content.as_ref())
+                                .map(|s| !s.is_empty())
+                                .unwrap_or(false);
+                            if has_content || attempt == 2 {
+                                resp = Some(r);
+                                break;
+                            }
+                            tracing::warn!("  [rlm-code] empty completion on attempt {}", attempt + 1);
+                            resp = Some(r);
+                        }
+                        Err(e) => {
+                            last_err = format!("LLM call failed: {e}");
+                            tracing::warn!("  [rlm-code] {last_err} (attempt {})", attempt + 1);
+                        }
+                    }
+                }
+                match resp {
+                    Some(r) => r,
+                    None => {
+                        repl.cleanup().await;
+                        lm_handler.stop().await;
+                        return error_result(task, "CodeMode+RLM", start, &last_err);
+                    }
                 }
             };
+            llm_time_ms += llm_t.elapsed().as_millis() as u64;
+            llm_total_calls += 1;
 
             if let Some(usage) = &response.usage {
                 total_context_tokens = usage.total_tokens as i64;
+                total_llm_tokens += usage.total_tokens as i64;
+                llm_input_tokens += usage.prompt_tokens as u64;
+                llm_output_tokens += usage.completion_tokens as u64;
             }
 
             let content = response
@@ -1986,6 +1875,11 @@ In rare cases a tool result may be summarized automatically. If so, you can use 
                 .and_then(|c| c.message.content.clone())
                 .unwrap_or_default();
             last_assistant_content = content.clone();
+
+            if content.is_empty() {
+                tracing::warn!("  [rlm-code] empty LLM response on iteration {}", iteration);
+                continue;
+            }
 
             messages.push(ChatCompletionRequestMessage::Assistant(
                 ChatCompletionRequestAssistantMessageArgs::default()
@@ -2005,7 +1899,12 @@ In rare cases a tool result may be summarized automatically. If so, you can use 
                     }
                 };
 
-                let _usage = lm_handler.usage().await;
+                let sub_usage = lm_handler.usage().await;
+                let total_llm_tokens_final = total_llm_tokens
+                    + sub_usage.total_input_tokens
+                    + sub_usage.total_output_tokens;
+                let sub_input = sub_usage.total_input_tokens as u64;
+                let sub_output = sub_usage.total_output_tokens as u64;
                 repl.cleanup().await;
                 lm_handler.stop().await;
 
@@ -2013,9 +1912,16 @@ In rare cases a tool result may be summarized automatically. If so, you can use 
                     task_id: task.task_id.clone(),
                     final_answer: answer,
                     tool_calls,
-                    mode_name: "RLM+CodeMode".to_string(),
+                    mode_name: "CodeMode+RLM".to_string(),
                     context_tokens: total_context_tokens,
+                    total_llm_tokens: total_llm_tokens_final,
                     latency_ms: start.elapsed().as_millis() as u64,
+                    llm_time_ms,
+                    tool_time_ms,
+                    setup_ms,
+                    llm_total_calls,
+                    llm_input_tokens: llm_input_tokens + sub_input,
+                    llm_output_tokens: llm_output_tokens + sub_output,
                     error: None,
                 };
             }
@@ -2023,20 +1929,34 @@ In rare cases a tool result may be summarized automatically. If so, you can use 
             // Extract and execute code blocks
             let code_blocks = find_code_blocks(&content);
             if code_blocks.is_empty() && iteration > 0 {
+                let sub_usage = lm_handler.usage().await;
+                let total_llm_tokens_final = total_llm_tokens
+                    + sub_usage.total_input_tokens
+                    + sub_usage.total_output_tokens;
+                let sub_input = sub_usage.total_input_tokens as u64;
+                let sub_output = sub_usage.total_output_tokens as u64;
                 repl.cleanup().await;
                 lm_handler.stop().await;
                 return TaskResult {
                     task_id: task.task_id.clone(),
                     final_answer: content,
                     tool_calls,
-                    mode_name: "RLM+CodeMode".to_string(),
+                    mode_name: "CodeMode+RLM".to_string(),
                     context_tokens: total_context_tokens,
+                    total_llm_tokens: total_llm_tokens_final,
                     latency_ms: start.elapsed().as_millis() as u64,
+                    llm_time_ms,
+                    tool_time_ms,
+                    setup_ms,
+                    llm_total_calls,
+                    llm_input_tokens: llm_input_tokens + sub_input,
+                    llm_output_tokens: llm_output_tokens + sub_output,
                     error: None,
                 };
             }
 
             for code in &code_blocks {
+                let tool_t = Instant::now();
                 let result = match repl.execute(code).await {
                     Ok(r) => r,
                     Err(e) => ReplResult {
@@ -2046,6 +1966,8 @@ In rare cases a tool result may be summarized automatically. If so, you can use 
                         execution_time_ms: 0,
                     },
                 };
+                let tool_latency = tool_t.elapsed().as_millis() as u64;
+                tool_time_ms += tool_latency;
 
                 tool_calls.push(ToolCallRecord {
                     name: "repl_execute".to_string(),
@@ -2053,6 +1975,7 @@ In rare cases a tool result may be summarized automatically. If so, you can use 
                     result: result.stdout.clone(),
                     result_tokens: estimate_tokens(&result.stdout),
                     stored_in_corpus: false,
+                    latency_ms: tool_latency,
                 });
 
                 let feedback = format_repl_feedback(
@@ -2069,12 +1992,17 @@ In rare cases a tool result may be summarized automatically. If so, you can use 
                         .build()
                         .unwrap(),
                 ));
-                total_context_tokens += estimate_tokens(&feedback);
             }
         }
 
         // Max iterations reached — the last iteration prompt already forced
         // FINAL(...), so use the last assistant response as the answer.
+        let sub_usage = lm_handler.usage().await;
+        let total_llm_tokens_final = total_llm_tokens
+            + sub_usage.total_input_tokens
+            + sub_usage.total_output_tokens;
+        let sub_input = sub_usage.total_input_tokens as u64;
+        let sub_output = sub_usage.total_output_tokens as u64;
         repl.cleanup().await;
         lm_handler.stop().await;
 
@@ -2082,9 +2010,16 @@ In rare cases a tool result may be summarized automatically. If so, you can use 
             task_id: task.task_id.clone(),
             final_answer: last_assistant_content,
             tool_calls,
-            mode_name: "RLM+CodeMode".to_string(),
+            mode_name: "CodeMode+RLM".to_string(),
             context_tokens: total_context_tokens,
+            total_llm_tokens: total_llm_tokens_final,
             latency_ms: start.elapsed().as_millis() as u64,
+            llm_time_ms,
+            tool_time_ms,
+            setup_ms,
+            llm_total_calls,
+            llm_input_tokens: llm_input_tokens + sub_input,
+            llm_output_tokens: llm_output_tokens + sub_output,
             error: None,
         }
     }
@@ -2185,7 +2120,14 @@ fn error_result(task: &McpAtlasTask, mode: &str, start: Instant, msg: &str) -> T
         tool_calls: Vec::new(),
         mode_name: mode.to_string(),
         context_tokens: 0,
+        total_llm_tokens: 0,
         latency_ms: start.elapsed().as_millis() as u64,
+        llm_time_ms: 0,
+        tool_time_ms: 0,
+        setup_ms: 0,
+        llm_total_calls: 0,
+        llm_input_tokens: 0,
+        llm_output_tokens: 0,
         error: Some(msg.to_string()),
     }
 }
@@ -2430,8 +2372,8 @@ mod tests {
         assert_eq!(format!("{}", ToolCallingMode::Baseline), "Baseline");
         assert_eq!(format!("{}", ToolCallingMode::CodeMode), "CodeMode");
         assert_eq!(format!("{}", ToolCallingMode::BaselineRlm), "Baseline+RLM");
-        assert_eq!(format!("{}", ToolCallingMode::CodeModeRlm), "CodeMode+RLM");
         assert_eq!(format!("{}", ToolCallingMode::Rlm), "RLM");
+        assert_eq!(format!("{}", ToolCallingMode::RlmCodeMode), "CodeMode+RLM");
     }
 
     #[test]

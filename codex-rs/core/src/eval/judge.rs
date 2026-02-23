@@ -3,6 +3,8 @@
 //! Verifies claims against agent answers using an LLM as the judge.
 //! Follows MCP-Atlas methodology: per-claim evaluation with structured output.
 
+use std::time::Instant;
+
 use anyhow::Context;
 use anyhow::Result;
 use async_openai::Client;
@@ -47,6 +49,8 @@ pub struct ClaimVerificationResult {
     pub passed: bool,
     /// Raw judge response for debugging
     pub raw_response: String,
+    /// Wall-clock time for the verification LLM calls in milliseconds
+    pub verification_latency_ms: u64,
 }
 
 /// System prompt aligned with MCP-Atlas CoverageEvaluator methodology.
@@ -56,6 +60,12 @@ SCORING CRITERIA:
 - fulfilled: Claim is completely and accurately addressed. The response covers all key details.
 - partially_fulfilled: Claim is partially addressed. The response covers some but not all key details.
 - not_fulfilled: Claim is not addressed. The response does not include any key details.
+
+GROUND TRUTH DATA:
+You may be provided with TOOL RESULTS that contain the actual data returned by APIs/tools. Use this as ground truth:
+- If the claim says "lists every X" and the tool results show N items, check whether the response includes all N items — NOT whether there "should" be more.
+- If a tool returns a field with an unexpected value (e.g., an email address in a "name" field), the response is correct if it accurately reflects what the tool returned.
+- The tool results are authoritative. Do not penalize the response for limitations in the underlying data.
 
 NUMERICAL COMPARISON GUIDELINES:
 - For numerical values, use reasonable approximation thresholds:
@@ -72,6 +82,7 @@ NUMERICAL COMPARISON GUIDELINES:
 INSTRUCTIONS:
 1. Determine if the core requirement of the claim is met in the response
 2. Check if all key components from the claim appear substantively in the response
+   - Use tool results as ground truth to verify completeness (e.g., "lists every X" means all items from the tool output)
    - For numerical values, apply the flexible matching guidelines above
    - Focus on whether the same magnitude and meaning are conveyed
 3. Assign the appropriate coverage_outcome
@@ -163,10 +174,17 @@ impl ClaimJudge {
         task_prompt: &str,
         answer: &str,
         claim: &str,
+        tool_results: &str,
     ) -> Result<(ClaimScore, String)> {
-        let user_prompt = format!(
-            "CLAIM TO EVALUATE:\n{claim}\n\nTASK PROMPT:\n{task_prompt}\n\nMODEL RESPONSE TO ANALYZE:\n{answer}"
-        );
+        let user_prompt = if tool_results.is_empty() {
+            format!(
+                "CLAIM TO EVALUATE:\n{claim}\n\nTASK PROMPT:\n{task_prompt}\n\nMODEL RESPONSE TO ANALYZE:\n{answer}"
+            )
+        } else {
+            format!(
+                "CLAIM TO EVALUATE:\n{claim}\n\nTASK PROMPT:\n{task_prompt}\n\nTOOL RESULTS (ground truth data from APIs):\n{tool_results}\n\nMODEL RESPONSE TO ANALYZE:\n{answer}"
+            )
+        };
 
         let request = CreateChatCompletionRequestArgs::default()
             .model(&self.model)
@@ -220,12 +238,14 @@ impl ClaimJudge {
     /// Verify claims against an agent's answer.
     ///
     /// Each claim is evaluated in an independent LLM call (per-claim isolation),
-    /// matching MCP-Atlas methodology.
+    /// matching MCP-Atlas methodology. `tool_results` provides ground-truth data
+    /// from tool calls so the judge can verify completeness accurately.
     pub async fn verify_claims(
         &self,
         task_prompt: &str,
         answer: &str,
         claims: &[String],
+        tool_results: &str,
     ) -> Result<ClaimVerificationResult> {
         if claims.is_empty() {
             return Ok(ClaimVerificationResult {
@@ -233,6 +253,7 @@ impl ClaimJudge {
                 coverage: 1.0,
                 passed: true,
                 raw_response: "No claims to verify".to_string(),
+                verification_latency_ms: 0,
             });
         }
 
@@ -248,13 +269,15 @@ impl ClaimJudge {
                 coverage: 0.0,
                 passed: false,
                 raw_response: "Empty answer — all claims auto-scored NOT_FULFILLED".to_string(),
+                verification_latency_ms: 0,
             });
         }
 
         // Evaluate each claim independently (concurrent)
+        let judge_t = Instant::now();
         let futures: Vec<_> = claims
             .iter()
-            .map(|claim| self.evaluate_single_claim(task_prompt, answer, claim))
+            .map(|claim| self.evaluate_single_claim(task_prompt, answer, claim, tool_results))
             .collect();
 
         let results = futures::future::join_all(futures).await;
@@ -285,6 +308,7 @@ impl ClaimJudge {
             coverage,
             passed,
             raw_response: raw_responses.join("\n"),
+            verification_latency_ms: judge_t.elapsed().as_millis() as u64,
         })
     }
 }

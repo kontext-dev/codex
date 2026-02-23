@@ -199,25 +199,41 @@ pub fn build_rlm_system_prompt(metadata: &ContextMetadata) -> String {
 }
 
 /// Build the user prompt for a specific iteration.
+///
+/// Follows the reference RLM pattern: always include the original query so the
+/// model never loses sight of the task, and end with a directive ("Your next
+/// action:") to force generation.
 pub fn build_rlm_user_prompt(iteration: usize, max_iterations: usize, query: &str) -> String {
     if iteration == 0 {
         format!(
-            "{}\n\nIMPORTANT: Do not provide a final answer yet. \
-             You haven't interacted with the REPL or examined the context. \
-             Start by exploring the context variable in a ```repl block.",
-            query
+            "You have not interacted with the REPL environment or seen your context yet. \
+             Your next action should be to look through and figure out how to answer the prompt, \
+             so don't just provide a final answer yet.\n\n\
+             Think step-by-step on what to do using the REPL environment (which contains the context) \
+             to answer the original prompt: \"{query}\"\n\n\
+             Continue using the REPL environment, which has the `context` variable, \
+             and querying sub-LLMs by writing to ```repl``` tags, and determine your answer. \
+             Your next action:",
+            query = query
         )
     } else if iteration >= max_iterations - 1 {
-        "THIS IS YOUR FINAL ITERATION. You MUST provide your final answer NOW \
-         using FINAL(...) or FINAL_VAR(variable_name). Synthesize everything you \
-         have gathered so far into a complete answer. Do NOT run more code — \
-         just provide your answer."
-            .to_string()
+        format!(
+            "The history above is your previous interactions with the REPL environment. \
+             This is your final iteration — you must provide your answer now.\n\n\
+             Think step-by-step to answer the original prompt: \"{query}\"\n\n\
+             Synthesize everything you have gathered so far into a complete answer \
+             using FINAL(your answer) or FINAL_VAR(variable_name). Your next action:",
+            query = query
+        )
     } else {
-        "Continue your analysis. The history above contains your previous REPL \
-         interactions and their outputs. If you have enough information, provide \
-         your final answer using FINAL(...)."
-            .to_string()
+        format!(
+            "The history above is your previous interactions with the REPL environment. \
+             Think step-by-step on what to do using the REPL environment to answer the original prompt: \"{query}\"\n\n\
+             Continue using the REPL environment and querying sub-LLMs by writing to ```repl``` tags. \
+             If you have enough information, provide your final answer using FINAL(...). \
+             Your next action:",
+            query = query
+        )
     }
 }
 
@@ -297,25 +313,26 @@ mod tests {
     fn test_build_rlm_user_prompt_iteration_zero() {
         let prompt = build_rlm_user_prompt(0, 10, "What is the main topic?");
         assert!(prompt.contains("What is the main topic?"));
-        assert!(prompt.contains("Do not provide a final answer yet"));
-        assert!(prompt.contains("```repl block"));
+        assert!(prompt.contains("don't just provide a final answer yet"));
+        assert!(prompt.contains("Your next action:"));
     }
 
     #[test]
     fn test_build_rlm_user_prompt_subsequent_iteration() {
         let prompt = build_rlm_user_prompt(1, 10, "What is the main topic?");
-        assert!(prompt.contains("Continue your analysis"));
+        assert!(prompt.contains("previous interactions"));
         assert!(prompt.contains("FINAL("));
-        // The query is not repeated on subsequent iterations
-        assert!(!prompt.contains("What is the main topic?"));
+        // Query IS repeated on subsequent iterations (matches reference RLM)
+        assert!(prompt.contains("What is the main topic?"));
+        assert!(prompt.contains("Your next action:"));
     }
 
     #[test]
     fn test_build_rlm_user_prompt_final_iteration() {
         let prompt = build_rlm_user_prompt(9, 10, "What is the main topic?");
-        assert!(prompt.contains("FINAL ITERATION"));
-        assert!(prompt.contains("MUST"));
-        assert!(!prompt.contains("Continue your analysis"));
+        assert!(prompt.contains("final iteration"));
+        assert!(prompt.contains("What is the main topic?"));
+        assert!(prompt.contains("Your next action:"));
     }
 
     #[test]

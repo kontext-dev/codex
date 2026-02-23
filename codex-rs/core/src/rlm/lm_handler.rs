@@ -528,7 +528,7 @@ async fn handle_execute_tool(state: &SharedState, req: ExecuteToolRequest) -> Ex
         .await
     {
         Ok(r) => ExecuteToolResponse {
-            result: Some(serde_json::to_string(&r).unwrap_or_default()),
+            result: Some(unwrap_mcp_envelope(&r)),
             error: None,
         },
         Err(e) => ExecuteToolResponse {
@@ -536,6 +536,49 @@ async fn handle_execute_tool(state: &SharedState, req: ExecuteToolRequest) -> Ex
             error: Some(format!("EXECUTE_TOOL failed: {e}")),
         },
     }
+}
+
+/// Unwrap the MCP envelope from a `CallToolResult` to extract the inner text.
+///
+/// MCP results can be double-wrapped:
+///   `{ content: [{ resource: { text: "..." } }] }` or `{ content: [{ text: "..." }] }`
+/// and the inner text may itself be JSON with another `content[0].text` layer.
+/// This function peels through both layers to return the innermost useful string.
+fn unwrap_mcp_envelope(result: &rmcp::model::CallToolResult) -> String {
+    let raw = serde_json::to_string(result).unwrap_or_default();
+
+    // Parse outer: content[0].resource.text or content[0].text
+    let text = (|| -> Option<String> {
+        let outer: serde_json::Value = serde_json::from_str(&raw).ok()?;
+        let content = outer.get("content")?.as_array()?;
+        let first = content.first()?;
+        first
+            .get("resource")
+            .and_then(|r| r.get("text"))
+            .and_then(|t| t.as_str())
+            .or_else(|| first.get("text").and_then(|t| t.as_str()))
+            .map(|s| s.to_string())
+    })();
+
+    let Some(inner_json) = text else {
+        return raw;
+    };
+
+    // Parse inner: if it has content[0].text, unwrap again (double-wrapped)
+    if let Ok(inner) = serde_json::from_str::<serde_json::Value>(&inner_json) {
+        if let Some(inner_text) = inner
+            .get("content")
+            .and_then(|c| c.as_array())
+            .and_then(|a| a.first())
+            .and_then(|f| f.get("text"))
+            .and_then(|t| t.as_str())
+        {
+            return inner_text.to_string();
+        }
+        return inner_json;
+    }
+
+    inner_json
 }
 
 /// Resolve a potentially fuzzy tool ID to the canonical Gateway tool ID.
