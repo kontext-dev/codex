@@ -90,7 +90,7 @@ jobs:
     timeout-minutes: 30
     needs: changed
     # Keep job-level if to avoid spinning up runners when not needed
-    if: ${{ needs.changed.outputs.codex == 'true' || needs.changed.outputs.workflows == 'true' || github.event_name == 'push' }}
+    if: ${{ (needs.changed.outputs.codex == 'true' || needs.changed.outputs.workflows == 'true' || github.event_name == 'push') && (github.repository_owner == 'openai' || !matrix.requires_codex_runners) }}
     defaults:
       run:
         working-directory: codex-rs
@@ -115,36 +115,42 @@ jobs:
           - runner: ubuntu-24.04
             target: x86_64-unknown-linux-musl
             profile: dev
+            requires_codex_runners: true
             runs_on:
               group: codex-runners
               labels: codex-linux-x64
           - runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             profile: dev
+            requires_codex_runners: true
             runs_on:
               group: codex-runners
               labels: codex-linux-x64
           - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
             profile: dev
+            requires_codex_runners: true
             runs_on:
               group: codex-runners
               labels: codex-linux-arm64
           - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             profile: dev
+            requires_codex_runners: true
             runs_on:
               group: codex-runners
               labels: codex-linux-arm64
           - runner: windows-x64
             target: x86_64-pc-windows-msvc
             profile: dev
+            requires_codex_runners: true
             runs_on:
               group: codex-runners
               labels: codex-windows-x64
           - runner: windows-arm64
             target: aarch64-pc-windows-msvc
             profile: dev
+            requires_codex_runners: true
             runs_on:
               group: codex-runners
               labels: codex-windows-arm64
@@ -159,24 +165,28 @@ jobs:
           - runner: ubuntu-24.04
             target: x86_64-unknown-linux-musl
             profile: release
+            requires_codex_runners: true
             runs_on:
               group: codex-runners
               labels: codex-linux-x64
           - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
             profile: release
+            requires_codex_runners: true
             runs_on:
               group: codex-runners
               labels: codex-linux-arm64
           - runner: windows-x64
             target: x86_64-pc-windows-msvc
             profile: release
+            requires_codex_runners: true
             runs_on:
               group: codex-runners
               labels: codex-windows-x64
           - runner: windows-arm64
             target: aarch64-pc-windows-msvc
             profile: release
+            requires_codex_runners: true
             runs_on:
               group: codex-runners
               labels: codex-windows-arm64
@@ -455,7 +465,7 @@ jobs:
     runs-on: ${{ matrix.runs_on || matrix.runner }}
     timeout-minutes: 30
     needs: changed
-    if: ${{ needs.changed.outputs.codex == 'true' || needs.changed.outputs.workflows == 'true' || github.event_name == 'push' }}
+    if: ${{ (needs.changed.outputs.codex == 'true' || needs.changed.outputs.workflows == 'true' || github.event_name == 'push') && (github.repository_owner == 'openai' || !matrix.requires_codex_runners) }}
     defaults:
       run:
         working-directory: codex-rs
@@ -475,24 +485,28 @@ jobs:
           - runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             profile: dev
+            requires_codex_runners: true
             runs_on:
               group: codex-runners
               labels: codex-linux-x64
           - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             profile: dev
+            requires_codex_runners: true
             runs_on:
               group: codex-runners
               labels: codex-linux-arm64
           - runner: windows-x64
             target: x86_64-pc-windows-msvc
             profile: dev
+            requires_codex_runners: true
             runs_on:
               group: codex-runners
               labels: codex-windows-x64
           - runner: windows-arm64
             target: aarch64-pc-windows-msvc
             profile: dev
+            requires_codex_runners: true
             runs_on:
               group: codex-runners
               labels: codex-windows-arm64
