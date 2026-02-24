@@ -1,4 +1,6 @@
 version: "1"
+label: "upstream-sync"
+conflictLabel: "merge-conflict"
 rules:
   - base: main
     upstream: openai:main
@@ -13,5 +15,3 @@ rules:
       - michiosw
     conflictReviewers:
       - michiosw
-    label: "upstream-sync"
-    conflictLabel: "merge-conflict"
