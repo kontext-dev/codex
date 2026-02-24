@@ -12,7 +12,7 @@ If you want Codex in your code editor (VS Code, Cursor, Windsurf), <a href="http
 
 ## Kontext-Dev fork
 
-This fork wires Codex CLI to the Kontext-Dev MCP server using the `kontext-dev-identity`
+This fork wires Codex CLI to the Kontext-Dev MCP server using the `kontext-dev-sdk`
 Rust SDK. It authenticates with PKCE, exchanges tokens for `mcp-gateway`, and
 attaches a single MCP server automatically.
 

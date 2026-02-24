@@ -1677,7 +1677,7 @@ dependencies = [
  "indoc",
  "insta",
  "keyring",
- "kontext-dev-identity",
+ "kontext-dev-sdk",
  "landlock",
  "libc",
  "maplit",
@@ -5071,15 +5071,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "kontext-dev-identity"
-version = "0.0.2"
+name = "kontext-dev-sdk"
+version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "724c9e96e8e19a5003e7a2f4812b2f17f2ae69b02c51e8878856a73de1bae37a"
+checksum = "0cf27b4bd31f5fbaefe0b5e8acaf0753fd86566514e0539dd7ef9b075580ade9"
 dependencies = [
  "base64 0.22.1",
  "dirs",
  "jsonwebtoken",
- "kontext-dev-identity-core",
+ "kontext-dev-sdk-core",
  "rand 0.9.2",
  "reqwest",
  "serde",
@@ -5094,10 +5094,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "kontext-dev-identity-core"
-version = "0.0.2"
+name = "kontext-dev-sdk-core"
+version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "619495449b144d6a18a07c2ff5f6ea05176053f9a498a0279929d2b2e62eae07"
+checksum = "ab6779d6da51a7d271c5c17d74a9e8e44620d9cb8fb964b4c54566e6018cb918"
 dependencies = [
  "serde",
  "serde_json",

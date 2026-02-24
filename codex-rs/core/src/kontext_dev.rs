@@ -4,10 +4,10 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use anyhow::anyhow;
-use kontext_dev_identity::KontextClientConfig;
-use kontext_dev_identity::create_kontext_orchestrator;
-use kontext_dev_identity::mcp::KontextTool;
-use kontext_dev_identity::orchestrator::KontextOrchestrator;
+use kontext_dev_sdk::KontextClientConfig;
+use kontext_dev_sdk::create_kontext_orchestrator;
+use kontext_dev_sdk::mcp::KontextTool;
+use kontext_dev_sdk::orchestrator::KontextOrchestrator;
 use serde_json::Map;
 use serde_json::Value;
 use serde_json::json;
@@ -46,7 +46,7 @@ struct ToolState {
 
 pub(crate) struct KontextDevRuntime {
     client: KontextOrchestrator,
-    settings: kontext_dev_identity::KontextDevConfig,
+    settings: kontext_dev_sdk::KontextDevConfig,
     state: Arc<RwLock<ToolState>>,
 }
 
