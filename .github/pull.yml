@@ -1,0 +1,17 @@
+version: "1"
+rules:
+  - base: main
+    upstream: openai:main
+    mergeMethod: hardreset
+    mergeUnstable: true
+
+  - base: kontext-dev
+    upstream: main
+    mergeMethod: merge
+    mergeUnstable: false
+    assignees:
+      - michiosw
+    conflictReviewers:
+      - michiosw
+    label: "upstream-sync"
+    conflictLabel: "merge-conflict"
