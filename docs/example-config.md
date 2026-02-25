@@ -2,30 +2,19 @@
 
 For a sample configuration file, see [this documentation](https://developers.openai.com/codex/config-sample).
 
-For this fork, add the following block to `~/.codex/config.toml` to enable Kontext-Dev:
+This fork does not require a `[kontext-dev]` block anymore.
 
-```toml
-[kontext-dev]
-client_id = "<application-client-id>"
-redirect_uri = "http://localhost:3000/callback"
-```
+Kontext is configured with baked defaults in the binary:
 
-Optional values (defaults shown):
+- `client_id`: baked into the fork build
+- `redirect_uri`: `http://localhost:3333/callback`
+- `server`: `http://localhost:4000/mcp`
+- `resource`: `mcp-gateway`
+- `integration_ui_url`: `http://localhost:3000`
+- `open_connect_page_on_login`: `true`
 
-```toml
-[kontext-dev]
-client_id = "<application-client-id>"
-redirect_uri = "http://localhost:3000/callback"
+Flow rule: local gateway handles API/MCP/auth endpoints on `localhost:4000`,
+and integrations connect runs on local web `localhost:3000`. Do not expect
+`http://localhost:4000/oauth/connect` to exist.
 
-server = "https://api.kontext.dev"
-scope = ""
-resource = "mcp-gateway"
-server_name = "kontext-dev"
-auth_timeout_seconds = 300
-open_connect_page_on_login = true
-integration_ui_url = "https://app.kontext.dev"
-# integration_return_to = "https://app.kontext.dev/oauth/complete"
-# token_cache_path = "/Users/<you>/.codex/kontext-dev-token.json"
-```
-
-With this configuration, Kontext tools are added directly to the normal Codex tool list (they do not appear under MCP server inventory).
+On first run, Codex handles normal login, then Kontext PKCE and integration connect flow run automatically.

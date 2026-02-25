@@ -1,5 +1,38 @@
 ## Installing & building
 
+### Install the private Kontext fork
+
+This fork is distributed as a private GitHub Packages npm package:
+`@kontext-dev/codex`.
+
+1. Create a GitHub personal access token (classic) with at least
+   `read:packages`.
+2. Configure npm to use GitHub Packages for the `@kontext-dev` scope:
+
+```bash
+npm config set @kontext-dev:registry https://npm.pkg.github.com
+npm config set //npm.pkg.github.com/:_authToken YOUR_GITHUB_PAT
+```
+
+3. Install and run:
+
+```bash
+npm install -g @kontext-dev/codex
+codex-kontext
+```
+
+First run behavior:
+
+1. Normal Codex login runs first.
+2. Kontext PKCE auth opens automatically if no valid Kontext token is cached.
+3. If integrations are disconnected, the Kontext integrations connect page opens automatically.
+4. Local gateway handles API/MCP/auth endpoints on `localhost:4000`;
+   integrations connect runs on local web `http://localhost:3000/oauth/connect`.
+   Do not expect `http://localhost:4000/oauth/connect` to exist.
+
+Subsequent runs reuse the cached token and integration state, so PKCE/connect
+prompts do not repeat unless auth expires or integrations become disconnected.
+
 ### System requirements
 
 | Requirement                 | Details                                                         |
@@ -16,7 +49,7 @@ The GitHub Release also contains a [DotSlash](https://dotslash-cli.com/) file fo
 
 ```bash
 # Clone the repository and navigate to the root of the Cargo workspace.
-git clone https://github.com/openai/codex.git
+git clone https://github.com/kontext-dev/codex.git
 cd codex/codex-rs
 
 # Install the Rust toolchain, if necessary.

@@ -5,6 +5,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use anyhow::anyhow;
 use kontext_dev_sdk::KontextClientConfig;
+use kontext_dev_sdk::KontextDevError;
 use kontext_dev_sdk::create_kontext_orchestrator;
 use kontext_dev_sdk::mcp::KontextTool;
 use kontext_dev_sdk::orchestrator::KontextOrchestrator;
@@ -14,15 +15,23 @@ use serde_json::json;
 use sha1::Digest;
 use sha1::Sha1;
 use tokio::sync::RwLock;
-use tracing::debug;
 use tracing::info;
 use tracing::warn;
+use url::Url;
 
 use crate::config::Config;
 
 const MAX_TOOL_NAME_LENGTH: usize = 64;
 const TOOL_NAME_PREFIX: &str = "kontext__";
 const REQUEST_CAPABILITY_TOOL_NAME: &str = "kontext__request_capability";
+const KONTEXT_CLIENT_ID: &str = "app_abf8b220-a0e6-4203-bbd4-ba3d311f8f07";
+const KONTEXT_REDIRECT_URI: &str = "http://localhost:3333/callback";
+const KONTEXT_SERVER_URL: &str = "http://localhost:4000/mcp";
+const KONTEXT_RESOURCE: &str = "mcp-gateway";
+const KONTEXT_SCOPE: &str = "";
+const KONTEXT_SERVER_NAME: &str = "kontext-dev";
+const KONTEXT_AUTH_TIMEOUT_SECONDS: i64 = 300;
+const KONTEXT_INTEGRATION_UI_URL: &str = "http://localhost:3000";
 
 #[derive(Clone, Debug)]
 pub(crate) struct InjectedKontextToolSpec {
@@ -42,6 +51,7 @@ struct DisconnectedCapability {
 struct ToolState {
     tool_id_by_name: HashMap<String, String>,
     disconnected_capabilities: Vec<DisconnectedCapability>,
+    needs_connect_page: bool,
 }
 
 pub(crate) struct KontextDevRuntime {
@@ -52,11 +62,29 @@ pub(crate) struct KontextDevRuntime {
 
 impl KontextDevRuntime {
     pub(crate) async fn list_tool_specs(&self) -> Result<Vec<InjectedKontextToolSpec>> {
-        let tools = self
-            .client
-            .tools_list()
-            .await
-            .map_err(|err| anyhow!("failed to list Kontext tools: {err}"))?;
+        let should_force_refresh = {
+            let state = self.state.read().await;
+            state.needs_connect_page || !state.disconnected_capabilities.is_empty()
+        };
+
+        if should_force_refresh && let Err(err) = self.reconnect_client().await {
+            warn!(
+                "Unable to force-refresh Kontext session after connect-state change; retrying with existing session: {err}"
+            );
+        }
+
+        let mut needs_connect_page = false;
+        let tools = match self.client.tools_list().await {
+            Ok(tools) => tools,
+            Err(err) if is_url_elicitation_required_error(&err) => {
+                warn!(
+                    "Kontext gateway requires integration connect URL elicitation before tool listing. Continuing startup and showing connect guidance."
+                );
+                needs_connect_page = true;
+                Vec::new()
+            }
+            Err(err) => return Err(anyhow!("failed to list Kontext tools: {err}")),
+        };
 
         let mut seen_names = HashSet::new();
         let mut tool_specs = Vec::new();
@@ -84,10 +112,20 @@ impl KontextDevRuntime {
                         .map(|connect_url| DisconnectedCapability {
                             id: integration.id,
                             name: integration.name,
-                            connect_url,
+                            connect_url: normalize_connect_url(
+                                connect_url.as_str(),
+                                self.settings.integration_ui_url.as_deref(),
+                            ),
                         })
                 })
                 .collect::<Vec<_>>(),
+            Err(err) if is_url_elicitation_required_error(&err) => {
+                warn!(
+                    "Kontext integrations require URL elicitation before listing status. Continuing startup and showing connect guidance."
+                );
+                needs_connect_page = true;
+                Vec::new()
+            }
             Err(err) => {
                 warn!("Unable to list Kontext integrations: {err}");
                 Vec::new()
@@ -103,6 +141,7 @@ impl KontextDevRuntime {
         let mut state = self.state.write().await;
         state.tool_id_by_name = tool_id_by_name;
         state.disconnected_capabilities = disconnected_capabilities;
+        state.needs_connect_page = needs_connect_page;
 
         Ok(tool_specs)
     }
@@ -122,10 +161,20 @@ impl KontextDevRuntime {
             warn!("Unable to refresh Kontext tool inventory before execute: {err}");
         }
 
-        let tool_id = {
+        let mut tool_id = {
             let state = self.state.read().await;
             state.tool_id_by_name.get(model_tool_name).cloned()
         };
+
+        if tool_id.is_none()
+            && self.reconnect_client().await.is_ok()
+            && self.list_tool_specs().await.is_ok()
+        {
+            tool_id = {
+                let state = self.state.read().await;
+                state.tool_id_by_name.get(model_tool_name).cloned()
+            };
+        }
 
         let Some(tool_id) = tool_id else {
             return Err(anyhow!(
@@ -133,36 +182,77 @@ impl KontextDevRuntime {
             ));
         };
 
-        let result = self
+        let result = match self
             .client
-            .tools_execute(tool_id.as_str(), Some(args))
+            .tools_execute(tool_id.as_str(), Some(args.clone()))
             .await
-            .map_err(|err| anyhow!("Kontext tool execution failed for `{tool_id}`: {err}"))?;
+        {
+            Ok(result) => result,
+            Err(err) if should_retry_tool_execution(&err) => {
+                warn!(
+                    "Kontext tool execution for `{tool_id}` failed with a recoverable auth/session error; reconnecting and retrying once: {err}"
+                );
+
+                self.reconnect_client().await?;
+                self.list_tool_specs().await?;
+
+                let retry_tool_id = {
+                    let state = self.state.read().await;
+                    state
+                        .tool_id_by_name
+                        .get(model_tool_name)
+                        .cloned()
+                        .unwrap_or(tool_id.clone())
+                };
+
+                self.client
+                    .tools_execute(retry_tool_id.as_str(), Some(args))
+                    .await
+                    .map_err(|retry_err| {
+                        anyhow!(
+                            "Kontext tool execution failed for `{retry_tool_id}` after reconnect retry: {retry_err}"
+                        )
+                    })?
+            }
+            Err(err) => {
+                return Err(anyhow!(
+                    "Kontext tool execution failed for `{tool_id}`: {err}"
+                ));
+            }
+        };
 
         Ok(result.content)
     }
 
     pub(crate) async fn maybe_show_connect_guidance(&self, config: &mut Config) {
-        let disconnected = {
+        let (disconnected, needs_connect_page) = {
             let state = self.state.read().await;
-            state.disconnected_capabilities.clone()
+            (
+                state.disconnected_capabilities.clone(),
+                state.needs_connect_page,
+            )
         };
 
-        if disconnected.is_empty() {
+        if disconnected.is_empty() && !needs_connect_page {
             return;
         }
 
         if should_auto_open_connect_page(
             self.settings.open_connect_page_on_login,
             disconnected.as_slice(),
+            needs_connect_page,
         ) {
             match self.client.get_connect_page_url().await {
                 Ok(connect) => {
+                    let connect_url = normalize_connect_url(
+                        connect.connect_url.as_str(),
+                        self.settings.integration_ui_url.as_deref(),
+                    );
                     info!(
                         "Kontext integrations are disconnected. Open this URL to connect: {}",
-                        connect.connect_url
+                        connect_url
                     );
-                    if let Err(err) = webbrowser::open(&connect.connect_url) {
+                    if let Err(err) = webbrowser::open(&connect_url) {
                         warn!(
                             "Failed to open Kontext connect URL in browser (showing URL instead): {err}"
                         );
@@ -170,8 +260,7 @@ impl KontextDevRuntime {
                         info!("Opened Kontext integration connect page in browser.");
                     }
                     config.startup_warnings.push(format!(
-                        "Kontext integrations require connection. Open this URL to finish setup: {}",
-                        connect.connect_url
+                        "Kontext integrations require connection. Open this URL to finish setup: {connect_url}"
                     ));
                 }
                 Err(err) => {
@@ -186,6 +275,10 @@ impl KontextDevRuntime {
                 "Kontext integration `{}` is disconnected. Open this URL to connect: {}",
                 first.name, first.connect_url
             ));
+        } else if needs_connect_page {
+            config.startup_warnings.push(
+                "Kontext requires integration connection before tools are available. Open the connect page to finish setup.".to_string(),
+            );
         }
     }
 
@@ -243,15 +336,25 @@ impl KontextDevRuntime {
             ))
         }
     }
+
+    async fn reconnect_client(&self) -> Result<()> {
+        self.client.disconnect().await;
+        self.client
+            .connect()
+            .await
+            .map_err(|err| anyhow!("failed to reconnect Kontext session: {err}"))
+    }
 }
 
 pub(crate) async fn initialize_kontext_dev_runtime(
     config: &mut Config,
 ) -> Result<Option<Arc<KontextDevRuntime>>> {
-    let Some(settings) = config.kontext_dev.clone() else {
-        debug!("Kontext-Dev not configured; skipping runtime initialization.");
+    // Keep core tests deterministic/offline: test harness runs should not trigger PKCE.
+    if cfg!(test) || std::env::var_os("RUST_TEST_THREADS").is_some() {
         return Ok(None);
-    };
+    }
+
+    let settings = resolve_kontext_dev_settings(config);
 
     let client = create_kontext_orchestrator(KontextClientConfig {
         client_id: settings.client_id.clone(),
@@ -282,6 +385,45 @@ pub(crate) async fn initialize_kontext_dev_runtime(
     runtime.maybe_show_connect_guidance(config).await;
 
     Ok(Some(runtime))
+}
+
+fn resolve_kontext_dev_settings(config: &Config) -> kontext_dev_sdk::KontextDevConfig {
+    if config.kontext_dev.is_some() {
+        warn!("Ignoring `[kontext-dev]` config values; this fork now uses baked Kontext defaults.");
+    }
+
+    baked_kontext_dev_settings()
+}
+
+fn baked_kontext_dev_settings() -> kontext_dev_sdk::KontextDevConfig {
+    kontext_dev_sdk::KontextDevConfig {
+        server: KONTEXT_SERVER_URL.to_string(),
+        client_id: KONTEXT_CLIENT_ID.to_string(),
+        client_secret: None,
+        scope: KONTEXT_SCOPE.to_string(),
+        server_name: KONTEXT_SERVER_NAME.to_string(),
+        resource: KONTEXT_RESOURCE.to_string(),
+        integration_ui_url: Some(KONTEXT_INTEGRATION_UI_URL.to_string()),
+        integration_return_to: None,
+        open_connect_page_on_login: true,
+        auth_timeout_seconds: KONTEXT_AUTH_TIMEOUT_SECONDS,
+        token_cache_path: baked_token_cache_path(),
+        redirect_uri: KONTEXT_REDIRECT_URI.to_string(),
+    }
+}
+
+fn baked_token_cache_path() -> Option<String> {
+    let mut path = dirs::home_dir()?;
+    path.push(".kontext-dev");
+    path.push("tokens");
+
+    let server_slug = KONTEXT_SERVER_URL
+        .replace("https://", "")
+        .replace("http://", "")
+        .replace(['/', ':'], "_");
+    path.push(format!("{KONTEXT_CLIENT_ID}__{server_slug}.json"));
+
+    Some(path.to_string_lossy().into_owned())
 }
 
 fn map_kontext_tool(
@@ -361,8 +503,60 @@ fn normalize_input_schema(input_schema: Option<Value>) -> Value {
 fn should_auto_open_connect_page(
     open_connect_page_on_login: bool,
     disconnected: &[DisconnectedCapability],
+    needs_connect_page: bool,
 ) -> bool {
-    open_connect_page_on_login && !disconnected.is_empty()
+    open_connect_page_on_login && (!disconnected.is_empty() || needs_connect_page)
+}
+
+fn normalize_connect_url(raw_url: &str, integration_ui_url: Option<&str>) -> String {
+    let Some(base) = integration_ui_url else {
+        return raw_url.to_string();
+    };
+
+    let Ok(mut base_url) = Url::parse(base) else {
+        return raw_url.to_string();
+    };
+    let Ok(source_url) = Url::parse(raw_url) else {
+        return raw_url.to_string();
+    };
+
+    base_url.set_path(source_url.path());
+    base_url.set_query(source_url.query());
+    base_url.set_fragment(None);
+    base_url.to_string()
+}
+
+fn is_url_elicitation_required_error(err: &KontextDevError) -> bool {
+    match err {
+        KontextDevError::ConnectSession { message } => {
+            let message = message.to_ascii_lowercase();
+            message.contains("url elicitation required")
+                || message.contains("url elicitations required")
+        }
+        _ => false,
+    }
+}
+
+fn should_retry_tool_execution(err: &KontextDevError) -> bool {
+    if is_url_elicitation_required_error(err) {
+        return true;
+    }
+
+    match err {
+        KontextDevError::ConnectSession { message }
+        | KontextDevError::IntegrationOAuthInit { message }
+        | KontextDevError::TokenRequest { message, .. }
+        | KontextDevError::TokenExchange { message, .. } => {
+            let message = message.to_ascii_lowercase();
+            message.contains("unauthorized")
+                || message.contains("forbidden")
+                || message.contains("denied")
+                || message.contains("credentials_required")
+                || message.contains("invalid session")
+                || message.contains("not connected")
+        }
+        _ => false,
+    }
 }
 
 fn unique_tool_name(raw: &str, seen_names: &mut HashSet<String>) -> String {
@@ -438,18 +632,123 @@ mod tests {
     }
 
     #[test]
-    fn should_auto_open_connect_page_only_when_disconnected_and_enabled() {
+    fn should_auto_open_connect_page_when_enabled_and_disconnected_or_elicited() {
         let disconnected = vec![DisconnectedCapability {
             id: "linear".to_string(),
             name: "Linear".to_string(),
-            connect_url: "https://app.kontext.dev/oauth/connect?session=123".to_string(),
+            connect_url: "http://localhost:3000/oauth/connect?session=123".to_string(),
         }];
 
-        assert!(should_auto_open_connect_page(true, disconnected.as_slice()));
+        assert!(should_auto_open_connect_page(
+            true,
+            disconnected.as_slice(),
+            false
+        ));
+        assert!(should_auto_open_connect_page(true, &[], true));
         assert!(!should_auto_open_connect_page(
             false,
-            disconnected.as_slice()
+            disconnected.as_slice(),
+            false
         ));
-        assert!(!should_auto_open_connect_page(true, &[]));
+        assert!(!should_auto_open_connect_page(false, &[], true));
+        assert!(!should_auto_open_connect_page(true, &[], false));
+    }
+
+    #[test]
+    fn normalize_connect_url_uses_baked_ui_host_with_same_path_and_query() {
+        let normalized = normalize_connect_url(
+            "https://app.kontext.dev/oauth/connect?session=test-session",
+            Some("http://localhost:3000"),
+        );
+
+        assert_eq!(
+            normalized,
+            "http://localhost:3000/oauth/connect?session=test-session"
+        );
+    }
+
+    #[test]
+    fn normalize_connect_url_falls_back_to_raw_url_when_base_is_invalid() {
+        let raw = "https://app.kontext.dev/oauth/connect?session=test-session";
+        let normalized = normalize_connect_url(raw, Some("not a valid url"));
+        assert_eq!(normalized, raw);
+    }
+
+    #[test]
+    fn url_elicitation_required_error_detection_is_specific() {
+        let required_error = KontextDevError::ConnectSession {
+            message: "MCP error -32042: URL elicitations required".to_string(),
+        };
+        let other_connect_error = KontextDevError::ConnectSession {
+            message: "MCP request failed: invalid session".to_string(),
+        };
+        let other_error = KontextDevError::TokenExchange {
+            resource: "mcp-gateway".to_string(),
+            message: "exchange failed".to_string(),
+        };
+
+        assert!(is_url_elicitation_required_error(&required_error));
+        assert!(!is_url_elicitation_required_error(&other_connect_error));
+        assert!(!is_url_elicitation_required_error(&other_error));
+    }
+
+    #[test]
+    fn should_retry_tool_execution_for_auth_and_session_errors() {
+        let denied = KontextDevError::ConnectSession {
+            message: "unauthorized: tool invocation denied".to_string(),
+        };
+        let invalid_session = KontextDevError::ConnectSession {
+            message: "MCP request failed: invalid session".to_string(),
+        };
+        let non_retryable = KontextDevError::ConnectSession {
+            message: "MCP request failed: input schema invalid".to_string(),
+        };
+
+        assert!(should_retry_tool_execution(&denied));
+        assert!(should_retry_tool_execution(&invalid_session));
+        assert!(!should_retry_tool_execution(&non_retryable));
+    }
+
+    #[test]
+    fn baked_settings_match_fork_defaults() {
+        let settings = baked_kontext_dev_settings();
+
+        assert_eq!(settings.client_id, KONTEXT_CLIENT_ID);
+        assert_eq!(settings.redirect_uri, KONTEXT_REDIRECT_URI);
+        assert_eq!(settings.server, KONTEXT_SERVER_URL);
+        assert_eq!(settings.resource, KONTEXT_RESOURCE);
+        assert_eq!(
+            settings.integration_ui_url.as_deref(),
+            Some(KONTEXT_INTEGRATION_UI_URL)
+        );
+        assert!(settings.token_cache_path.as_deref().is_some_and(|path| {
+            path.contains("app_abf8b220-a0e6-4203-bbd4-ba3d311f8f07__localhost_4000_mcp.json")
+        }));
+        assert!(settings.open_connect_page_on_login);
+    }
+
+    #[test]
+    fn resolve_settings_ignores_user_kontext_config() {
+        let mut config = crate::config::test_config();
+        let mut user_settings = baked_kontext_dev_settings();
+        user_settings.client_id = "app_user_override".to_string();
+        user_settings.redirect_uri = "http://localhost:3000/callback".to_string();
+        user_settings.server = "https://example.invalid".to_string();
+        config.kontext_dev = Some(user_settings);
+
+        let resolved = resolve_kontext_dev_settings(&config);
+
+        assert_eq!(resolved.client_id, KONTEXT_CLIENT_ID);
+        assert_eq!(resolved.redirect_uri, KONTEXT_REDIRECT_URI);
+        assert_eq!(resolved.server, KONTEXT_SERVER_URL);
+    }
+
+    #[tokio::test]
+    async fn initialize_runtime_skips_under_test_harness() {
+        let mut config = crate::config::test_config();
+        let runtime = initialize_kontext_dev_runtime(&mut config)
+            .await
+            .expect("runtime init should not fail in tests");
+        assert!(runtime.is_none());
     }
 }

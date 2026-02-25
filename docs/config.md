@@ -14,39 +14,28 @@ Codex can connect to MCP servers configured in `~/.codex/config.toml`. See the c
 
 ### Kontext-Dev fork configuration
 
-This fork also supports a top-level `[kontext-dev]` table. It authenticates with PKCE, exchanges identity into gateway/internal resource tokens, and injects Kontext tools directly as regular function tools (not as a raw MCP server entry).
+This fork now uses baked Kontext defaults and does not require any `[kontext-dev]`
+entries in `~/.codex/config.toml`.
 
-Minimal setup:
+On first run:
 
-```toml
-[kontext-dev]
-client_id = "<application-client-id>"
-redirect_uri = "http://localhost:3000/callback"
-```
+1. Codex shows its normal login flow.
+2. Kontext PKCE auth is started automatically.
+3. If integrations are disconnected, the connect page opens automatically.
 
-`server` defaults to `https://api.kontext.dev` when omitted.
+Built-in defaults:
 
-Optional defaults:
+- `client_id`: baked into the fork build.
+- `redirect_uri`: `http://localhost:3333/callback`
+- `server`: `http://localhost:4000/mcp`
+- `resource`: `mcp-gateway`
+- `integration_ui_url`: `http://localhost:3000`
+- `open_connect_page_on_login`: `true`
 
-```toml
-[kontext-dev]
-client_id = "<application-client-id>"
-redirect_uri = "http://localhost:3000/callback"
-
-# optional for confidential clients
-# client_secret = "<application-client-secret>"
-
-scope = ""
-resource = "mcp-gateway"
-server_name = "kontext-dev"
-auth_timeout_seconds = 300
-open_connect_page_on_login = true
-integration_ui_url = "https://app.kontext.dev"
-# integration_return_to = "https://app.kontext.dev/oauth/complete"
-# token_cache_path = "/Users/<you>/.codex/kontext-dev-token.json"
-```
-
-`open_connect_page_on_login = true` auto-opens the connect page only when disconnected integrations exist.
+Hard cutover: user-provided `[kontext-dev]` values are ignored by this fork.
+Flow rule: local gateway handles API/MCP/auth endpoints on `localhost:4000`,
+and integrations connect runs on local web `localhost:3000`. Do not expect
+`http://localhost:4000/oauth/connect` to exist.
 
 ## Apps (Connectors)
 
