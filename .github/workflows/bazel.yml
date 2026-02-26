@@ -4,12 +4,6 @@ name: Bazel (experimental)
 # https://github.com/cerisier/toolchains_llvm_bootstrapped/blob/main/.github/workflows/ci.yaml
 
 on:
-  pull_request:
-    branches:
-      - kontext-dev
-  push:
-    branches:
-      - kontext-dev
   workflow_dispatch:
 
 concurrency:
@@ -18,8 +12,6 @@ concurrency:
   cancel-in-progress: true
 jobs:
   test:
-    # Skip automated main->kontext-dev sync PRs; they are validated elsewhere.
-    if: ${{ github.event_name != 'pull_request' || github.head_ref != 'main' }}
     strategy:
       fail-fast: false
       matrix:
