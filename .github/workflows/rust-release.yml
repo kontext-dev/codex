@@ -374,6 +374,7 @@ jobs:
             codex-rs/dist/${{ matrix.target }}/*
 
   build-windows:
+    if: ${{ github.repository == 'openai/codex' }}
     needs: tag-check
     uses: ./.github/workflows/rust-release-windows.yml
     with:
@@ -390,6 +391,7 @@ jobs:
     secrets: inherit
 
   release:
+    if: ${{ always() && needs.build.result == 'success' && (needs.build-windows.result == 'success' || needs.build-windows.result == 'skipped') && needs.shell-tool-mcp.result == 'success' }}
     needs:
       - build
       - build-windows
