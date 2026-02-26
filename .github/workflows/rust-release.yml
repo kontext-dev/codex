@@ -401,6 +401,7 @@ jobs:
     permissions:
       contents: write
       actions: read
+      packages: write
     outputs:
       version: ${{ steps.release_name.outputs.name }}
       tag: ${{ github.ref_name }}
@@ -495,69 +496,16 @@ jobs:
           # Kontext builds use a semver prerelease suffix: x.y.z-kontext.N.
           prerelease: ${{ contains(steps.release_name.outputs.name, '-') }}
 
-      - if: ${{ github.repository == 'openai/codex' }}
-        uses: facebook/dotslash-publish-release@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag: ${{ github.ref_name }}
-          config: .github/dotslash-config.json
-
-      - name: Trigger developers.openai.com deploy
-        if: ${{ github.repository == 'openai/codex' && !contains(steps.release_name.outputs.name, '-') }}
-        # Only trigger the deploy if the release is not a pre-release.
-        # The deploy is used to update the developers.openai.com website with the new config schema json file.
-        continue-on-error: true
-        env:
-          DEV_WEBSITE_VERCEL_DEPLOY_HOOK_URL: ${{ secrets.DEV_WEBSITE_VERCEL_DEPLOY_HOOK_URL }}
-        run: |
-          if ! curl -sS -f -o /dev/null -X POST "$DEV_WEBSITE_VERCEL_DEPLOY_HOOK_URL"; then
-            echo "::warning title=developers.openai.com deploy hook failed::Vercel deploy hook POST failed for ${GITHUB_REF_NAME}"
-            exit 1
-          fi
-
-  publish-github-packages:
-    name: publish-github-packages
-    needs: release
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-
-    steps:
-      - name: Setup Node.js
+      - name: Setup Node.js for GitHub Packages publish
         uses: actions/setup-node@v6
         with:
           node-version: 22
           registry-url: "https://npm.pkg.github.com"
           scope: "@kontext-dev"
 
-      - name: Download npm tarballs from release
+      - name: Publish npm tarballs to GitHub Packages
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          version="${{ needs.release.outputs.version }}"
-          tag="${{ needs.release.outputs.tag }}"
-          mkdir -p dist/npm
-          patterns=(
-            "codex-npm-${version}.tgz"
-            "codex-npm-linux-*-${version}.tgz"
-            "codex-npm-darwin-*-${version}.tgz"
-            "codex-npm-win32-*-${version}.tgz"
-          )
-          for pattern in "${patterns[@]}"; do
-            if ! gh release download "$tag" \
-              --repo "${GITHUB_REPOSITORY}" \
-              --pattern "$pattern" \
-              --dir dist/npm; then
-              echo "No release assets matched ${pattern}; skipping."
-            fi
-          done
-
-      - name: Publish to GitHub Packages
-        env:
-          VERSION: ${{ needs.release.outputs.version }}
+          VERSION: ${{ steps.release_name.outputs.name }}
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
@@ -616,6 +564,27 @@ jobs:
 
             exit "${publish_status}"
           done
+
+      - if: ${{ github.repository == 'openai/codex' }}
+        uses: facebook/dotslash-publish-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag: ${{ github.ref_name }}
+          config: .github/dotslash-config.json
+
+      - name: Trigger developers.openai.com deploy
+        if: ${{ github.repository == 'openai/codex' && !contains(steps.release_name.outputs.name, '-') }}
+        # Only trigger the deploy if the release is not a pre-release.
+        # The deploy is used to update the developers.openai.com website with the new config schema json file.
+        continue-on-error: true
+        env:
+          DEV_WEBSITE_VERCEL_DEPLOY_HOOK_URL: ${{ secrets.DEV_WEBSITE_VERCEL_DEPLOY_HOOK_URL }}
+        run: |
+          if ! curl -sS -f -o /dev/null -X POST "$DEV_WEBSITE_VERCEL_DEPLOY_HOOK_URL"; then
+            echo "::warning title=developers.openai.com deploy hook failed::Vercel deploy hook POST failed for ${GITHUB_REF_NAME}"
+            exit 1
+          fi
 
   update-branch:
     if: ${{ contains(github.ref_name, '-alpha') }}
