@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+import time
 import zipfile
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -21,6 +22,7 @@ from urllib.request import urlopen
 SCRIPT_DIR = Path(__file__).resolve().parent
 CODEX_CLI_ROOT = SCRIPT_DIR.parent
 DEFAULT_WORKFLOW_URL = "https://github.com/openai/codex/actions/runs/17952349351"  # rust-v0.40.0
+DEFAULT_WORKFLOW_REPO = "openai/codex"
 VENDOR_DIR_NAME = "vendor"
 RG_MANIFEST = CODEX_CLI_ROOT / "bin" / "rg"
 BINARY_TARGETS = (
@@ -169,23 +171,30 @@ def main() -> int:
     if not workflow_url:
         workflow_url = DEFAULT_WORKFLOW_URL
 
-    workflow_id = workflow_url.rstrip("/").split("/")[-1]
-    print(f"Downloading native artifacts from workflow {workflow_id}...")
+    workflow_repo, workflow_id = _parse_workflow_repo_and_id(workflow_url)
+    print(
+        f"Downloading native artifacts from workflow {workflow_id} "
+        f"in {workflow_repo}..."
+    )
 
     with _gha_group(f"Download native artifacts from workflow {workflow_id}"):
         with tempfile.TemporaryDirectory(prefix="codex-native-artifacts-") as artifacts_dir_str:
             artifacts_dir = Path(artifacts_dir_str)
-            _download_artifacts(workflow_id, artifacts_dir)
-            install_binary_components(
+            _download_artifacts(workflow_repo, workflow_id, artifacts_dir)
+            installed_binary_targets = install_binary_components(
                 artifacts_dir,
                 vendor_dir,
                 [BINARY_COMPONENTS[name] for name in components if name in BINARY_COMPONENTS],
             )
 
     if "rg" in components:
+        rg_targets = DEFAULT_RG_TARGETS
+        if installed_binary_targets:
+            rg_targets = [target for target in DEFAULT_RG_TARGETS if target in installed_binary_targets]
+
         with _gha_group("Fetch ripgrep binaries"):
-            print("Fetching ripgrep binaries...")
-            fetch_rg(vendor_dir, DEFAULT_RG_TARGETS, manifest_path=RG_MANIFEST)
+            print(f"Fetching ripgrep binaries for targets: {', '.join(rg_targets)}")
+            fetch_rg(vendor_dir, rg_targets, manifest_path=RG_MANIFEST)
 
     print(f"Installed native dependencies into {vendor_dir}")
     return 0
@@ -259,7 +268,23 @@ def fetch_rg(
     return [results[target] for target in targets]
 
 
-def _download_artifacts(workflow_id: str, dest_dir: Path) -> None:
+def _parse_workflow_repo_and_id(workflow_ref: str) -> tuple[str, str]:
+    workflow_ref = workflow_ref.strip()
+    parsed = urlparse(workflow_ref)
+
+    if parsed.scheme and parsed.netloc:
+        path_parts = [part for part in parsed.path.split("/") if part]
+        # Expected path: /<owner>/<repo>/actions/runs/<id>
+        if len(path_parts) >= 5 and path_parts[2] == "actions" and path_parts[3] == "runs":
+            repo = f"{path_parts[0]}/{path_parts[1]}"
+            workflow_id = path_parts[4]
+            return repo, workflow_id
+
+    repo = os.environ.get("CODEX_RELEASE_REPO", DEFAULT_WORKFLOW_REPO)
+    return repo, workflow_ref
+
+
+def _download_artifacts(workflow_repo: str, workflow_id: str, dest_dir: Path) -> None:
     cmd = [
         "gh",
         "run",
@@ -267,7 +292,7 @@ def _download_artifacts(workflow_id: str, dest_dir: Path) -> None:
         "--dir",
         str(dest_dir),
         "--repo",
-        "openai/codex",
+        workflow_repo,
         workflow_id,
     ]
     subprocess.check_call(cmd)
@@ -277,18 +302,44 @@ def install_binary_components(
     artifacts_dir: Path,
     vendor_dir: Path,
     selected_components: Sequence[BinaryComponent],
-) -> None:
+) -> set[str]:
     if not selected_components:
-        return
+        return set()
+
+    installed_targets: set[str] = set()
 
     for component in selected_components:
         component_targets = list(component.targets or BINARY_TARGETS)
+        available_targets: list[str] = []
+        missing_targets: list[str] = []
+
+        for target in component_targets:
+            artifact_path = (
+                artifacts_dir
+                / target
+                / _archive_name_for_target(component.artifact_prefix, target)
+            )
+            if artifact_path.exists():
+                available_targets.append(target)
+            else:
+                missing_targets.append(target)
 
         print(
             f"Installing {component.binary_basename} binaries for targets: "
             + ", ".join(component_targets)
         )
-        max_workers = min(len(component_targets), max(1, (os.cpu_count() or 1)))
+
+        if missing_targets:
+            print(
+                f"  skipping missing targets for {component.binary_basename}: "
+                + ", ".join(missing_targets)
+            )
+
+        if not available_targets:
+            print(f"  no artifacts available for {component.binary_basename}; skipping.")
+            continue
+
+        max_workers = min(len(available_targets), max(1, (os.cpu_count() or 1)))
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {
                 executor.submit(
@@ -298,11 +349,14 @@ def install_binary_components(
                     target,
                     component,
                 ): target
-                for target in component_targets
+                for target in available_targets
             }
             for future in as_completed(futures):
                 installed_path = future.result()
                 print(f"  installed {installed_path}")
+                installed_targets.add(futures[future])
+
+    return installed_targets
 
 
 def _install_single_binary(
@@ -399,11 +453,20 @@ def _fetch_single_rg(
 
 
 def _download_file(url: str, dest: Path) -> None:
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.unlink(missing_ok=True)
+    attempts = 3
 
-    with urlopen(url, timeout=DOWNLOAD_TIMEOUT_SECS) as response, open(dest, "wb") as out:
-        shutil.copyfileobj(response, out)
+    for attempt in range(1, attempts + 1):
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.unlink(missing_ok=True)
+        try:
+            with urlopen(url, timeout=DOWNLOAD_TIMEOUT_SECS) as response, open(dest, "wb") as out:
+                shutil.copyfileobj(response, out)
+            return
+        except Exception:
+            if attempt == attempts:
+                raise
+            print(f"  download failed for {url} (attempt {attempt}/{attempts}), retrying...")
+            time.sleep(1)
 
 
 def extract_archive(

@@ -155,6 +155,7 @@ def main() -> int:
 
     vendor_temp_root: Path | None = None
     vendor_src: Path | None = None
+    available_targets: set[str] = set()
     resolved_head_sha: str | None = None
 
     final_messages = []
@@ -167,11 +168,25 @@ def main() -> int:
             vendor_temp_root = Path(tempfile.mkdtemp(prefix="npm-native-", dir=runner_temp))
             install_native_components(workflow_url, native_components, vendor_temp_root)
             vendor_src = vendor_temp_root / "vendor"
+            if vendor_src.exists():
+                available_targets = {
+                    path.name for path in vendor_src.iterdir() if path.is_dir()
+                }
 
         if resolved_head_sha:
             print(f"should `git checkout {resolved_head_sha}`")
 
         for package in packages:
+            platform_package = CODEX_PLATFORM_PACKAGES.get(package)
+            if platform_package is not None:
+                target_triple = platform_package["target_triple"]
+                if target_triple not in available_targets:
+                    print(
+                        f"Skipping {package}: native artifacts for target "
+                        f"{target_triple} are unavailable."
+                    )
+                    continue
+
             staging_dir = Path(tempfile.mkdtemp(prefix=f"npm-stage-{package}-", dir=runner_temp))
             pack_output = output_dir / tarball_name_for_package(package, args.release_version)
 

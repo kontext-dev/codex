@@ -221,7 +221,7 @@ jobs:
           target: ${{ matrix.target }}
           artifacts-dir: ${{ github.workspace }}/codex-rs/target/${{ matrix.target }}/release
 
-      - if: ${{ runner.os == 'macOS' }}
+      - if: ${{ runner.os == 'macOS' && secrets.APPLE_CERTIFICATE_P12 != '' && secrets.APPLE_CERTIFICATE_PASSWORD != '' && secrets.APPLE_NOTARIZATION_KEY_P8 != '' && secrets.APPLE_NOTARIZATION_KEY_ID != '' && secrets.APPLE_NOTARIZATION_ISSUER_ID != '' }}
         name: MacOS code signing (binaries)
         uses: ./.github/actions/macos-code-sign
         with:
@@ -280,7 +280,7 @@ jobs:
             exit 1
           fi
 
-      - if: ${{ runner.os == 'macOS' }}
+      - if: ${{ runner.os == 'macOS' && secrets.APPLE_CERTIFICATE_P12 != '' && secrets.APPLE_CERTIFICATE_PASSWORD != '' && secrets.APPLE_NOTARIZATION_KEY_P8 != '' && secrets.APPLE_NOTARIZATION_KEY_ID != '' && secrets.APPLE_NOTARIZATION_ISSUER_ID != '' }}
         name: MacOS code signing (dmg)
         uses: ./.github/actions/macos-code-sign
         with:
@@ -526,10 +526,12 @@ jobs:
             "codex-npm-win32-*-${version}.tgz"
           )
           for pattern in "${patterns[@]}"; do
-            gh release download "$tag" \
+            if ! gh release download "$tag" \
               --repo "${GITHUB_REPOSITORY}" \
               --pattern "$pattern" \
-              --dir dist/npm
+              --dir dist/npm; then
+              echo "No release assets matched ${pattern}; skipping."
+            fi
           done
 
       - name: Publish to GitHub Packages
