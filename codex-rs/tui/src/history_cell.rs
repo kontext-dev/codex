@@ -785,6 +785,7 @@ pub fn new_approval_decision_cell(
     command: Vec<String>,
     decision: codex_protocol::protocol::ReviewDecision,
 ) -> Box<dyn HistoryCell> {
+    use codex_protocol::protocol::NetworkPolicyRuleAction;
     use codex_protocol::protocol::ReviewDecision::*;
 
     let (symbol, summary): (Span<'static>, Vec<Span<'static>>) = match decision {
@@ -2575,6 +2576,16 @@ mod tests {
             ],
         }]);
         let rendered = render_lines(&cell.display_lines(60)).join("\n");
+        insta::assert_snapshot!(rendered);
+    }
+
+    #[test]
+    fn error_event_oversized_input_snapshot() {
+        let cell = new_error_event(
+            "Message exceeds the maximum length of 1048576 characters (1048577 provided)."
+                .to_string(),
+        );
+        let rendered = render_lines(&cell.display_lines(120)).join("\n");
         insta::assert_snapshot!(rendered);
     }
 

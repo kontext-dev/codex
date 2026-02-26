@@ -313,6 +313,7 @@ impl NetworkApprovalService {
         let approval_id = Self::approval_id_for_key(&key);
         let prompt_command = vec!["network-access".to_string(), target.clone()];
 
+        let available_decisions = None;
         let approval_decision = session
             .request_command_approval(
                 turn_context.as_ref(),
@@ -326,6 +327,8 @@ impl NetworkApprovalService {
                     protocol,
                 }),
                 None,
+                None,
+                available_decisions,
             )
             .await;
 

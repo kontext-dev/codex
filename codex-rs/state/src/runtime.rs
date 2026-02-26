@@ -1,3 +1,10 @@
+use crate::AgentJob;
+use crate::AgentJobCreateParams;
+use crate::AgentJobItem;
+use crate::AgentJobItemCreateParams;
+use crate::AgentJobItemStatus;
+use crate::AgentJobProgress;
+use crate::AgentJobStatus;
 use crate::DB_ERROR_METRIC;
 use crate::LogEntry;
 use crate::LogQuery;
@@ -11,6 +18,8 @@ use crate::ThreadMetadataBuilder;
 use crate::ThreadsPage;
 use crate::apply_rollout_item;
 use crate::migrations::MIGRATOR;
+use crate::model::AgentJobItemRow;
+use crate::model::AgentJobRow;
 use crate::model::ThreadRow;
 use crate::model::anchor_from_item;
 use crate::model::datetime_to_epoch_seconds;
@@ -293,6 +302,7 @@ ORDER BY position ASC
     }
 
     /// List threads using the underlying database.
+    #[allow(clippy::too_many_arguments)]
     pub async fn list_threads(
         &self,
         page_size: usize,
@@ -301,6 +311,7 @@ ORDER BY position ASC
         allowed_sources: &[String],
         model_providers: Option<&[String]>,
         archived_only: bool,
+        search_term: Option<&str>,
     ) -> anyhow::Result<crate::ThreadsPage> {
         let limit = page_size.saturating_add(1);
 
@@ -336,6 +347,7 @@ FROM threads
             model_providers,
             anchor,
             sort_key,
+            search_term,
         );
         push_thread_order_and_limit(&mut builder, sort_key, limit);
 
@@ -673,6 +685,7 @@ WHERE id IN (
             model_providers,
             anchor,
             sort_key,
+            None,
         );
         push_thread_order_and_limit(&mut builder, sort_key, limit);
 
@@ -901,6 +914,564 @@ ON CONFLICT(thread_id, position) DO NOTHING
         Ok(result.rows_affected())
     }
 
+    pub async fn create_agent_job(
+        &self,
+        params: &AgentJobCreateParams,
+        items: &[AgentJobItemCreateParams],
+    ) -> anyhow::Result<AgentJob> {
+        let now = Utc::now().timestamp();
+        let input_headers_json = serde_json::to_string(&params.input_headers)?;
+        let output_schema_json = params
+            .output_schema_json
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
+        let max_runtime_seconds = params
+            .max_runtime_seconds
+            .map(i64::try_from)
+            .transpose()
+            .map_err(|_| anyhow::anyhow!("invalid max_runtime_seconds value"))?;
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            r#"
+INSERT INTO agent_jobs (
+    id,
+    name,
+    status,
+    instruction,
+    auto_export,
+    max_runtime_seconds,
+    output_schema_json,
+    input_headers_json,
+    input_csv_path,
+    output_csv_path,
+    created_at,
+    updated_at,
+    started_at,
+    completed_at,
+    last_error
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL)
+            "#,
+        )
+        .bind(params.id.as_str())
+        .bind(params.name.as_str())
+        .bind(AgentJobStatus::Pending.as_str())
+        .bind(params.instruction.as_str())
+        .bind(i64::from(params.auto_export))
+        .bind(max_runtime_seconds)
+        .bind(output_schema_json)
+        .bind(input_headers_json)
+        .bind(params.input_csv_path.as_str())
+        .bind(params.output_csv_path.as_str())
+        .bind(now)
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
+
+        for item in items {
+            let row_json = serde_json::to_string(&item.row_json)?;
+            sqlx::query(
+                r#"
+INSERT INTO agent_job_items (
+    job_id,
+    item_id,
+    row_index,
+    source_id,
+    row_json,
+    status,
+    assigned_thread_id,
+    attempt_count,
+    result_json,
+    last_error,
+    created_at,
+    updated_at,
+    completed_at,
+    reported_at
+) VALUES (?, ?, ?, ?, ?, ?, NULL, 0, NULL, NULL, ?, ?, NULL, NULL)
+                "#,
+            )
+            .bind(params.id.as_str())
+            .bind(item.item_id.as_str())
+            .bind(item.row_index)
+            .bind(item.source_id.as_deref())
+            .bind(row_json)
+            .bind(AgentJobItemStatus::Pending.as_str())
+            .bind(now)
+            .bind(now)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        tx.commit().await?;
+
+        let job_id = params.id.as_str();
+        self.get_agent_job(job_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("failed to load created agent job {job_id}"))
+    }
+
+    pub async fn get_agent_job(&self, job_id: &str) -> anyhow::Result<Option<AgentJob>> {
+        let row = sqlx::query_as::<_, AgentJobRow>(
+            r#"
+SELECT
+    id,
+    name,
+    status,
+    instruction,
+    auto_export,
+    max_runtime_seconds,
+    output_schema_json,
+    input_headers_json,
+    input_csv_path,
+    output_csv_path,
+    created_at,
+    updated_at,
+    started_at,
+    completed_at,
+    last_error
+FROM agent_jobs
+WHERE id = ?
+            "#,
+        )
+        .bind(job_id)
+        .fetch_optional(self.pool.as_ref())
+        .await?;
+        row.map(AgentJob::try_from).transpose()
+    }
+
+    pub async fn list_agent_job_items(
+        &self,
+        job_id: &str,
+        status: Option<AgentJobItemStatus>,
+        limit: Option<usize>,
+    ) -> anyhow::Result<Vec<AgentJobItem>> {
+        let mut builder = QueryBuilder::<Sqlite>::new(
+            r#"
+SELECT
+    job_id,
+    item_id,
+    row_index,
+    source_id,
+    row_json,
+    status,
+    assigned_thread_id,
+    attempt_count,
+    result_json,
+    last_error,
+    created_at,
+    updated_at,
+    completed_at,
+    reported_at
+FROM agent_job_items
+WHERE job_id = 
+            "#,
+        );
+        builder.push_bind(job_id);
+        if let Some(status) = status {
+            builder.push(" AND status = ");
+            builder.push_bind(status.as_str());
+        }
+        builder.push(" ORDER BY row_index ASC");
+        if let Some(limit) = limit {
+            builder.push(" LIMIT ");
+            builder.push_bind(limit as i64);
+        }
+        let rows = builder
+            .build_query_as::<AgentJobItemRow>()
+            .fetch_all(self.pool.as_ref())
+            .await?;
+        rows.into_iter().map(AgentJobItem::try_from).collect()
+    }
+
+    pub async fn get_agent_job_item(
+        &self,
+        job_id: &str,
+        item_id: &str,
+    ) -> anyhow::Result<Option<AgentJobItem>> {
+        let row = sqlx::query_as::<_, AgentJobItemRow>(
+            r#"
+SELECT
+    job_id,
+    item_id,
+    row_index,
+    source_id,
+    row_json,
+    status,
+    assigned_thread_id,
+    attempt_count,
+    result_json,
+    last_error,
+    created_at,
+    updated_at,
+    completed_at,
+    reported_at
+FROM agent_job_items
+WHERE job_id = ? AND item_id = ?
+            "#,
+        )
+        .bind(job_id)
+        .bind(item_id)
+        .fetch_optional(self.pool.as_ref())
+        .await?;
+        row.map(AgentJobItem::try_from).transpose()
+    }
+
+    pub async fn mark_agent_job_running(&self, job_id: &str) -> anyhow::Result<()> {
+        let now = Utc::now().timestamp();
+        sqlx::query(
+            r#"
+UPDATE agent_jobs
+SET
+    status = ?,
+    updated_at = ?,
+    started_at = COALESCE(started_at, ?),
+    completed_at = NULL,
+    last_error = NULL
+WHERE id = ?
+            "#,
+        )
+        .bind(AgentJobStatus::Running.as_str())
+        .bind(now)
+        .bind(now)
+        .bind(job_id)
+        .execute(self.pool.as_ref())
+        .await?;
+        Ok(())
+    }
+
+    pub async fn mark_agent_job_completed(&self, job_id: &str) -> anyhow::Result<()> {
+        let now = Utc::now().timestamp();
+        sqlx::query(
+            r#"
+UPDATE agent_jobs
+SET status = ?, updated_at = ?, completed_at = ?, last_error = NULL
+WHERE id = ?
+            "#,
+        )
+        .bind(AgentJobStatus::Completed.as_str())
+        .bind(now)
+        .bind(now)
+        .bind(job_id)
+        .execute(self.pool.as_ref())
+        .await?;
+        Ok(())
+    }
+
+    pub async fn mark_agent_job_failed(
+        &self,
+        job_id: &str,
+        error_message: &str,
+    ) -> anyhow::Result<()> {
+        let now = Utc::now().timestamp();
+        sqlx::query(
+            r#"
+UPDATE agent_jobs
+SET status = ?, updated_at = ?, completed_at = ?, last_error = ?
+WHERE id = ?
+            "#,
+        )
+        .bind(AgentJobStatus::Failed.as_str())
+        .bind(now)
+        .bind(now)
+        .bind(error_message)
+        .bind(job_id)
+        .execute(self.pool.as_ref())
+        .await?;
+        Ok(())
+    }
+
+    pub async fn mark_agent_job_cancelled(
+        &self,
+        job_id: &str,
+        reason: &str,
+    ) -> anyhow::Result<bool> {
+        let now = Utc::now().timestamp();
+        let result = sqlx::query(
+            r#"
+UPDATE agent_jobs
+SET status = ?, updated_at = ?, completed_at = ?, last_error = ?
+WHERE id = ? AND status IN (?, ?)
+            "#,
+        )
+        .bind(AgentJobStatus::Cancelled.as_str())
+        .bind(now)
+        .bind(now)
+        .bind(reason)
+        .bind(job_id)
+        .bind(AgentJobStatus::Pending.as_str())
+        .bind(AgentJobStatus::Running.as_str())
+        .execute(self.pool.as_ref())
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn is_agent_job_cancelled(&self, job_id: &str) -> anyhow::Result<bool> {
+        let row = sqlx::query(
+            r#"
+SELECT status
+FROM agent_jobs
+WHERE id = ?
+            "#,
+        )
+        .bind(job_id)
+        .fetch_optional(self.pool.as_ref())
+        .await?;
+        let Some(row) = row else {
+            return Ok(false);
+        };
+        let status: String = row.try_get("status")?;
+        Ok(AgentJobStatus::parse(status.as_str())? == AgentJobStatus::Cancelled)
+    }
+
+    pub async fn mark_agent_job_item_running(
+        &self,
+        job_id: &str,
+        item_id: &str,
+    ) -> anyhow::Result<bool> {
+        let now = Utc::now().timestamp();
+        let result = sqlx::query(
+            r#"
+UPDATE agent_job_items
+SET
+    status = ?,
+    assigned_thread_id = NULL,
+    attempt_count = attempt_count + 1,
+    updated_at = ?,
+    last_error = NULL
+WHERE job_id = ? AND item_id = ? AND status = ?
+            "#,
+        )
+        .bind(AgentJobItemStatus::Running.as_str())
+        .bind(now)
+        .bind(job_id)
+        .bind(item_id)
+        .bind(AgentJobItemStatus::Pending.as_str())
+        .execute(self.pool.as_ref())
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn mark_agent_job_item_running_with_thread(
+        &self,
+        job_id: &str,
+        item_id: &str,
+        thread_id: &str,
+    ) -> anyhow::Result<bool> {
+        let now = Utc::now().timestamp();
+        let result = sqlx::query(
+            r#"
+UPDATE agent_job_items
+SET
+    status = ?,
+    assigned_thread_id = ?,
+    attempt_count = attempt_count + 1,
+    updated_at = ?,
+    last_error = NULL
+WHERE job_id = ? AND item_id = ? AND status = ?
+            "#,
+        )
+        .bind(AgentJobItemStatus::Running.as_str())
+        .bind(thread_id)
+        .bind(now)
+        .bind(job_id)
+        .bind(item_id)
+        .bind(AgentJobItemStatus::Pending.as_str())
+        .execute(self.pool.as_ref())
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn mark_agent_job_item_pending(
+        &self,
+        job_id: &str,
+        item_id: &str,
+        error_message: Option<&str>,
+    ) -> anyhow::Result<bool> {
+        let now = Utc::now().timestamp();
+        let result = sqlx::query(
+            r#"
+UPDATE agent_job_items
+SET
+    status = ?,
+    assigned_thread_id = NULL,
+    updated_at = ?,
+    last_error = ?
+WHERE job_id = ? AND item_id = ? AND status = ?
+            "#,
+        )
+        .bind(AgentJobItemStatus::Pending.as_str())
+        .bind(now)
+        .bind(error_message)
+        .bind(job_id)
+        .bind(item_id)
+        .bind(AgentJobItemStatus::Running.as_str())
+        .execute(self.pool.as_ref())
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn set_agent_job_item_thread(
+        &self,
+        job_id: &str,
+        item_id: &str,
+        thread_id: &str,
+    ) -> anyhow::Result<bool> {
+        let now = Utc::now().timestamp();
+        let result = sqlx::query(
+            r#"
+UPDATE agent_job_items
+SET assigned_thread_id = ?, updated_at = ?
+WHERE job_id = ? AND item_id = ? AND status = ?
+            "#,
+        )
+        .bind(thread_id)
+        .bind(now)
+        .bind(job_id)
+        .bind(item_id)
+        .bind(AgentJobItemStatus::Running.as_str())
+        .execute(self.pool.as_ref())
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn report_agent_job_item_result(
+        &self,
+        job_id: &str,
+        item_id: &str,
+        reporting_thread_id: &str,
+        result_json: &Value,
+    ) -> anyhow::Result<bool> {
+        let now = Utc::now().timestamp();
+        let serialized = serde_json::to_string(result_json)?;
+        let result = sqlx::query(
+            r#"
+UPDATE agent_job_items
+SET
+    result_json = ?,
+    reported_at = ?,
+    updated_at = ?,
+    last_error = NULL
+WHERE
+    job_id = ?
+    AND item_id = ?
+    AND status = ?
+    AND assigned_thread_id = ?
+            "#,
+        )
+        .bind(serialized)
+        .bind(now)
+        .bind(now)
+        .bind(job_id)
+        .bind(item_id)
+        .bind(AgentJobItemStatus::Running.as_str())
+        .bind(reporting_thread_id)
+        .execute(self.pool.as_ref())
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn mark_agent_job_item_completed(
+        &self,
+        job_id: &str,
+        item_id: &str,
+    ) -> anyhow::Result<bool> {
+        let now = Utc::now().timestamp();
+        let result = sqlx::query(
+            r#"
+UPDATE agent_job_items
+SET
+    status = ?,
+    completed_at = ?,
+    updated_at = ?,
+    assigned_thread_id = NULL
+WHERE
+    job_id = ?
+    AND item_id = ?
+    AND status = ?
+    AND result_json IS NOT NULL
+            "#,
+        )
+        .bind(AgentJobItemStatus::Completed.as_str())
+        .bind(now)
+        .bind(now)
+        .bind(job_id)
+        .bind(item_id)
+        .bind(AgentJobItemStatus::Running.as_str())
+        .execute(self.pool.as_ref())
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn mark_agent_job_item_failed(
+        &self,
+        job_id: &str,
+        item_id: &str,
+        error_message: &str,
+    ) -> anyhow::Result<bool> {
+        let now = Utc::now().timestamp();
+        let result = sqlx::query(
+            r#"
+UPDATE agent_job_items
+SET
+    status = ?,
+    completed_at = ?,
+    updated_at = ?,
+    last_error = ?,
+    assigned_thread_id = NULL
+WHERE
+    job_id = ?
+    AND item_id = ?
+    AND status = ?
+            "#,
+        )
+        .bind(AgentJobItemStatus::Failed.as_str())
+        .bind(now)
+        .bind(now)
+        .bind(error_message)
+        .bind(job_id)
+        .bind(item_id)
+        .bind(AgentJobItemStatus::Running.as_str())
+        .execute(self.pool.as_ref())
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn get_agent_job_progress(&self, job_id: &str) -> anyhow::Result<AgentJobProgress> {
+        let row = sqlx::query(
+            r#"
+SELECT
+    COUNT(*) AS total_items,
+    SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) AS pending_items,
+    SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) AS running_items,
+    SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) AS completed_items,
+    SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) AS failed_items
+FROM agent_job_items
+WHERE job_id = ?
+            "#,
+        )
+        .bind(AgentJobItemStatus::Pending.as_str())
+        .bind(AgentJobItemStatus::Running.as_str())
+        .bind(AgentJobItemStatus::Completed.as_str())
+        .bind(AgentJobItemStatus::Failed.as_str())
+        .bind(job_id)
+        .fetch_one(self.pool.as_ref())
+        .await?;
+
+        let total_items: i64 = row.try_get("total_items")?;
+        let pending_items: Option<i64> = row.try_get("pending_items")?;
+        let running_items: Option<i64> = row.try_get("running_items")?;
+        let completed_items: Option<i64> = row.try_get("completed_items")?;
+        let failed_items: Option<i64> = row.try_get("failed_items")?;
+        Ok(AgentJobProgress {
+            total_items: usize::try_from(total_items).unwrap_or_default(),
+            pending_items: usize::try_from(pending_items.unwrap_or_default()).unwrap_or_default(),
+            running_items: usize::try_from(running_items.unwrap_or_default()).unwrap_or_default(),
+            completed_items: usize::try_from(completed_items.unwrap_or_default())
+                .unwrap_or_default(),
+            failed_items: usize::try_from(failed_items.unwrap_or_default()).unwrap_or_default(),
+        })
+    }
+
     async fn ensure_backfill_state_row(&self) -> anyhow::Result<()> {
         sqlx::query(
             r#"
@@ -1087,6 +1658,7 @@ fn push_thread_filters<'a>(
     model_providers: Option<&'a [String]>,
     anchor: Option<&crate::Anchor>,
     sort_key: SortKey,
+    search_term: Option<&'a str>,
 ) {
     builder.push(" WHERE 1 = 1");
     if archived_only {
@@ -1112,6 +1684,11 @@ fn push_thread_filters<'a>(
             separated.push_bind(provider);
         }
         separated.push_unseparated(")");
+    }
+    if let Some(search_term) = search_term {
+        builder.push(" AND instr(title, ");
+        builder.push_bind(search_term);
+        builder.push(") > 0");
     }
     if let Some(anchor) = anchor {
         let anchor_ts = datetime_to_epoch_seconds(anchor.ts);
@@ -2196,7 +2773,11 @@ WHERE kind = 'memory_stage1'
         assert_eq!(phase2_input_watermark, 100);
         assert!(
             runtime
-                .mark_global_phase2_job_succeeded(phase2_token.as_str(), phase2_input_watermark)
+                .mark_global_phase2_job_succeeded(
+                    phase2_token.as_str(),
+                    phase2_input_watermark,
+                    &[],
+                )
                 .await
                 .expect("mark initial phase2 succeeded"),
             "initial phase2 success should clear global dirty state"
@@ -2242,7 +2823,11 @@ WHERE kind = 'memory_stage1'
         assert_eq!(phase2_input_watermark, 101);
         assert!(
             runtime
-                .mark_global_phase2_job_succeeded(phase2_token.as_str(), phase2_input_watermark)
+                .mark_global_phase2_job_succeeded(
+                    phase2_token.as_str(),
+                    phase2_input_watermark,
+                    &[],
+                )
                 .await
                 .expect("mark phase2 succeeded after no-output delete")
         );
@@ -2359,7 +2944,7 @@ WHERE kind = 'memory_stage1'
         };
         assert!(
             runtime
-                .mark_global_phase2_job_succeeded(ownership_token.as_str(), input_watermark)
+                .mark_global_phase2_job_succeeded(ownership_token.as_str(), input_watermark, &[],)
                 .await
                 .expect("mark phase2 succeeded"),
             "phase2 success should finalize for current token"
@@ -2548,6 +3133,745 @@ VALUES (?, ?, ?, ?, ?)
     }
 
     #[tokio::test]
+    async fn get_phase2_input_selection_reports_added_retained_and_removed_rows() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string(), None)
+            .await
+            .expect("initialize runtime");
+
+        let thread_id_a = ThreadId::from_string(&Uuid::new_v4().to_string()).expect("thread id");
+        let thread_id_b = ThreadId::from_string(&Uuid::new_v4().to_string()).expect("thread id");
+        let thread_id_c = ThreadId::from_string(&Uuid::new_v4().to_string()).expect("thread id");
+        let owner = ThreadId::from_string(&Uuid::new_v4().to_string()).expect("owner id");
+
+        for (thread_id, workspace) in [
+            (thread_id_a, "workspace-a"),
+            (thread_id_b, "workspace-b"),
+            (thread_id_c, "workspace-c"),
+        ] {
+            runtime
+                .upsert_thread(&test_thread_metadata(
+                    &codex_home,
+                    thread_id,
+                    codex_home.join(workspace),
+                ))
+                .await
+                .expect("upsert thread");
+        }
+
+        for (thread_id, updated_at, slug) in [
+            (thread_id_a, 100, Some("rollout-a")),
+            (thread_id_b, 101, Some("rollout-b")),
+            (thread_id_c, 102, Some("rollout-c")),
+        ] {
+            let claim = runtime
+                .try_claim_stage1_job(thread_id, owner, updated_at, 3600, 64)
+                .await
+                .expect("claim stage1");
+            let ownership_token = match claim {
+                Stage1JobClaimOutcome::Claimed { ownership_token } => ownership_token,
+                other => panic!("unexpected stage1 claim outcome: {other:?}"),
+            };
+            assert!(
+                runtime
+                    .mark_stage1_job_succeeded(
+                        thread_id,
+                        ownership_token.as_str(),
+                        updated_at,
+                        &format!("raw-{updated_at}"),
+                        &format!("summary-{updated_at}"),
+                        slug,
+                    )
+                    .await
+                    .expect("mark stage1 succeeded"),
+                "stage1 success should persist output"
+            );
+        }
+
+        let claim = runtime
+            .try_claim_global_phase2_job(owner, 3600)
+            .await
+            .expect("claim phase2");
+        let (ownership_token, input_watermark) = match claim {
+            Phase2JobClaimOutcome::Claimed {
+                ownership_token,
+                input_watermark,
+            } => (ownership_token, input_watermark),
+            other => panic!("unexpected phase2 claim outcome: {other:?}"),
+        };
+        assert_eq!(input_watermark, 102);
+        let selected_outputs = runtime
+            .list_stage1_outputs_for_global(10)
+            .await
+            .expect("list stage1 outputs for global")
+            .into_iter()
+            .filter(|output| output.thread_id == thread_id_c || output.thread_id == thread_id_a)
+            .collect::<Vec<_>>();
+        assert!(
+            runtime
+                .mark_global_phase2_job_succeeded(
+                    ownership_token.as_str(),
+                    input_watermark,
+                    &selected_outputs,
+                )
+                .await
+                .expect("mark phase2 success with selection"),
+            "phase2 success should persist selected rows"
+        );
+
+        let selection = runtime
+            .get_phase2_input_selection(2)
+            .await
+            .expect("load phase2 input selection");
+
+        assert_eq!(selection.selected.len(), 2);
+        assert_eq!(selection.previous_selected.len(), 2);
+        assert_eq!(selection.selected[0].thread_id, thread_id_c);
+        assert_eq!(
+            selection.selected[0].rollout_path,
+            codex_home.join(format!("rollout-{thread_id_c}.jsonl"))
+        );
+        assert_eq!(selection.selected[1].thread_id, thread_id_b);
+        assert_eq!(selection.retained_thread_ids, vec![thread_id_c]);
+
+        assert_eq!(selection.removed.len(), 1);
+        assert_eq!(selection.removed[0].thread_id, thread_id_a);
+        assert_eq!(
+            selection.removed[0].rollout_slug.as_deref(),
+            Some("rollout-a")
+        );
+
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
+    }
+
+    #[tokio::test]
+    async fn get_phase2_input_selection_treats_regenerated_selected_rows_as_added() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string(), None)
+            .await
+            .expect("initialize runtime");
+
+        let thread_id = ThreadId::from_string(&Uuid::new_v4().to_string()).expect("thread id");
+        let owner = ThreadId::from_string(&Uuid::new_v4().to_string()).expect("owner id");
+        runtime
+            .upsert_thread(&test_thread_metadata(
+                &codex_home,
+                thread_id,
+                codex_home.join("workspace"),
+            ))
+            .await
+            .expect("upsert thread");
+
+        let first_claim = runtime
+            .try_claim_stage1_job(thread_id, owner, 100, 3600, 64)
+            .await
+            .expect("claim initial stage1");
+        let first_token = match first_claim {
+            Stage1JobClaimOutcome::Claimed { ownership_token } => ownership_token,
+            other => panic!("unexpected stage1 claim outcome: {other:?}"),
+        };
+        assert!(
+            runtime
+                .mark_stage1_job_succeeded(
+                    thread_id,
+                    first_token.as_str(),
+                    100,
+                    "raw-100",
+                    "summary-100",
+                    Some("rollout-100"),
+                )
+                .await
+                .expect("mark initial stage1 success"),
+            "initial stage1 success should persist output"
+        );
+
+        let phase2_claim = runtime
+            .try_claim_global_phase2_job(owner, 3600)
+            .await
+            .expect("claim phase2");
+        let (phase2_token, input_watermark) = match phase2_claim {
+            Phase2JobClaimOutcome::Claimed {
+                ownership_token,
+                input_watermark,
+            } => (ownership_token, input_watermark),
+            other => panic!("unexpected phase2 claim outcome: {other:?}"),
+        };
+        let selected_outputs = runtime
+            .list_stage1_outputs_for_global(1)
+            .await
+            .expect("list selected outputs");
+        assert!(
+            runtime
+                .mark_global_phase2_job_succeeded(
+                    phase2_token.as_str(),
+                    input_watermark,
+                    &selected_outputs,
+                )
+                .await
+                .expect("mark phase2 success"),
+            "phase2 success should persist selected rows"
+        );
+
+        let refreshed_claim = runtime
+            .try_claim_stage1_job(thread_id, owner, 101, 3600, 64)
+            .await
+            .expect("claim refreshed stage1");
+        let refreshed_token = match refreshed_claim {
+            Stage1JobClaimOutcome::Claimed { ownership_token } => ownership_token,
+            other => panic!("unexpected stage1 claim outcome: {other:?}"),
+        };
+        assert!(
+            runtime
+                .mark_stage1_job_succeeded(
+                    thread_id,
+                    refreshed_token.as_str(),
+                    101,
+                    "raw-101",
+                    "summary-101",
+                    Some("rollout-101"),
+                )
+                .await
+                .expect("mark refreshed stage1 success"),
+            "refreshed stage1 success should persist output"
+        );
+
+        let selection = runtime
+            .get_phase2_input_selection(1)
+            .await
+            .expect("load phase2 input selection");
+        assert_eq!(selection.selected.len(), 1);
+        assert_eq!(selection.previous_selected.len(), 1);
+        assert_eq!(selection.selected[0].thread_id, thread_id);
+        assert_eq!(selection.selected[0].source_updated_at.timestamp(), 101);
+        assert!(selection.retained_thread_ids.is_empty());
+        assert!(selection.removed.is_empty());
+
+        let (selected_for_phase2, selected_for_phase2_source_updated_at) =
+            sqlx::query_as::<_, (i64, Option<i64>)>(
+                "SELECT selected_for_phase2, selected_for_phase2_source_updated_at FROM stage1_outputs WHERE thread_id = ?",
+            )
+        .bind(thread_id.to_string())
+        .fetch_one(runtime.pool.as_ref())
+        .await
+        .expect("load selected_for_phase2");
+        assert_eq!(selected_for_phase2, 1);
+        assert_eq!(selected_for_phase2_source_updated_at, Some(100));
+
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
+    }
+
+    #[tokio::test]
+    async fn get_phase2_input_selection_reports_regenerated_previous_selection_as_removed() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string(), None)
+            .await
+            .expect("initialize runtime");
+
+        let thread_id_a = ThreadId::from_string(&Uuid::new_v4().to_string()).expect("thread a");
+        let thread_id_b = ThreadId::from_string(&Uuid::new_v4().to_string()).expect("thread b");
+        let thread_id_c = ThreadId::from_string(&Uuid::new_v4().to_string()).expect("thread c");
+        let thread_id_d = ThreadId::from_string(&Uuid::new_v4().to_string()).expect("thread d");
+        let owner = ThreadId::from_string(&Uuid::new_v4().to_string()).expect("owner id");
+
+        for (thread_id, workspace) in [
+            (thread_id_a, "workspace-a"),
+            (thread_id_b, "workspace-b"),
+            (thread_id_c, "workspace-c"),
+            (thread_id_d, "workspace-d"),
+        ] {
+            runtime
+                .upsert_thread(&test_thread_metadata(
+                    &codex_home,
+                    thread_id,
+                    codex_home.join(workspace),
+                ))
+                .await
+                .expect("upsert thread");
+        }
+
+        for (thread_id, updated_at, slug) in [
+            (thread_id_a, 100, Some("rollout-a-100")),
+            (thread_id_b, 101, Some("rollout-b-101")),
+            (thread_id_c, 99, Some("rollout-c-99")),
+            (thread_id_d, 98, Some("rollout-d-98")),
+        ] {
+            let claim = runtime
+                .try_claim_stage1_job(thread_id, owner, updated_at, 3600, 64)
+                .await
+                .expect("claim initial stage1");
+            let ownership_token = match claim {
+                Stage1JobClaimOutcome::Claimed { ownership_token } => ownership_token,
+                other => panic!("unexpected stage1 claim outcome: {other:?}"),
+            };
+            assert!(
+                runtime
+                    .mark_stage1_job_succeeded(
+                        thread_id,
+                        ownership_token.as_str(),
+                        updated_at,
+                        &format!("raw-{updated_at}"),
+                        &format!("summary-{updated_at}"),
+                        slug,
+                    )
+                    .await
+                    .expect("mark stage1 succeeded"),
+                "stage1 success should persist output"
+            );
+        }
+
+        let phase2_claim = runtime
+            .try_claim_global_phase2_job(owner, 3600)
+            .await
+            .expect("claim phase2");
+        let (phase2_token, input_watermark) = match phase2_claim {
+            Phase2JobClaimOutcome::Claimed {
+                ownership_token,
+                input_watermark,
+            } => (ownership_token, input_watermark),
+            other => panic!("unexpected phase2 claim outcome: {other:?}"),
+        };
+        let selected_outputs = runtime
+            .list_stage1_outputs_for_global(2)
+            .await
+            .expect("list selected outputs");
+        assert_eq!(
+            selected_outputs
+                .iter()
+                .map(|output| output.thread_id)
+                .collect::<Vec<_>>(),
+            vec![thread_id_b, thread_id_a]
+        );
+        assert!(
+            runtime
+                .mark_global_phase2_job_succeeded(
+                    phase2_token.as_str(),
+                    input_watermark,
+                    &selected_outputs,
+                )
+                .await
+                .expect("mark phase2 success"),
+            "phase2 success should persist selected rows"
+        );
+
+        for (thread_id, updated_at, slug) in [
+            (thread_id_a, 102, Some("rollout-a-102")),
+            (thread_id_c, 103, Some("rollout-c-103")),
+            (thread_id_d, 104, Some("rollout-d-104")),
+        ] {
+            let claim = runtime
+                .try_claim_stage1_job(thread_id, owner, updated_at, 3600, 64)
+                .await
+                .expect("claim refreshed stage1");
+            let ownership_token = match claim {
+                Stage1JobClaimOutcome::Claimed { ownership_token } => ownership_token,
+                other => panic!("unexpected stage1 claim outcome: {other:?}"),
+            };
+            assert!(
+                runtime
+                    .mark_stage1_job_succeeded(
+                        thread_id,
+                        ownership_token.as_str(),
+                        updated_at,
+                        &format!("raw-{updated_at}"),
+                        &format!("summary-{updated_at}"),
+                        slug,
+                    )
+                    .await
+                    .expect("mark refreshed stage1 success"),
+                "refreshed stage1 success should persist output"
+            );
+        }
+
+        let selection = runtime
+            .get_phase2_input_selection(2)
+            .await
+            .expect("load phase2 input selection");
+        assert_eq!(
+            selection
+                .selected
+                .iter()
+                .map(|output| output.thread_id)
+                .collect::<Vec<_>>(),
+            vec![thread_id_d, thread_id_c]
+        );
+        assert_eq!(
+            selection
+                .previous_selected
+                .iter()
+                .map(|output| output.thread_id)
+                .collect::<Vec<_>>(),
+            vec![thread_id_a, thread_id_b]
+        );
+        assert!(selection.retained_thread_ids.is_empty());
+        assert_eq!(
+            selection
+                .removed
+                .iter()
+                .map(|output| (output.thread_id, output.source_updated_at.timestamp()))
+                .collect::<Vec<_>>(),
+            vec![(thread_id_a, 102), (thread_id_b, 101)]
+        );
+
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
+    }
+
+    #[tokio::test]
+    async fn mark_global_phase2_job_succeeded_updates_selected_snapshot_timestamp() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string(), None)
+            .await
+            .expect("initialize runtime");
+
+        let thread_id = ThreadId::from_string(&Uuid::new_v4().to_string()).expect("thread id");
+        let owner = ThreadId::from_string(&Uuid::new_v4().to_string()).expect("owner id");
+        runtime
+            .upsert_thread(&test_thread_metadata(
+                &codex_home,
+                thread_id,
+                codex_home.join("workspace"),
+            ))
+            .await
+            .expect("upsert thread");
+
+        let initial_claim = runtime
+            .try_claim_stage1_job(thread_id, owner, 100, 3600, 64)
+            .await
+            .expect("claim initial stage1");
+        let initial_token = match initial_claim {
+            Stage1JobClaimOutcome::Claimed { ownership_token } => ownership_token,
+            other => panic!("unexpected stage1 claim outcome: {other:?}"),
+        };
+        assert!(
+            runtime
+                .mark_stage1_job_succeeded(
+                    thread_id,
+                    initial_token.as_str(),
+                    100,
+                    "raw-100",
+                    "summary-100",
+                    Some("rollout-100"),
+                )
+                .await
+                .expect("mark initial stage1 success"),
+            "initial stage1 success should persist output"
+        );
+
+        let first_phase2_claim = runtime
+            .try_claim_global_phase2_job(owner, 3600)
+            .await
+            .expect("claim first phase2");
+        let (first_phase2_token, first_input_watermark) = match first_phase2_claim {
+            Phase2JobClaimOutcome::Claimed {
+                ownership_token,
+                input_watermark,
+            } => (ownership_token, input_watermark),
+            other => panic!("unexpected first phase2 claim outcome: {other:?}"),
+        };
+        let first_selected_outputs = runtime
+            .list_stage1_outputs_for_global(1)
+            .await
+            .expect("list first selected outputs");
+        assert!(
+            runtime
+                .mark_global_phase2_job_succeeded(
+                    first_phase2_token.as_str(),
+                    first_input_watermark,
+                    &first_selected_outputs,
+                )
+                .await
+                .expect("mark first phase2 success"),
+            "first phase2 success should persist selected rows"
+        );
+
+        let refreshed_claim = runtime
+            .try_claim_stage1_job(thread_id, owner, 101, 3600, 64)
+            .await
+            .expect("claim refreshed stage1");
+        let refreshed_token = match refreshed_claim {
+            Stage1JobClaimOutcome::Claimed { ownership_token } => ownership_token,
+            other => panic!("unexpected refreshed stage1 claim outcome: {other:?}"),
+        };
+        assert!(
+            runtime
+                .mark_stage1_job_succeeded(
+                    thread_id,
+                    refreshed_token.as_str(),
+                    101,
+                    "raw-101",
+                    "summary-101",
+                    Some("rollout-101"),
+                )
+                .await
+                .expect("mark refreshed stage1 success"),
+            "refreshed stage1 success should persist output"
+        );
+
+        let second_phase2_claim = runtime
+            .try_claim_global_phase2_job(owner, 3600)
+            .await
+            .expect("claim second phase2");
+        let (second_phase2_token, second_input_watermark) = match second_phase2_claim {
+            Phase2JobClaimOutcome::Claimed {
+                ownership_token,
+                input_watermark,
+            } => (ownership_token, input_watermark),
+            other => panic!("unexpected second phase2 claim outcome: {other:?}"),
+        };
+        let second_selected_outputs = runtime
+            .list_stage1_outputs_for_global(1)
+            .await
+            .expect("list second selected outputs");
+        assert_eq!(
+            second_selected_outputs[0].source_updated_at.timestamp(),
+            101
+        );
+        assert!(
+            runtime
+                .mark_global_phase2_job_succeeded(
+                    second_phase2_token.as_str(),
+                    second_input_watermark,
+                    &second_selected_outputs,
+                )
+                .await
+                .expect("mark second phase2 success"),
+            "second phase2 success should persist selected rows"
+        );
+
+        let selection = runtime
+            .get_phase2_input_selection(1)
+            .await
+            .expect("load phase2 input selection after refresh");
+        assert_eq!(selection.retained_thread_ids, vec![thread_id]);
+
+        let (selected_for_phase2, selected_for_phase2_source_updated_at) =
+            sqlx::query_as::<_, (i64, Option<i64>)>(
+                "SELECT selected_for_phase2, selected_for_phase2_source_updated_at FROM stage1_outputs WHERE thread_id = ?",
+            )
+            .bind(thread_id.to_string())
+            .fetch_one(runtime.pool.as_ref())
+            .await
+            .expect("load selected snapshot after phase2");
+        assert_eq!(selected_for_phase2, 1);
+        assert_eq!(selected_for_phase2_source_updated_at, Some(101));
+
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
+    }
+
+    #[tokio::test]
+    async fn mark_global_phase2_job_succeeded_only_marks_exact_selected_snapshots() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string(), None)
+            .await
+            .expect("initialize runtime");
+
+        let thread_id = ThreadId::from_string(&Uuid::new_v4().to_string()).expect("thread id");
+        let owner = ThreadId::from_string(&Uuid::new_v4().to_string()).expect("owner id");
+        runtime
+            .upsert_thread(&test_thread_metadata(
+                &codex_home,
+                thread_id,
+                codex_home.join("workspace"),
+            ))
+            .await
+            .expect("upsert thread");
+
+        let initial_claim = runtime
+            .try_claim_stage1_job(thread_id, owner, 100, 3600, 64)
+            .await
+            .expect("claim initial stage1");
+        let initial_token = match initial_claim {
+            Stage1JobClaimOutcome::Claimed { ownership_token } => ownership_token,
+            other => panic!("unexpected stage1 claim outcome: {other:?}"),
+        };
+        assert!(
+            runtime
+                .mark_stage1_job_succeeded(
+                    thread_id,
+                    initial_token.as_str(),
+                    100,
+                    "raw-100",
+                    "summary-100",
+                    Some("rollout-100"),
+                )
+                .await
+                .expect("mark initial stage1 success"),
+            "initial stage1 success should persist output"
+        );
+
+        let phase2_claim = runtime
+            .try_claim_global_phase2_job(owner, 3600)
+            .await
+            .expect("claim phase2");
+        let (phase2_token, input_watermark) = match phase2_claim {
+            Phase2JobClaimOutcome::Claimed {
+                ownership_token,
+                input_watermark,
+            } => (ownership_token, input_watermark),
+            other => panic!("unexpected phase2 claim outcome: {other:?}"),
+        };
+        let selected_outputs = runtime
+            .list_stage1_outputs_for_global(1)
+            .await
+            .expect("list selected outputs");
+        assert_eq!(selected_outputs[0].source_updated_at.timestamp(), 100);
+
+        let refreshed_claim = runtime
+            .try_claim_stage1_job(thread_id, owner, 101, 3600, 64)
+            .await
+            .expect("claim refreshed stage1");
+        let refreshed_token = match refreshed_claim {
+            Stage1JobClaimOutcome::Claimed { ownership_token } => ownership_token,
+            other => panic!("unexpected stage1 claim outcome: {other:?}"),
+        };
+        assert!(
+            runtime
+                .mark_stage1_job_succeeded(
+                    thread_id,
+                    refreshed_token.as_str(),
+                    101,
+                    "raw-101",
+                    "summary-101",
+                    Some("rollout-101"),
+                )
+                .await
+                .expect("mark refreshed stage1 success"),
+            "refreshed stage1 success should persist output"
+        );
+
+        assert!(
+            runtime
+                .mark_global_phase2_job_succeeded(
+                    phase2_token.as_str(),
+                    input_watermark,
+                    &selected_outputs,
+                )
+                .await
+                .expect("mark phase2 success"),
+            "phase2 success should still complete"
+        );
+
+        let (selected_for_phase2, selected_for_phase2_source_updated_at) =
+            sqlx::query_as::<_, (i64, Option<i64>)>(
+                "SELECT selected_for_phase2, selected_for_phase2_source_updated_at FROM stage1_outputs WHERE thread_id = ?",
+            )
+            .bind(thread_id.to_string())
+            .fetch_one(runtime.pool.as_ref())
+            .await
+            .expect("load selected_for_phase2");
+        assert_eq!(selected_for_phase2, 0);
+        assert_eq!(selected_for_phase2_source_updated_at, None);
+
+        let selection = runtime
+            .get_phase2_input_selection(1)
+            .await
+            .expect("load phase2 input selection");
+        assert_eq!(selection.selected.len(), 1);
+        assert_eq!(selection.selected[0].source_updated_at.timestamp(), 101);
+        assert!(selection.retained_thread_ids.is_empty());
+
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
+    }
+
+    #[tokio::test]
+    async fn record_stage1_output_usage_updates_usage_metadata() {
+        let codex_home = unique_temp_dir();
+        let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string(), None)
+            .await
+            .expect("initialize runtime");
+
+        let thread_a = ThreadId::from_string(&Uuid::new_v4().to_string()).expect("thread id a");
+        let thread_b = ThreadId::from_string(&Uuid::new_v4().to_string()).expect("thread id b");
+        let missing = ThreadId::from_string(&Uuid::new_v4().to_string()).expect("missing id");
+        let owner = ThreadId::from_string(&Uuid::new_v4().to_string()).expect("owner id");
+
+        runtime
+            .upsert_thread(&test_thread_metadata(
+                &codex_home,
+                thread_a,
+                codex_home.join("workspace-a"),
+            ))
+            .await
+            .expect("upsert thread a");
+        runtime
+            .upsert_thread(&test_thread_metadata(
+                &codex_home,
+                thread_b,
+                codex_home.join("workspace-b"),
+            ))
+            .await
+            .expect("upsert thread b");
+
+        let claim_a = runtime
+            .try_claim_stage1_job(thread_a, owner, 100, 3600, 64)
+            .await
+            .expect("claim stage1 a");
+        let token_a = match claim_a {
+            Stage1JobClaimOutcome::Claimed { ownership_token } => ownership_token,
+            other => panic!("unexpected stage1 claim outcome for a: {other:?}"),
+        };
+        assert!(
+            runtime
+                .mark_stage1_job_succeeded(thread_a, token_a.as_str(), 100, "raw a", "sum a", None)
+                .await
+                .expect("mark stage1 succeeded a")
+        );
+
+        let claim_b = runtime
+            .try_claim_stage1_job(thread_b, owner, 101, 3600, 64)
+            .await
+            .expect("claim stage1 b");
+        let token_b = match claim_b {
+            Stage1JobClaimOutcome::Claimed { ownership_token } => ownership_token,
+            other => panic!("unexpected stage1 claim outcome for b: {other:?}"),
+        };
+        assert!(
+            runtime
+                .mark_stage1_job_succeeded(thread_b, token_b.as_str(), 101, "raw b", "sum b", None)
+                .await
+                .expect("mark stage1 succeeded b")
+        );
+
+        let updated_rows = runtime
+            .record_stage1_output_usage(&[thread_a, thread_a, thread_b, missing])
+            .await
+            .expect("record stage1 output usage");
+        assert_eq!(updated_rows, 3);
+
+        let row_a =
+            sqlx::query("SELECT usage_count, last_usage FROM stage1_outputs WHERE thread_id = ?")
+                .bind(thread_a.to_string())
+                .fetch_one(runtime.pool.as_ref())
+                .await
+                .expect("load stage1 usage row a");
+        let row_b =
+            sqlx::query("SELECT usage_count, last_usage FROM stage1_outputs WHERE thread_id = ?")
+                .bind(thread_b.to_string())
+                .fetch_one(runtime.pool.as_ref())
+                .await
+                .expect("load stage1 usage row b");
+
+        assert_eq!(
+            row_a
+                .try_get::<i64, _>("usage_count")
+                .expect("usage_count a"),
+            2
+        );
+        assert_eq!(
+            row_b
+                .try_get::<i64, _>("usage_count")
+                .expect("usage_count b"),
+            1
+        );
+
+        let last_usage_a = row_a.try_get::<i64, _>("last_usage").expect("last_usage a");
+        let last_usage_b = row_b.try_get::<i64, _>("last_usage").expect("last_usage b");
+        assert_eq!(last_usage_a, last_usage_b);
+        assert!(last_usage_a > 0);
+
+        let _ = tokio::fs::remove_dir_all(codex_home).await;
+    }
+
+    #[tokio::test]
     async fn mark_stage1_job_succeeded_enqueues_global_consolidation() {
         let codex_home = unique_temp_dir();
         let runtime = StateRuntime::init(codex_home.clone(), "test-provider".to_string(), None)
@@ -2719,7 +4043,7 @@ VALUES (?, ?, ?, ?, ?)
 
         assert_eq!(
             runtime
-                .mark_global_phase2_job_succeeded(token_a.as_str(), 300)
+                .mark_global_phase2_job_succeeded(token_a.as_str(), 300, &[])
                 .await
                 .expect("mark stale owner success result"),
             false,
@@ -2727,7 +4051,7 @@ VALUES (?, ?, ?, ?, ?)
         );
         assert!(
             runtime
-                .mark_global_phase2_job_succeeded(token_b.as_str(), 300)
+                .mark_global_phase2_job_succeeded(token_b.as_str(), 300, &[])
                 .await
                 .expect("mark takeover owner success"),
             "takeover owner should finalize consolidation"
@@ -2764,7 +4088,7 @@ VALUES (?, ?, ?, ?, ?)
         };
         assert!(
             runtime
-                .mark_global_phase2_job_succeeded(token_a.as_str(), 500)
+                .mark_global_phase2_job_succeeded(token_a.as_str(), 500, &[])
                 .await
                 .expect("mark initial phase2 success"),
             "initial phase2 success should finalize"

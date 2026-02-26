@@ -104,7 +104,7 @@ Under `{{ memory_root }}/`:
     what to promote, expand, or deprecate;
   - source of rollout-level metadata needed for MEMORY.md `### rollout_summary_files`
     annotations;
-    you should be able to find `cwd` and `updated_at` there.
+    you should be able to find `cwd`, `rollout_path`, and `updated_at` there.
 - `MEMORY.md`
   - merged memories; produce a lightly clustered version if applicable
 - `rollout_summaries/*.md`
@@ -118,6 +118,27 @@ Mode selection:
   and `skills/`).
 - INCREMENTAL UPDATE: existing artifacts already exist and `raw_memories.md`
   mostly contains new additions.
+
+Incremental thread diff snapshot (computed before the current artifact sync rewrites local files):
+
+**Diff since last consolidation:**
+{{ phase2_input_selection }}
+
+Incremental update and forgetting mechanism:
+- Use the diff provided
+- Do not open raw sessions / original rollout transcripts.
+- For each added thread id, search it in `raw_memories.md`, read that raw-memory section, and
+  read the corresponding `rollout_summaries/*.md` file only when needed for stronger evidence,
+  task placement, or conflict resolution.
+- For each removed thread id, search it in `MEMORY.md` and delete only the memory supported by
+  that thread. Use `thread_id=<thread_id>` in `### rollout_summary_files` when available; if not,
+  fall back to rollout summary filenames plus the corresponding `rollout_summaries/*.md` files.
+- If a `MEMORY.md` block contains both removed and undeleted threads, do not delete the whole
+  block. Remove only the removed thread's references and thread-local learnings, preserve shared
+  or still-supported content, and split or rewrite the block only if needed to keep the undeleted
+  threads intact.
+- After `MEMORY.md` cleanup is done, revisit `memory_summary.md` and remove or rewrite stale
+  summary/index content that was only supported by removed thread ids.
 
 Outputs:
 Under `{{ memory_root }}/`:
@@ -232,7 +253,8 @@ Schema rules (strict):
   - Every `## Task <n>` section must include `### rollout_summary_files`, `### keywords`,
     and `### learnings`.
   - `### rollout_summary_files` must be task-local (not a block-wide catch-all list).
-  - Each rollout annotation must include `cwd=<path>` and `updated_at=<timestamp>`.
+  - Each rollout annotation must include `cwd=<path>`, `rollout_path=<path>`, and
+    `updated_at=<timestamp>`.
     If missing from a rollout summary, recover them from `raw_memories.md`.
   - Major learnings should be traceable to rollout summaries listed in the same task section.
   - Order rollout references by freshness and practical usefulness.
@@ -425,9 +447,10 @@ WORKFLOW
    - Treat `raw_memories.md` as the primary source of NEW signal.
    - Read existing memory files first for continuity.
    - Integrate new signal into existing artifacts by:
-     - scanning new raw memories in recency order and identifying which existing blocks they should update
+     - scanning the newly added raw-memory entries in recency order and identifying which existing blocks they should update
      - updating existing knowledge with better/newer evidence
      - updating stale or contradicting guidance
+     - pruning or downgrading memory whose only provenance comes from removed thread ids
      - expanding terse old blocks when new summaries/raw memories make the task family clearer
      - doing light clustering and merging if needed
      - updating existing skills or adding new skills only when there is clear new reusable procedure
@@ -438,6 +461,9 @@ WORKFLOW
    - When a task family is important, ambiguous, or duplicated across multiple rollouts,
      open the relevant `rollout_summaries/*.md` files and extract richer procedural detail,
      validation signals, and user feedback before finalizing `MEMORY.md`.
+   - When deleting stale memory from a mixed block, use the relevant rollout summaries to decide
+     which details are uniquely supported by removed threads versus still supported by undeleted
+     threads.
    - Use `updated_at` and validation strength together to resolve stale/conflicting notes.
 
 5) For both modes, update `MEMORY.md` after skill updates:
@@ -458,16 +484,3 @@ WORKFLOW
 
 You should dive deep and make sure you didn't miss any important information that might
 be useful for future agents; do not be superficial.
-
-============================================================
-SEARCH / REVIEW COMMANDS (RG-FIRST)
-============================================================
-
-Use `rg` for fast retrieval while consolidating:
-
-- Search durable notes:
-  `rg -n -i "<pattern>" "{{ memory_root }}/MEMORY.md"`
-- Search across memory tree:
-  `rg -n -i "<pattern>" "{{ memory_root }}" | head -n 100`
-- Locate rollout summary files:
-  `rg --files "{{ memory_root }}/rollout_summaries" | head -n 400`

@@ -1,7 +1,6 @@
 use std::time::Duration;
 
 use anyhow::Result;
-use anyhow::anyhow;
 use app_test_support::McpProcess;
 use app_test_support::to_response;
 use app_test_support::write_models_cache;
@@ -241,24 +240,19 @@ async fn list_models_pagination_works() -> Result<()> {
     assert_eq!(first_items[0].id, "gpt-5.2-codex");
     let next_cursor = first_cursor.ok_or_else(|| anyhow!("cursor for second page"))?;
 
-    let second_request = mcp
-        .send_list_models_request(ModelListParams {
-            limit: Some(1),
-            cursor: Some(next_cursor.clone()),
-            include_hidden: None,
-        })
-        .await?;
+        let response: JSONRPCResponse = timeout(
+            DEFAULT_TIMEOUT,
+            mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
+        )
+        .await??;
 
-    let second_response: JSONRPCResponse = timeout(
-        DEFAULT_TIMEOUT,
-        mcp.read_stream_until_response_message(RequestId::Integer(second_request)),
-    )
-    .await??;
+        let ModelListResponse {
+            data: page_items,
+            next_cursor,
+        } = to_response::<ModelListResponse>(response)?;
 
-    let ModelListResponse {
-        data: second_items,
-        next_cursor: second_cursor,
-    } = to_response::<ModelListResponse>(second_response)?;
+        assert_eq!(page_items.len(), 1);
+        items.extend(page_items);
 
     assert_eq!(second_items.len(), 1);
     assert_eq!(second_items[0].id, "gpt-5.1-codex-max");

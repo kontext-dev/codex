@@ -124,6 +124,12 @@ impl SkillsManager {
                 }),
         );
         let mut outcome = load_skills_from_roots(roots);
+        if !extra_user_roots.is_empty() {
+            // When extra user roots are provided, skip system skills before caching the result.
+            outcome
+                .skills
+                .retain(|skill| skill.scope != SkillScope::System);
+        }
         outcome.disabled_paths = disabled_paths_from_stack(&config_layer_stack);
         let mut cache = match self.cache_by_cwd.write() {
             Ok(cache) => cache,

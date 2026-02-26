@@ -4,6 +4,8 @@
 import type { ExecPolicyAmendment } from "./ExecPolicyAmendment";
 import type { NetworkApprovalContext } from "./NetworkApprovalContext";
 import type { ParsedCommand } from "./ParsedCommand";
+import type { PermissionProfile } from "./PermissionProfile";
+import type { ReviewDecision } from "./ReviewDecision";
 
 export type ExecApprovalRequestEvent = { 
 /**

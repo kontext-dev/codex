@@ -1,4 +1,4 @@
-use std::path::Path;
+use codex_utils_absolute_path::AbsolutePathBuf;
 
 use crate::posix::escalate_protocol::EscalateAction;
 
@@ -7,7 +7,7 @@ use crate::posix::escalate_protocol::EscalateAction;
 pub(crate) trait EscalationPolicy: Send + Sync {
     async fn determine_action(
         &self,
-        file: &Path,
+        file: &AbsolutePathBuf,
         argv: &[String],
         workdir: &Path,
     ) -> Result<EscalateAction, rmcp::ErrorData>;

@@ -24,6 +24,7 @@ import type { CollabWaitingEndEvent } from "./CollabWaitingEndEvent";
 import type { ContextCompactedEvent } from "./ContextCompactedEvent";
 import type { DeprecationNoticeEvent } from "./DeprecationNoticeEvent";
 import type { DynamicToolCallRequest } from "./DynamicToolCallRequest";
+import type { DynamicToolCallResponseEvent } from "./DynamicToolCallResponseEvent";
 import type { ElicitationRequestEvent } from "./ElicitationRequestEvent";
 import type { ErrorEvent } from "./ErrorEvent";
 import type { ExecApprovalRequestEvent } from "./ExecApprovalRequestEvent";

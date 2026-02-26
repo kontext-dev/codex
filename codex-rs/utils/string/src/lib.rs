@@ -78,4 +78,20 @@ mod tests {
         let msg = "bad value!";
         assert_eq!(sanitize_metric_tag_value(msg), "bad_value");
     }
+
+    #[test]
+    fn normalize_markdown_hash_location_suffix_converts_single_location() {
+        assert_eq!(
+            normalize_markdown_hash_location_suffix("#L74C3"),
+            Some(":74:3".to_string())
+        );
+    }
+
+    #[test]
+    fn normalize_markdown_hash_location_suffix_converts_ranges() {
+        assert_eq!(
+            normalize_markdown_hash_location_suffix("#L74C3-L76C9"),
+            Some(":74:3-76:9".to_string())
+        );
+    }
 }
