@@ -1,12 +1,14 @@
 <p align="center"><code>npm i -g @kontext-dev/codex</code></p>
-<p align="center"><strong>Codex CLI</strong> is a coding agent from OpenAI that runs locally on your computer.
+
+<p align="center"><strong>Codex CLI</strong> is a coding agent from OpenAI that runs locally on your computer.</p>
+
 <p align="center">
   <img src="https://github.com/openai/codex/blob/main/.github/codex-cli-splash.png" alt="Codex CLI splash" width="80%" />
 </p>
-</br>
-If you want Codex in your code editor (VS Code, Cursor, Windsurf), <a href="https://developers.openai.com/codex/ide">install in your IDE.</a>
-</br>If you want the desktop app experience, run <code>codex-kontext app</code> or visit <a href="https://chatgpt.com/codex?app-landing-page=true">the Codex App page</a>.
-</br>If you are looking for the <em>cloud-based agent</em> from OpenAI, <strong>Codex Web</strong>, go to <a href="https://chatgpt.com/codex">chatgpt.com/codex</a>.</p>
+
+If you want Codex in your code editor (VS Code, Cursor, Windsurf), [install in your IDE](https://developers.openai.com/codex/ide).  
+If you want the desktop app experience, run `codex-kontext app` or visit [the Codex App page](https://chatgpt.com/codex?app-landing-page=true).  
+If you are looking for the _cloud-based agent_ from OpenAI, **Codex Web**, go to [chatgpt.com/codex](https://chatgpt.com/codex).
 
 ---
 
@@ -16,7 +18,7 @@ This fork wires Codex CLI to the Kontext-Dev MCP server using the `kontext-dev-s
 Rust SDK. It authenticates with PKCE, exchanges tokens for `mcp-gateway`, and
 attaches a single MCP server automatically.
 
-### Configuration (local)
+### Configuration
 
 This fork uses baked Kontext defaults. No `[kontext-dev]` block is required in
 `~/.codex/config.toml`.
@@ -25,14 +27,10 @@ Built-in values:
 
 - `client_id`: baked into this fork
 - `redirect_uri`: `http://localhost:3333/callback`
-- `server`: `http://localhost:4000/mcp`
+- `server`: `https://api.kontext.dev/mcp`
 - `resource`: `mcp-gateway`
-- `integration_ui_url`: `http://localhost:3000`
+- `integration_ui_url`: `https://app.kontext.dev`
 - `open_connect_page_on_login`: `true`
-
-Flow rule: local gateway handles API/MCP/auth endpoints at port `4000`, and
-integrations connect UI runs on local web at port `3000`
-(`http://localhost:4000/oauth/connect` is not a valid route).
 
 ### Running locally
 
