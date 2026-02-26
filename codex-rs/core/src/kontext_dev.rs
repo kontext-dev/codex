@@ -24,14 +24,14 @@ use crate::config::Config;
 const MAX_TOOL_NAME_LENGTH: usize = 64;
 const TOOL_NAME_PREFIX: &str = "kontext__";
 const REQUEST_CAPABILITY_TOOL_NAME: &str = "kontext__request_capability";
-const KONTEXT_CLIENT_ID: &str = "app_abf8b220-a0e6-4203-bbd4-ba3d311f8f07";
+const KONTEXT_CLIENT_ID: &str = "app_6736f70c-1c16-421e-b56f-2ae2c8c59950";
 const KONTEXT_REDIRECT_URI: &str = "http://localhost:3333/callback";
-const KONTEXT_SERVER_URL: &str = "http://localhost:4000/mcp";
+const KONTEXT_SERVER_URL: &str = "https://api.kontext.dev/mcp";
 const KONTEXT_RESOURCE: &str = "mcp-gateway";
 const KONTEXT_SCOPE: &str = "";
 const KONTEXT_SERVER_NAME: &str = "kontext-dev";
 const KONTEXT_AUTH_TIMEOUT_SECONDS: i64 = 300;
-const KONTEXT_INTEGRATION_UI_URL: &str = "http://localhost:3000";
+const KONTEXT_INTEGRATION_UI_URL: &str = "https://app.kontext.dev";
 
 #[derive(Clone, Debug)]
 pub(crate) struct InjectedKontextToolSpec {
@@ -721,9 +721,17 @@ mod tests {
             settings.integration_ui_url.as_deref(),
             Some(KONTEXT_INTEGRATION_UI_URL)
         );
-        assert!(settings.token_cache_path.as_deref().is_some_and(|path| {
-            path.contains("app_abf8b220-a0e6-4203-bbd4-ba3d311f8f07__localhost_4000_mcp.json")
-        }));
+        let server_slug = KONTEXT_SERVER_URL
+            .replace("https://", "")
+            .replace("http://", "")
+            .replace(['/', ':'], "_");
+        let expected_token_file = format!("{KONTEXT_CLIENT_ID}__{server_slug}.json");
+        assert!(
+            settings
+                .token_cache_path
+                .as_deref()
+                .is_some_and(|path| { path.contains(expected_token_file.as_str()) })
+        );
         assert!(settings.open_connect_page_on_login);
     }
 

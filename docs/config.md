@@ -27,15 +27,12 @@ Built-in defaults:
 
 - `client_id`: baked into the fork build.
 - `redirect_uri`: `http://localhost:3333/callback`
-- `server`: `http://localhost:4000/mcp`
+- `server`: `https://api.kontext.dev/mcp`
 - `resource`: `mcp-gateway`
-- `integration_ui_url`: `http://localhost:3000`
+- `integration_ui_url`: `https://app.kontext.dev`
 - `open_connect_page_on_login`: `true`
 
 Hard cutover: user-provided `[kontext-dev]` values are ignored by this fork.
-Flow rule: local gateway handles API/MCP/auth endpoints on `localhost:4000`,
-and integrations connect runs on local web `localhost:3000`. Do not expect
-`http://localhost:4000/oauth/connect` to exist.
 
 ## Apps (Connectors)
 
