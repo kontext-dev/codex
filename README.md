@@ -69,7 +69,7 @@ npm i -g @kontext-dev/codex@latest --force
 
 ## Versioning
 
-Versions follow `<upstream_version>-kontext.<N>`, for example `0.105.0-kontext.2`.
+Versions follow `<upstream_version>-kontext.<N>`, for example `0.105.0-kontext.3`.
 
 ## Docs
 
