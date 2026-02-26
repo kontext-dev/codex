@@ -236,7 +236,9 @@ def fetch_rg(
         task_configs.append((target, platform_key, platform_info))
 
     results: dict[str, Path] = {}
-    max_workers = min(len(task_configs), max(1, (os.cpu_count() or 1)))
+    # Keep ripgrep downloads low-concurrency to reduce transient connection resets
+    # from upstream release hosts during CI packaging.
+    max_workers = min(len(task_configs), 2)
 
     print("Installing ripgrep binaries for targets: " + ", ".join(targets))
 
@@ -453,7 +455,7 @@ def _fetch_single_rg(
 
 
 def _download_file(url: str, dest: Path) -> None:
-    attempts = 3
+    attempts = 8
 
     for attempt in range(1, attempts + 1):
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -466,7 +468,7 @@ def _download_file(url: str, dest: Path) -> None:
             if attempt == attempts:
                 raise
             print(f"  download failed for {url} (attempt {attempt}/{attempts}), retrying...")
-            time.sleep(1)
+            time.sleep(min(2 ** attempt, 20))
 
 
 def extract_archive(
