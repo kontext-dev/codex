@@ -684,6 +684,11 @@ jobs:
       - name: Summarize
         shell: bash
         run: |
+          if [[ '${{ github.repository_owner }}' != 'openai' ]]; then
+            echo 'Fork repository -> rust-ci matrix is intentionally disabled.'
+            exit 0
+          fi
+
           echo "general: ${{ needs.general.result }}"
           echo "shear  : ${{ needs.cargo_shear.result }}"
           echo "lint   : ${{ needs.lint_build.result }}"
