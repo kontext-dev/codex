@@ -1,10 +1,15 @@
-<p align="center"><code>npm i -g @kontext-dev/codex</code></p>
+# Kontext Codex CLI
 
-<p align="center"><strong>Codex CLI</strong> is a coding agent from OpenAI that runs locally on your computer.</p>
+Install:
 
-<p align="center">
-  <img src="https://github.com/openai/codex/blob/main/.github/codex-cli-splash.png" alt="Codex CLI splash" width="80%" />
-</p>
+```bash
+npm i -g @kontext-dev/codex
+```
+
+`@kontext-dev/codex` is the Kontext-maintained Codex CLI fork with baked
+Kontext OAuth + MCP defaults.
+
+![Codex CLI splash](https://github.com/openai/codex/blob/main/.github/codex-cli-splash.png)
 
 If you want Codex in your code editor (VS Code, Cursor, Windsurf), [install in your IDE](https://developers.openai.com/codex/ide).  
 If you want the desktop app experience, run `codex-kontext app` or visit [the Codex App page](https://chatgpt.com/codex?app-landing-page=true).  
