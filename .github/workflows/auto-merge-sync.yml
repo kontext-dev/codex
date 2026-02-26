@@ -7,14 +7,24 @@ on:
       - synchronize
       - reopened
       - labeled
+  push:
+    branches:
+      - kontext-dev
 
 permissions:
   contents: write
   pull-requests: write
 
 jobs:
+  guard:
+    if: github.event_name == 'push' && github.ref_name == 'kontext-dev'
+    runs-on: ubuntu-latest
+    steps:
+      - name: No-op for branch pushes
+        run: echo "auto-merge-sync runs only for pull_request events."
+
   auto-merge:
-    if: github.event.pull_request.base.ref == 'kontext-dev' && (contains(github.event.pull_request.labels.*.name, 'upstream-sync') || contains(github.event.pull_request.labels.*.name, ':arrow_heading_down: pull'))
+    if: github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'kontext-dev' && (contains(github.event.pull_request.labels.*.name, 'upstream-sync') || contains(github.event.pull_request.labels.*.name, ':arrow_heading_down: pull'))
     runs-on: ubuntu-latest
     steps:
       - name: Enable auto-merge

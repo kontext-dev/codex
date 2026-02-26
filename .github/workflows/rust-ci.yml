@@ -4,15 +4,25 @@ on:
   push:
     branches:
       - main
+      - kontext-dev
   workflow_dispatch:
 
 # CI builds in debug (dev) for faster signal.
 
 jobs:
+  guard:
+    name: Skip heavy CI on kontext-dev push
+    runs-on: ubuntu-24.04
+    if: ${{ github.event_name == 'push' && github.ref_name == 'kontext-dev' }}
+    steps:
+      - name: No-op
+        run: echo "rust-ci matrix runs on PRs and main pushes."
+
   # --- Detect what changed to detect which tests to run (always runs) -------------------------------------
   changed:
     name: Detect changed areas
     runs-on: ubuntu-24.04
+    if: ${{ github.event_name != 'push' || github.ref_name == 'main' }}
     outputs:
       codex: ${{ steps.detect.outputs.codex }}
       workflows: ${{ steps.detect.outputs.workflows }}
