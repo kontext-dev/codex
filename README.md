@@ -42,6 +42,15 @@ cargo run --bin codex
 Branch model: `main` mirrors `openai/codex`, and `kontext-dev` carries Kontext
 customizations on top of `main`.
 
+### Versioning
+
+This fork follows upstream base versions with a Kontext release suffix:
+
+- format: `<upstream_version>-kontext.<N>`
+- example: `0.105.0-kontext.1`
+
+`N` increments for fork-only releases on top of the same upstream base version.
+
 ## Quickstart
 
 ### Installing and running Codex CLI
