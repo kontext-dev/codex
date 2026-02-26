@@ -170,7 +170,25 @@ jobs:
           ls -lh target/${{ matrix.target }}/release/codex-windows-sandbox-setup.exe
           ls -lh target/${{ matrix.target }}/release/codex-command-runner.exe
 
-      - if: ${{ secrets.AZURE_TRUSTED_SIGNING_CLIENT_ID != '' && secrets.AZURE_TRUSTED_SIGNING_TENANT_ID != '' && secrets.AZURE_TRUSTED_SIGNING_SUBSCRIPTION_ID != '' && secrets.AZURE_TRUSTED_SIGNING_ENDPOINT != '' && secrets.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME != '' && secrets.AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME != '' }}
+      - id: windows_signing
+        name: Detect Windows signing config
+        shell: bash
+        env:
+          AZURE_TRUSTED_SIGNING_CLIENT_ID: ${{ secrets.AZURE_TRUSTED_SIGNING_CLIENT_ID }}
+          AZURE_TRUSTED_SIGNING_TENANT_ID: ${{ secrets.AZURE_TRUSTED_SIGNING_TENANT_ID }}
+          AZURE_TRUSTED_SIGNING_SUBSCRIPTION_ID: ${{ secrets.AZURE_TRUSTED_SIGNING_SUBSCRIPTION_ID }}
+          AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+          AZURE_TRUSTED_SIGNING_ACCOUNT_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME }}
+          AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ secrets.AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME }}
+        run: |
+          if [[ -n "$AZURE_TRUSTED_SIGNING_CLIENT_ID" && -n "$AZURE_TRUSTED_SIGNING_TENANT_ID" && -n "$AZURE_TRUSTED_SIGNING_SUBSCRIPTION_ID" && -n "$AZURE_TRUSTED_SIGNING_ENDPOINT" && -n "$AZURE_TRUSTED_SIGNING_ACCOUNT_NAME" && -n "$AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME" ]]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "Azure Trusted Signing secrets are not configured; skipping signing."
+          fi
+
+      - if: ${{ steps.windows_signing.outputs.enabled == 'true' }}
         name: Sign Windows binaries with Azure Trusted Signing
         uses: ./.github/actions/windows-code-sign
         with:
