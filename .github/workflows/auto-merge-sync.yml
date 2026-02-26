@@ -7,9 +7,6 @@ on:
       - synchronize
       - reopened
       - labeled
-  push:
-    branches:
-      - kontext-dev
   workflow_dispatch:
 
 permissions:
@@ -17,12 +14,12 @@ permissions:
   pull-requests: write
 
 jobs:
-  guard:
-    if: github.event_name == 'push' && github.ref_name == 'kontext-dev'
+  noop:
+    if: ${{ github.event_name != 'pull_request_target' || github.event.pull_request.base.ref != 'kontext-dev' || !contains(github.event.pull_request.labels.*.name, 'upstream-sync') }}
     runs-on: ubuntu-latest
     steps:
-      - name: No-op for branch pushes
-        run: echo "auto-merge-sync runs only for pull_request_target events."
+      - name: No-op for non-upstream-sync events
+        run: echo "No auto-merge action needed for this event."
 
   auto-merge:
     if: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.ref == 'kontext-dev' && contains(github.event.pull_request.labels.*.name, 'upstream-sync') }}
