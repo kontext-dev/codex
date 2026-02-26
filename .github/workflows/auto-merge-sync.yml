@@ -25,7 +25,7 @@ jobs:
         run: echo "auto-merge-sync runs only for pull_request events."
 
   auto-merge:
-    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'kontext-dev' && contains(github.event.pull_request.labels.*.name, 'upstream-sync') }}
+    if: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.ref == 'kontext-dev' && contains(github.event.pull_request.labels.*.name, 'upstream-sync') }}
     runs-on: ubuntu-latest
     steps:
       - name: Enable auto-merge
