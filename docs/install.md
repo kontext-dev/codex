@@ -1,24 +1,32 @@
-## Installing & building
+## Installing and building
 
-### Install the private Kontext fork
+### Install the published Kontext package
 
-This fork is distributed as a private GitHub Packages npm package:
-`@kontext-dev/codex`.
+Use this if you just want to run Codex (no local build needed).
 
-1. Create a GitHub personal access token (classic) with at least
-   `read:packages`.
-2. Configure npm to use GitHub Packages for the `@kontext-dev` scope:
+1. Create a GitHub Personal Access Token (classic) with `read:packages`.
+2. Run one-time npm setup:
 
 ```bash
-npm config set @kontext-dev:registry https://npm.pkg.github.com
-npm config set //npm.pkg.github.com/:_authToken YOUR_GITHUB_PAT
+npm config set @kontext-dev:registry https://npm.pkg.github.com && npm config set //npm.pkg.github.com/:_authToken YOUR_GITHUB_PAT
 ```
 
-3. Install and run:
+3. Install:
 
 ```bash
-npm install -g @kontext-dev/codex
+npm i -g @kontext-dev/codex@latest
+```
+
+4. Run:
+
+```bash
 codex-kontext
+```
+
+5. Upgrade later:
+
+```bash
+npm i -g @kontext-dev/codex@latest
 ```
 
 First run behavior:
@@ -26,12 +34,9 @@ First run behavior:
 1. Normal Codex login runs first.
 2. Kontext PKCE auth opens automatically if no valid Kontext token is cached.
 3. If integrations are disconnected, the Kontext integrations connect page opens automatically.
-4. Local gateway handles API/MCP/auth endpoints on `localhost:4000`;
-   integrations connect runs on local web `http://localhost:3000/oauth/connect`.
-   Do not expect `http://localhost:4000/oauth/connect` to exist.
+4. Baked endpoints are `https://api.kontext.dev/mcp` for MCP/API and `https://app.kontext.dev` for integrations connect.
 
-Subsequent runs reuse the cached token and integration state, so PKCE/connect
-prompts do not repeat unless auth expires or integrations become disconnected.
+Subsequent runs reuse the cached token and integration state, so PKCE/connect prompts do not repeat unless auth expires or integrations become disconnected.
 
 ### System requirements
 
