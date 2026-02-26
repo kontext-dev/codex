@@ -11,18 +11,18 @@ on:
 
 jobs:
   guard:
-    name: Skip heavy CI on kontext-dev push
+    name: Skip rust-ci matrix on fork
     runs-on: ubuntu-24.04
-    if: ${{ github.event_name == 'push' && github.ref_name == 'kontext-dev' }}
+    if: ${{ github.repository_owner != 'openai' }}
     steps:
       - name: No-op
-        run: echo "rust-ci matrix runs on PRs and main pushes."
+        run: echo "rust-ci matrix is disabled for forks."
 
   # --- Detect what changed to detect which tests to run (always runs) -------------------------------------
   changed:
     name: Detect changed areas
     runs-on: ubuntu-24.04
-    if: ${{ github.event_name != 'push' || github.ref_name == 'main' }}
+    if: ${{ github.repository_owner == 'openai' && (github.event_name != 'push' || github.ref_name == 'main') }}
     outputs:
       codex: ${{ steps.detect.outputs.codex }}
       workflows: ${{ steps.detect.outputs.workflows }}
@@ -63,7 +63,7 @@ jobs:
     name: Format / etc
     runs-on: ubuntu-24.04
     needs: changed
-    if: ${{ needs.changed.outputs.codex == 'true' || needs.changed.outputs.workflows == 'true' || github.event_name == 'push' }}
+    if: ${{ github.repository_owner == 'openai' && (needs.changed.outputs.codex == 'true' || needs.changed.outputs.workflows == 'true' || github.event_name == 'push') }}
     defaults:
       run:
         working-directory: codex-rs
@@ -79,7 +79,7 @@ jobs:
     name: cargo shear
     runs-on: ubuntu-24.04
     needs: changed
-    if: ${{ needs.changed.outputs.codex == 'true' || needs.changed.outputs.workflows == 'true' || github.event_name == 'push' }}
+    if: ${{ github.repository_owner == 'openai' && (needs.changed.outputs.codex == 'true' || needs.changed.outputs.workflows == 'true' || github.event_name == 'push') }}
     defaults:
       run:
         working-directory: codex-rs
@@ -100,7 +100,7 @@ jobs:
     timeout-minutes: 30
     needs: changed
     # Keep job-level if to avoid spinning up runners when not needed
-    if: ${{ (needs.changed.outputs.codex == 'true' || needs.changed.outputs.workflows == 'true' || github.event_name == 'push') && (github.repository_owner == 'openai' || !matrix.requires_codex_runners) }}
+    if: ${{ github.repository_owner == 'openai' && (needs.changed.outputs.codex == 'true' || needs.changed.outputs.workflows == 'true' || github.event_name == 'push') }}
     defaults:
       run:
         working-directory: codex-rs
@@ -475,7 +475,7 @@ jobs:
     runs-on: ${{ matrix.runs_on || matrix.runner }}
     timeout-minutes: 30
     needs: changed
-    if: ${{ (needs.changed.outputs.codex == 'true' || needs.changed.outputs.workflows == 'true' || github.event_name == 'push') && (github.repository_owner == 'openai' || !matrix.requires_codex_runners) }}
+    if: ${{ github.repository_owner == 'openai' && (needs.changed.outputs.codex == 'true' || needs.changed.outputs.workflows == 'true' || github.event_name == 'push') }}
     defaults:
       run:
         working-directory: codex-rs
