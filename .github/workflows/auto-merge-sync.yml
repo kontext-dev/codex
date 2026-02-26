@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: No-op for branch pushes
-        run: echo "auto-merge-sync runs only for pull_request events."
+        run: echo "auto-merge-sync runs only for pull_request_target events."
 
   auto-merge:
     if: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.ref == 'kontext-dev' && contains(github.event.pull_request.labels.*.name, 'upstream-sync') }}
