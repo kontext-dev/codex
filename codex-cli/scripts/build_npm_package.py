@@ -265,6 +265,7 @@ def stage_sources(staging_dir: Path, version: str, package: str) -> None:
         package_json = {
             "name": CODEX_NPM_NAME,
             "version": platform_version,
+            "description": codex_package_json.get("description"),
             "license": codex_package_json.get("license", "Apache-2.0"),
             "os": [platform_package["os"]],
             "cpu": [platform_package["cpu"]],
@@ -283,6 +284,9 @@ def stage_sources(staging_dir: Path, version: str, package: str) -> None:
         publish_config = codex_package_json.get("publishConfig")
         if isinstance(publish_config, dict):
             package_json["publishConfig"] = publish_config
+
+        if not isinstance(package_json.get("description"), str):
+            package_json.pop("description", None)
     elif package == "codex-responses-api-proxy":
         bin_dir = staging_dir / "bin"
         bin_dir.mkdir(parents=True, exist_ok=True)

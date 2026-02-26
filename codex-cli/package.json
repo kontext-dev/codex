@@ -1,6 +1,7 @@
 {
   "name": "@kontext-dev/codex",
   "version": "0.0.0-dev",
+  "description": "Kontext Codex CLI fork with baked Kontext OAuth and MCP integration defaults.",
   "license": "Apache-2.0",
   "bin": {
     "codex-kontext": "bin/codex.js"
