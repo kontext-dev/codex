@@ -2,7 +2,7 @@ name: ci
 
 on:
   pull_request: {}
-  push: { branches: [main] }
+  push: { branches: [main, kontext-dev] }
 
 jobs:
   build-test:
@@ -36,8 +36,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # Use a rust-release version that includes all native binaries.
-          CODEX_VERSION=0.74.0
+          CODEX_VERSION=$(python3 - <<'PY'
+          import pathlib
+          import tomllib
+
+          cargo_toml = pathlib.Path("codex-rs/Cargo.toml").read_text()
+          data = tomllib.loads(cargo_toml)
+          print(data["workspace"]["package"]["version"])
+          PY
+          )
           OUTPUT_DIR="${RUNNER_TEMP}"
           python3 ./scripts/stage_npm_packages.py \
             --release-version "$CODEX_VERSION" \
