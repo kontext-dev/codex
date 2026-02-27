@@ -26,7 +26,32 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Check signing configuration
+      shell: bash
+      env:
+        CLIENT_ID: ${{ inputs.client-id }}
+        TENANT_ID: ${{ inputs.tenant-id }}
+        SUBSCRIPTION_ID: ${{ inputs.subscription-id }}
+        ENDPOINT: ${{ inputs.endpoint }}
+        ACCOUNT_NAME: ${{ inputs.account-name }}
+        CERTIFICATE_PROFILE_NAME: ${{ inputs.certificate-profile-name }}
+      run: |
+        set -euo pipefail
+
+        missing=()
+        for var in CLIENT_ID TENANT_ID SUBSCRIPTION_ID ENDPOINT ACCOUNT_NAME CERTIFICATE_PROFILE_NAME; do
+          if [[ -z "${!var:-}" ]]; then
+            missing+=("$var")
+          fi
+        done
+
+        if ((${#missing[@]} > 0)); then
+          echo "Skipping Windows signing: missing ${missing[*]}"
+          echo "CODEX_SKIP_WINDOWS_SIGNING=1" >> "$GITHUB_ENV"
+        fi
+
     - name: Azure login for Trusted Signing (OIDC)
+      if: ${{ env.CODEX_SKIP_WINDOWS_SIGNING != '1' }}
       uses: azure/login@v2
       with:
         client-id: ${{ inputs.client-id }}
@@ -34,6 +59,7 @@ runs:
         subscription-id: ${{ inputs.subscription-id }}
 
     - name: Sign Windows binaries with Azure Trusted Signing
+      if: ${{ env.CODEX_SKIP_WINDOWS_SIGNING != '1' }}
       uses: azure/trusted-signing-action@v0
       with:
         endpoint: ${{ inputs.endpoint }}
