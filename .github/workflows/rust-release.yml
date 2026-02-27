@@ -1,8 +1,8 @@
 # Release workflow for codex-rs.
 # To release, follow a workflow like:
 # ```
-# git tag -a rust-v0.1.0-kontext.1 -m "Release 0.1.0-kontext.1"
-# git push origin rust-v0.1.0-kontext.1
+# git tag -a rust-v0.1.0 -m "Release 0.1.0"
+# git push origin rust-v0.1.0
 # ```
 
 name: rust-release
@@ -30,7 +30,7 @@ jobs:
           # 1. Must be a tag and match the regex
           [[ "${GITHUB_REF_TYPE}" == "tag" ]] \
             || { echo "❌  Not a tag push"; exit 1; }
-          [[ "${GITHUB_REF_NAME}" =~ ^rust-v[0-9]+\.[0-9]+\.[0-9]+-kontext\.[0-9]+$ ]] \
+          [[ "${GITHUB_REF_NAME}" =~ ^rust-v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta)(\.[0-9]+)?)?$ ]] \
             || { echo "❌  Tag '${GITHUB_REF_NAME}' doesn't match expected format"; exit 1; }
 
           # 2. Extract versions
@@ -228,24 +228,6 @@ jobs:
           artifacts-dir: ${{ github.workspace }}/codex-rs/target/${{ matrix.target }}/release
 
       - if: ${{ runner.os == 'macOS' }}
-        id: macos_signing
-        name: Detect macOS signing config
-        shell: bash
-        env:
-          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_NOTARIZATION_KEY_P8: ${{ secrets.APPLE_NOTARIZATION_KEY_P8 }}
-          APPLE_NOTARIZATION_KEY_ID: ${{ secrets.APPLE_NOTARIZATION_KEY_ID }}
-          APPLE_NOTARIZATION_ISSUER_ID: ${{ secrets.APPLE_NOTARIZATION_ISSUER_ID }}
-        run: |
-          if [[ -n "$APPLE_CERTIFICATE_P12" && -n "$APPLE_CERTIFICATE_PASSWORD" && -n "$APPLE_NOTARIZATION_KEY_P8" && -n "$APPLE_NOTARIZATION_KEY_ID" && -n "$APPLE_NOTARIZATION_ISSUER_ID" ]]; then
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "macOS signing secrets are not configured; skipping signing."
-          fi
-
-      - if: ${{ runner.os == 'macOS' && steps.macos_signing.outputs.enabled == 'true' }}
         name: MacOS code signing (binaries)
         uses: ./.github/actions/macos-code-sign
         with:
@@ -304,7 +286,7 @@ jobs:
             exit 1
           fi
 
-      - if: ${{ runner.os == 'macOS' && steps.macos_signing.outputs.enabled == 'true' }}
+      - if: ${{ runner.os == 'macOS' }}
         name: MacOS code signing (dmg)
         uses: ./.github/actions/macos-code-sign
         with:
@@ -380,7 +362,6 @@ jobs:
             codex-rs/dist/${{ matrix.target }}/*
 
   build-windows:
-    if: ${{ github.repository == 'openai/codex' }}
     needs: tag-check
     uses: ./.github/workflows/rust-release-windows.yml
     with:
@@ -397,7 +378,6 @@ jobs:
     secrets: inherit
 
   release:
-    if: ${{ always() && needs.build.result == 'success' && (needs.build-windows.result == 'success' || needs.build-windows.result == 'skipped') && needs.shell-tool-mcp.result == 'success' }}
     needs:
       - build
       - build-windows
@@ -407,10 +387,11 @@ jobs:
     permissions:
       contents: write
       actions: read
-      packages: write
     outputs:
       version: ${{ steps.release_name.outputs.name }}
       tag: ${{ github.ref_name }}
+      should_publish_npm: ${{ steps.npm_publish_settings.outputs.should_publish }}
+      npm_tag: ${{ steps.npm_publish_settings.outputs.npm_tag }}
 
     steps:
       - name: Checkout repository
@@ -465,9 +446,28 @@ jobs:
         id: release_name
         run: |
           # Extract the version from the tag name, which is in the format
-          # "rust-v0.1.0-kontext.1".
+          # "rust-v0.1.0".
           version="${GITHUB_REF_NAME#rust-v}"
           echo "name=${version}" >> $GITHUB_OUTPUT
+
+      - name: Determine npm publish settings
+        id: npm_publish_settings
+        env:
+          VERSION: ${{ steps.release_name.outputs.name }}
+        run: |
+          set -euo pipefail
+          version="${VERSION}"
+
+          if [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+            echo "npm_tag=" >> "$GITHUB_OUTPUT"
+          elif [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+-alpha\.[0-9]+$ ]]; then
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+            echo "npm_tag=alpha" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+            echo "npm_tag=" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -490,7 +490,9 @@ jobs:
         run: |
           ./scripts/stage_npm_packages.py \
             --release-version "${{ steps.release_name.outputs.name }}" \
-            --package codex
+            --package codex \
+            --package codex-responses-api-proxy \
+            --package codex-sdk
 
       - name: Stage macOS and Linux installer script
         run: |
@@ -503,22 +505,89 @@ jobs:
           tag_name: ${{ github.ref_name }}
           body_path: ${{ steps.release_notes.outputs.path }}
           files: dist/**
-          # Kontext builds use a semver prerelease suffix: x.y.z-kontext.N.
+          # Mark as prerelease only when the version has a suffix after x.y.z
+          # (e.g. -alpha, -beta). Otherwise publish a normal release.
           prerelease: ${{ contains(steps.release_name.outputs.name, '-') }}
 
-      - name: Setup Node.js for GitHub Packages publish
+      - uses: facebook/dotslash-publish-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag: ${{ github.ref_name }}
+          config: .github/dotslash-config.json
+
+      - name: Trigger developers.openai.com deploy
+        # Only trigger the deploy if the release is not a pre-release.
+        # The deploy is used to update the developers.openai.com website with the new config schema json file.
+        if: ${{ !contains(steps.release_name.outputs.name, '-') }}
+        continue-on-error: true
+        env:
+          DEV_WEBSITE_VERCEL_DEPLOY_HOOK_URL: ${{ secrets.DEV_WEBSITE_VERCEL_DEPLOY_HOOK_URL }}
+        run: |
+          if ! curl -sS -f -o /dev/null -X POST "$DEV_WEBSITE_VERCEL_DEPLOY_HOOK_URL"; then
+            echo "::warning title=developers.openai.com deploy hook failed::Vercel deploy hook POST failed for ${GITHUB_REF_NAME}"
+            exit 1
+          fi
+
+  # Publish to npm using OIDC authentication.
+  # July 31, 2025: https://github.blog/changelog/2025-07-31-npm-trusted-publishing-with-oidc-is-generally-available/
+  # npm docs: https://docs.npmjs.com/trusted-publishers
+  publish-npm:
+    # Publish to npm for stable releases and alpha pre-releases with numeric suffixes.
+    if: ${{ needs.release.outputs.should_publish_npm == 'true' }}
+    name: publish-npm
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # Required for OIDC
+      contents: read
+
+    steps:
+      - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
           node-version: 22
-          registry-url: "https://npm.pkg.github.com"
-          scope: "@kontext-dev"
+          registry-url: "https://registry.npmjs.org"
+          scope: "@openai"
 
-      - name: Publish npm tarballs to GitHub Packages
+      # Trusted publishing requires npm CLI version 11.5.1 or later.
+      - name: Update npm
+        run: npm install -g npm@latest
+
+      - name: Download npm tarballs from release
         env:
-          VERSION: ${{ steps.release_name.outputs.name }}
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          version="${{ needs.release.outputs.version }}"
+          tag="${{ needs.release.outputs.tag }}"
+          mkdir -p dist/npm
+          patterns=(
+            "codex-npm-${version}.tgz"
+            "codex-npm-linux-*-${version}.tgz"
+            "codex-npm-darwin-*-${version}.tgz"
+            "codex-npm-win32-*-${version}.tgz"
+            "codex-responses-api-proxy-npm-${version}.tgz"
+            "codex-sdk-npm-${version}.tgz"
+          )
+          for pattern in "${patterns[@]}"; do
+            gh release download "$tag" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --pattern "$pattern" \
+              --dir dist/npm
+          done
+
+      # No NODE_AUTH_TOKEN needed because we use OIDC.
+      - name: Publish to npm
+        env:
+          VERSION: ${{ needs.release.outputs.version }}
+          NPM_TAG: ${{ needs.release.outputs.npm_tag }}
+        run: |
+          set -euo pipefail
+          prefix=""
+          if [[ -n "${NPM_TAG}" ]]; then
+            prefix="${NPM_TAG}-"
+          fi
 
           shopt -s nullglob
           tarballs=(dist/npm/*-"${VERSION}".tgz)
@@ -535,10 +604,10 @@ jobs:
               codex-npm-linux-*-"${VERSION}".tgz|codex-npm-darwin-*-"${VERSION}".tgz|codex-npm-win32-*-"${VERSION}".tgz)
                 platform="${filename#codex-npm-}"
                 platform="${platform%-${VERSION}.tgz}"
-                tag="${platform}"
+                tag="${prefix}${platform}"
                 ;;
-              codex-npm-"${VERSION}".tgz)
-                tag=""
+              codex-npm-"${VERSION}".tgz|codex-responses-api-proxy-npm-"${VERSION}".tgz|codex-sdk-npm-"${VERSION}".tgz)
+                tag="${NPM_TAG}"
                 ;;
               *)
                 echo "Unexpected npm tarball: ${filename}"
@@ -546,12 +615,7 @@ jobs:
                 ;;
             esac
 
-            publish_cmd=(
-              npm publish
-              "${GITHUB_WORKSPACE}/${tarball}"
-              --registry
-              "https://npm.pkg.github.com"
-            )
+            publish_cmd=(npm publish "${GITHUB_WORKSPACE}/${tarball}")
             if [[ -n "${tag}" ]]; then
               publish_cmd+=(--tag "${tag}")
             fi
@@ -575,29 +639,7 @@ jobs:
             exit "${publish_status}"
           done
 
-      - if: ${{ github.repository == 'openai/codex' }}
-        uses: facebook/dotslash-publish-release@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag: ${{ github.ref_name }}
-          config: .github/dotslash-config.json
-
-      - name: Trigger developers.openai.com deploy
-        if: ${{ github.repository == 'openai/codex' && !contains(steps.release_name.outputs.name, '-') }}
-        # Only trigger the deploy if the release is not a pre-release.
-        # The deploy is used to update the developers.openai.com website with the new config schema json file.
-        continue-on-error: true
-        env:
-          DEV_WEBSITE_VERCEL_DEPLOY_HOOK_URL: ${{ secrets.DEV_WEBSITE_VERCEL_DEPLOY_HOOK_URL }}
-        run: |
-          if ! curl -sS -f -o /dev/null -X POST "$DEV_WEBSITE_VERCEL_DEPLOY_HOOK_URL"; then
-            echo "::warning title=developers.openai.com deploy hook failed::Vercel deploy hook POST failed for ${GITHUB_REF_NAME}"
-            exit 1
-          fi
-
   update-branch:
-    if: ${{ contains(github.ref_name, '-alpha') }}
     name: Update latest-alpha-cli branch
     permissions:
       contents: write

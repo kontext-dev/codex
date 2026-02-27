@@ -52,6 +52,7 @@ use codex_app_server_protocol::ConfigLayerSource;
 use codex_backend_client::Client as BackendClient;
 use codex_chatgpt::connectors;
 use codex_core::config::Config;
+use codex_core::config::Constrained;
 use codex_core::config::ConstraintResult;
 use codex_core::config::types::Notifications;
 use codex_core::config::types::WindowsSandboxModeToml;
@@ -246,6 +247,8 @@ use crate::render::renderable::RenderableExt;
 use crate::render::renderable::RenderableItem;
 use crate::slash_command::SlashCommand;
 use crate::status::RateLimitSnapshotDisplay;
+use crate::status_indicator_widget::STATUS_DETAILS_DEFAULT_MAX_LINES;
+use crate::status_indicator_widget::StatusDetailsCapitalization;
 use crate::text_formatting::truncate_text;
 use crate::tui::FrameRequester;
 mod interrupts;
@@ -930,15 +933,27 @@ impl ChatWidget {
     /// Update the status indicator header and details.
     ///
     /// Passing `None` clears any existing details.
-    fn set_status(&mut self, header: String, details: Option<String>) {
+    fn set_status(
+        &mut self,
+        header: String,
+        details: Option<String>,
+        details_capitalization: StatusDetailsCapitalization,
+        details_max_lines: usize,
+    ) {
         self.current_status_header = header.clone();
-        self.bottom_pane.update_status(header, details);
+        self.bottom_pane
+            .update_status(header, details, details_capitalization, details_max_lines);
     }
 
     /// Convenience wrapper around [`Self::set_status`];
     /// updates the status indicator header and clears any existing details.
     fn set_status_header(&mut self, header: String) {
-        self.set_status(header, None);
+        self.set_status(
+            header,
+            None,
+            StatusDetailsCapitalization::CapitalizeFirst,
+            STATUS_DETAILS_DEFAULT_MAX_LINES,
+        );
     }
 
     /// Sets the currently rendered footer status-line value.
@@ -1096,6 +1111,27 @@ impl ChatWidget {
         self.forked_from = event.forked_from_id;
         self.current_rollout_path = event.rollout_path.clone();
         self.current_cwd = Some(event.cwd.clone());
+        self.config.cwd = event.cwd.clone();
+        if let Err(err) = self
+            .config
+            .permissions
+            .approval_policy
+            .set(event.approval_policy)
+        {
+            tracing::warn!(%err, "failed to sync approval_policy from SessionConfigured");
+            self.config.permissions.approval_policy =
+                Constrained::allow_only(event.approval_policy);
+        }
+        if let Err(err) = self
+            .config
+            .permissions
+            .sandbox_policy
+            .set(event.sandbox_policy.clone())
+        {
+            tracing::warn!(%err, "failed to sync sandbox_policy from SessionConfigured");
+            self.config.permissions.sandbox_policy =
+                Constrained::allow_only(event.sandbox_policy.clone());
+        }
         let initial_messages = event.initial_messages.clone();
         self.last_copyable_output = None;
         let forked_from_id = event.forked_from_id;
@@ -1962,15 +1998,16 @@ impl ChatWidget {
             .map(|process| process.command_display.clone());
         if ev.stdin.is_empty() {
             // Empty stdin means we are polling for background output.
-            // Surface this in the status header (single "waiting" surface) instead of the transcript.
+            // Surface this in the status indicator (single "waiting" surface) instead of
+            // the transcript. Keep the header short so the interrupt hint remains visible.
             self.bottom_pane.ensure_status_indicator();
             self.bottom_pane.set_interrupt_hint_visible(true);
-            let header = if let Some(command) = &command_display {
-                format!("Waiting for background terminal · {command}")
-            } else {
-                "Waiting for background terminal".to_string()
-            };
-            self.set_status_header(header);
+            self.set_status(
+                "Waiting for background terminal".to_string(),
+                command_display.clone(),
+                StatusDetailsCapitalization::Preserve,
+                1,
+            );
             match &mut self.unified_exec_wait_streak {
                 Some(wait) if wait.process_id == ev.process_id => {
                     wait.update_command_display(command_display);
@@ -2243,7 +2280,16 @@ impl ChatWidget {
             self.retry_status_header = Some(self.current_status_header.clone());
         }
         self.bottom_pane.ensure_status_indicator();
-        self.set_status(message, additional_details);
+        self.set_status(
+            message,
+            additional_details,
+            StatusDetailsCapitalization::CapitalizeFirst,
+            STATUS_DETAILS_DEFAULT_MAX_LINES,
+        );
+    }
+
+    pub(crate) fn pre_draw_tick(&mut self) {
+        self.bottom_pane.pre_draw_tick();
     }
 
     /// Handle completion of an `AgentMessage` turn item.
@@ -2837,9 +2883,9 @@ impl ChatWidget {
         };
 
         widget.prefetch_rate_limits();
-        widget
-            .bottom_pane
-            .set_steer_enabled(widget.config.features.enabled(Feature::Steer));
+        widget.bottom_pane.set_voice_transcription_enabled(
+            widget.config.features.enabled(Feature::VoiceTranscription),
+        );
         widget
             .bottom_pane
             .set_realtime_conversation_enabled(widget.realtime_conversation_enabled());
@@ -2849,9 +2895,7 @@ impl ChatWidget {
         widget
             .bottom_pane
             .set_status_line_enabled(!widget.configured_status_line_items().is_empty());
-        widget.bottom_pane.set_collaboration_modes_enabled(
-            widget.config.features.enabled(Feature::CollaborationModes),
-        );
+        widget.bottom_pane.set_collaboration_modes_enabled(true);
         widget.sync_personality_command_enabled();
         widget
             .bottom_pane
@@ -3016,9 +3060,9 @@ impl ChatWidget {
         };
 
         widget.prefetch_rate_limits();
-        widget
-            .bottom_pane
-            .set_steer_enabled(widget.config.features.enabled(Feature::Steer));
+        widget.bottom_pane.set_voice_transcription_enabled(
+            widget.config.features.enabled(Feature::VoiceTranscription),
+        );
         widget
             .bottom_pane
             .set_realtime_conversation_enabled(widget.realtime_conversation_enabled());
@@ -3028,9 +3072,7 @@ impl ChatWidget {
         widget
             .bottom_pane
             .set_status_line_enabled(!widget.configured_status_line_items().is_empty());
-        widget.bottom_pane.set_collaboration_modes_enabled(
-            widget.config.features.enabled(Feature::CollaborationModes),
-        );
+        widget.bottom_pane.set_collaboration_modes_enabled(true);
         widget.sync_personality_command_enabled();
         widget
             .bottom_pane
@@ -3184,9 +3226,9 @@ impl ChatWidget {
         };
 
         widget.prefetch_rate_limits();
-        widget
-            .bottom_pane
-            .set_steer_enabled(widget.config.features.enabled(Feature::Steer));
+        widget.bottom_pane.set_voice_transcription_enabled(
+            widget.config.features.enabled(Feature::VoiceTranscription),
+        );
         widget
             .bottom_pane
             .set_realtime_conversation_enabled(widget.realtime_conversation_enabled());
@@ -3196,9 +3238,7 @@ impl ChatWidget {
         widget
             .bottom_pane
             .set_status_line_enabled(!widget.configured_status_line_items().is_empty());
-        widget.bottom_pane.set_collaboration_modes_enabled(
-            widget.config.features.enabled(Feature::CollaborationModes),
-        );
+        widget.bottom_pane.set_collaboration_modes_enabled(true);
         widget.sync_personality_command_enabled();
         widget
             .bottom_pane
@@ -3316,8 +3356,20 @@ impl ChatWidget {
                             .bottom_pane
                             .take_recent_submission_mention_bindings(),
                     };
-                    if self.is_session_configured() && !self.is_plan_streaming_in_tui() {
-                        // Submitted is only emitted when steer is enabled.
+                    let Some(user_message) =
+                        self.maybe_defer_user_message_for_realtime(user_message)
+                    else {
+                        return;
+                    };
+                    // Submissions during active final-answer streaming can race with turn
+                    // completion and strand the UI in a running state. Queue those inputs instead
+                    // of injecting immediately; `on_task_complete()` drains this FIFO via
+                    // `maybe_send_next_queued_input()`, so no typed prompt is dropped.
+                    let should_submit_now = self.is_session_configured()
+                        && !self.is_plan_streaming_in_tui()
+                        && self.stream_controller.is_none();
+                    if should_submit_now {
+                        // Submitted is emitted when user submits.
                         // Reset any reasoning header only when we are actually submitting a turn.
                         self.reasoning_buffer.clear();
                         self.full_reasoning_buffer.clear();
@@ -4424,10 +4476,23 @@ impl ChatWidget {
             | EventMsg::AgentMessageContentDelta(_)
             | EventMsg::ReasoningContentDelta(_)
             | EventMsg::ReasoningRawContentDelta(_)
-            | EventMsg::RealtimeConversationStarted(_)
-            | EventMsg::RealtimeConversationRealtime(_)
-            | EventMsg::RealtimeConversationClosed(_)
-            | EventMsg::DynamicToolCallRequest(_) => {}
+            | EventMsg::DynamicToolCallRequest(_)
+            | EventMsg::DynamicToolCallResponse(_) => {}
+            EventMsg::RealtimeConversationStarted(ev) => {
+                if !from_replay {
+                    self.on_realtime_conversation_started(ev);
+                }
+            }
+            EventMsg::RealtimeConversationRealtime(ev) => {
+                if !from_replay {
+                    self.on_realtime_conversation_realtime(ev);
+                }
+            }
+            EventMsg::RealtimeConversationClosed(ev) => {
+                if !from_replay {
+                    self.on_realtime_conversation_closed(ev);
+                }
+            }
             EventMsg::ItemCompleted(event) => {
                 let item = event.item;
                 if let codex_protocol::items::TurnItem::Plan(plan_item) = &item {
@@ -6574,6 +6639,8 @@ impl ChatWidget {
         self.set_status(
             "Setting up sandbox...".to_string(),
             Some("Hang tight, this may take a few minutes".to_string()),
+            StatusDetailsCapitalization::CapitalizeFirst,
+            STATUS_DETAILS_DEFAULT_MAX_LINES,
         );
         self.request_redraw();
     }
@@ -6626,24 +6693,8 @@ impl ChatWidget {
         } else {
             self.config.features.disable(feature);
         }
-        if feature == Feature::Steer {
-            self.bottom_pane.set_steer_enabled(enabled);
-        }
-        if feature == Feature::CollaborationModes {
-            self.bottom_pane.set_collaboration_modes_enabled(enabled);
-            let settings = self.current_collaboration_mode.settings.clone();
-            self.current_collaboration_mode = CollaborationMode {
-                mode: ModeKind::Default,
-                settings,
-            };
-            self.active_collaboration_mask = if enabled {
-                collaboration_modes::default_mask(self.models_manager.as_ref())
-            } else {
-                None
-            };
-            self.update_collaboration_mode_indicator();
-            self.refresh_model_display();
-            self.request_redraw();
+        if feature == Feature::VoiceTranscription {
+            self.bottom_pane.set_voice_transcription_enabled(enabled);
         }
         if feature == Feature::RealtimeConversation {
             let realtime_conversation_enabled = self.realtime_conversation_enabled();
@@ -6863,17 +6914,14 @@ impl ChatWidget {
     }
 
     fn collaboration_modes_enabled(&self) -> bool {
-        self.config.features.enabled(Feature::CollaborationModes)
+        true
     }
 
     fn initial_collaboration_mask(
-        config: &Config,
+        _config: &Config,
         models_manager: &ModelsManager,
         model_override: Option<&str>,
     ) -> Option<CollaborationModeMask> {
-        if !config.features.enabled(Feature::CollaborationModes) {
-            return None;
-        }
         let mut mask = collaboration_modes::default_mask(models_manager)?;
         if let Some(model_override) = model_override {
             mask.model = Some(model_override.to_string());
@@ -7843,6 +7891,29 @@ impl ChatWidget {
             RenderableItem::Borrowed(&self.bottom_pane).inset(Insets::tlbr(1, 0, 0, 0)),
         );
         RenderableItem::Owned(Box::new(flex))
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+impl ChatWidget {
+    pub(crate) fn replace_transcription(&mut self, id: &str, text: &str) {
+        self.bottom_pane.replace_transcription(id, text);
+        // Ensure the UI redraws to reflect the updated transcription.
+        self.request_redraw();
+    }
+
+    pub(crate) fn update_transcription_in_place(&mut self, id: &str, text: &str) -> bool {
+        let updated = self.bottom_pane.update_transcription_in_place(id, text);
+        if updated {
+            self.request_redraw();
+        }
+        updated
+    }
+
+    pub(crate) fn remove_transcription_placeholder(&mut self, id: &str) {
+        self.bottom_pane.remove_transcription_placeholder(id);
+        // Ensure the UI redraws to reflect placeholder removal.
+        self.request_redraw();
     }
 }
 

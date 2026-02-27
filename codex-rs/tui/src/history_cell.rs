@@ -829,6 +829,29 @@ pub fn new_approval_decision_cell(
                 ],
             )
         }
+        NetworkPolicyAmendment {
+            network_policy_amendment,
+        } => match network_policy_amendment.action {
+            NetworkPolicyRuleAction::Allow => (
+                "✔ ".green(),
+                vec![
+                    "You ".into(),
+                    "persisted".bold(),
+                    " Codex network access to ".into(),
+                    Span::from(network_policy_amendment.host).dim(),
+                ],
+            ),
+            NetworkPolicyRuleAction::Deny => (
+                "✗ ".red(),
+                vec![
+                    "You ".into(),
+                    "denied".bold(),
+                    " codex network access to ".into(),
+                    Span::from(network_policy_amendment.host).dim(),
+                    " and saved that rule".into(),
+                ],
+            ),
+        },
         Denied => {
             let snippet = Span::from(exec_snippet(&command)).dim();
             (

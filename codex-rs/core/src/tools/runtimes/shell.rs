@@ -103,7 +103,7 @@ impl ShellRuntime {
         Self { backend }
     }
 
-    fn stdout_stream(ctx: &ToolCtx<'_>) -> Option<crate::exec::StdoutStream> {
+    fn stdout_stream(ctx: &ToolCtx) -> Option<crate::exec::StdoutStream> {
         Some(crate::exec::StdoutStream {
             sub_id: ctx.turn.sub_id.clone(),
             call_id: ctx.call_id.clone(),
@@ -185,7 +185,7 @@ impl ToolRuntime<ShellRequest, ExecToolCallOutput> for ShellRuntime {
     fn network_approval_spec(
         &self,
         req: &ShellRequest,
-        _ctx: &ToolCtx<'_>,
+        _ctx: &ToolCtx,
     ) -> Option<NetworkApprovalSpec> {
         req.network.as_ref()?;
         Some(NetworkApprovalSpec {
@@ -198,7 +198,7 @@ impl ToolRuntime<ShellRequest, ExecToolCallOutput> for ShellRuntime {
         &mut self,
         req: &ShellRequest,
         attempt: &SandboxAttempt<'_>,
-        ctx: &ToolCtx<'_>,
+        ctx: &ToolCtx,
     ) -> Result<ExecToolCallOutput, ToolError> {
         let session_shell = ctx.session.user_shell();
         let command = maybe_wrap_shell_lc_with_snapshot(
@@ -215,34 +215,16 @@ impl ToolRuntime<ShellRequest, ExecToolCallOutput> for ShellRuntime {
             command
         };
 
-        if ctx.session.features().enabled(Feature::ShellZshFork) {
-            let wrapper_socket_path = ctx
-                .session
-                .services
-                .zsh_exec_bridge
-                .next_wrapper_socket_path();
-            let mut zsh_fork_env = req.env.clone();
-            zsh_fork_env.insert(
-                ZSH_EXEC_BRIDGE_WRAPPER_SOCKET_ENV_VAR.to_string(),
-                wrapper_socket_path.to_string_lossy().to_string(),
-            );
-            let spec = build_command_spec(
-                &command,
-                &req.cwd,
-                &zsh_fork_env,
-                req.timeout_ms.into(),
-                req.sandbox_permissions,
-                req.justification.clone(),
-            )?;
-            let env = attempt
-                .env_for(spec, req.network.as_ref())
-                .map_err(|err| ToolError::Codex(err.into()))?;
-            return ctx
-                .session
-                .services
-                .zsh_exec_bridge
-                .execute_shell_request(&env, ctx.session, ctx.turn, &ctx.call_id)
-                .await;
+        #[cfg(unix)]
+        if self.backend == ShellRuntimeBackend::ShellCommandZshFork {
+            match unix_escalation::try_run_zsh_fork(req, attempt, ctx, &command).await? {
+                Some(out) => return Ok(out),
+                None => {
+                    tracing::warn!(
+                        "ZshFork backend specified, but conditions for using it were not met, falling back to normal execution",
+                    );
+                }
+            }
         }
 
         let spec = build_command_spec(

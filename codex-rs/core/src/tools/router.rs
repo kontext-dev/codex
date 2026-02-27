@@ -2,7 +2,6 @@ use crate::client_common::tools::ToolSpec;
 use crate::codex::Session;
 use crate::codex::TurnContext;
 use crate::function_tool::FunctionCallError;
-use crate::kontext_dev::InjectedKontextToolSpec;
 use crate::mcp_connection_manager::ToolInfo;
 use crate::sandboxing::SandboxPermissions;
 use crate::tools::context::SharedTurnDiffTracker;
@@ -43,9 +42,8 @@ impl ToolRouter {
         mcp_tools: Option<HashMap<String, Tool>>,
         app_tools: Option<HashMap<String, ToolInfo>>,
         dynamic_tools: &[DynamicToolSpec],
-        kontext_tools: &[InjectedKontextToolSpec],
     ) -> Self {
-        let builder = build_specs(config, mcp_tools, app_tools, dynamic_tools, kontext_tools);
+        let builder = build_specs(config, mcp_tools, app_tools, dynamic_tools);
         let (specs, registry) = builder.build();
 
         Self { registry, specs }
@@ -220,12 +218,9 @@ mod tests {
     use std::sync::Arc;
 
     use crate::codex::make_session_and_context;
-    use crate::kontext_dev::InjectedKontextToolSpec;
     use crate::tools::context::ToolPayload;
     use crate::turn_diff_tracker::TurnDiffTracker;
     use codex_protocol::models::ResponseInputItem;
-    use codex_protocol::models::ResponseItem;
-    use serde_json::json;
 
     use super::ToolCall;
     use super::ToolCallSource;
@@ -256,7 +251,6 @@ mod tests {
             ),
             app_tools,
             turn.dynamic_tools.as_slice(),
-            &[],
         );
 
         let call = ToolCall {
@@ -310,7 +304,6 @@ mod tests {
             ),
             app_tools,
             turn.dynamic_tools.as_slice(),
-            &[],
         );
 
         let call = ToolCall {
@@ -335,56 +328,6 @@ mod tests {
             }
             other => panic!("expected function call output, got {other:?}"),
         }
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn kontext_injected_tools_are_not_treated_as_mcp_payloads() -> anyhow::Result<()> {
-        let (session, turn) = make_session_and_context().await;
-        let session = Arc::new(session);
-
-        let router = ToolRouter::from_config(
-            &turn.tools_config,
-            None,
-            None,
-            turn.dynamic_tools.as_slice(),
-            &[InjectedKontextToolSpec {
-                name: "kontext__linear_search_issues".to_string(),
-                description: "Search Linear issues through Kontext".to_string(),
-                input_schema: json!({
-                    "type": "object",
-                    "properties": {
-                        "query": { "type": "string" }
-                    },
-                    "required": ["query"]
-                }),
-            }],
-        );
-
-        let call = ToolRouter::build_tool_call(
-            session.as_ref(),
-            ResponseItem::FunctionCall {
-                id: None,
-                name: "kontext__linear_search_issues".to_string(),
-                arguments: "{\"query\":\"my issues\"}".to_string(),
-                call_id: "call-1".to_string(),
-            },
-        )
-        .await?
-        .expect("expected tool call");
-
-        assert!(
-            matches!(call.payload, ToolPayload::Function { .. }),
-            "expected injected Kontext tool payload to stay Function"
-        );
-        assert!(
-            router
-                .specs()
-                .iter()
-                .any(|spec| spec.name() == "kontext__linear_search_issues"),
-            "expected injected Kontext tool in router specs"
-        );
 
         Ok(())
     }

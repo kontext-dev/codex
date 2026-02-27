@@ -58,6 +58,8 @@ pub use crate::approvals::ExecApprovalRequestEvent;
 pub use crate::approvals::ExecPolicyAmendment;
 pub use crate::approvals::NetworkApprovalContext;
 pub use crate::approvals::NetworkApprovalProtocol;
+pub use crate::approvals::NetworkPolicyAmendment;
+pub use crate::approvals::NetworkPolicyRuleAction;
 pub use crate::request_user_input::RequestUserInputEvent;
 
 /// Open/close tags for special user-input blocks. Used across crates to avoid
@@ -1046,6 +1048,8 @@ pub enum EventMsg {
 
     DynamicToolCallRequest(DynamicToolCallRequest),
 
+    DynamicToolCallResponse(DynamicToolCallResponseEvent),
+
     ElicitationRequest(ElicitationRequestEvent),
 
     ApplyPatchApprovalRequest(ApplyPatchApprovalRequestEvent),
@@ -1987,6 +1991,9 @@ impl SessionSource {
             SessionSource::SubAgent(SubAgentSource::ThreadSpawn { agent_nickname, .. }) => {
                 agent_nickname.clone()
             }
+            SessionSource::SubAgent(SubAgentSource::MemoryConsolidation) => {
+                Some("Morpheus".to_string())
+            }
             _ => None,
         }
     }
@@ -1995,6 +2002,9 @@ impl SessionSource {
         match self {
             SessionSource::SubAgent(SubAgentSource::ThreadSpawn { agent_role, .. }) => {
                 agent_role.clone()
+            }
+            SessionSource::SubAgent(SubAgentSource::MemoryConsolidation) => {
+                Some("memory builder".to_string())
             }
             _ => None,
         }
@@ -2780,6 +2790,12 @@ pub enum ReviewDecision {
     /// remainder of the session.
     ApprovedForSession,
 
+    /// User chose to persist a network policy rule (allow/deny) for future
+    /// requests to the same host.
+    NetworkPolicyAmendment {
+        network_policy_amendment: NetworkPolicyAmendment,
+    },
+
     /// User has denied this command and the agent should not execute it, but
     /// it should continue the session and try something else.
     #[default]
@@ -2798,6 +2814,12 @@ impl ReviewDecision {
             ReviewDecision::Approved => "approved",
             ReviewDecision::ApprovedExecpolicyAmendment { .. } => "approved_with_amendment",
             ReviewDecision::ApprovedForSession => "approved_for_session",
+            ReviewDecision::NetworkPolicyAmendment {
+                network_policy_amendment,
+            } => match network_policy_amendment.action {
+                NetworkPolicyRuleAction::Allow => "approved_with_network_policy_allow",
+                NetworkPolicyRuleAction::Deny => "denied_with_network_policy_deny",
+            },
             ReviewDecision::Denied => "denied",
             ReviewDecision::Abort => "abort",
         }

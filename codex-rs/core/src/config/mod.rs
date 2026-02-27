@@ -70,7 +70,6 @@ use codex_protocol::openai_models::ReasoningEffort;
 use codex_rmcp_client::OAuthCredentialsStoreMode;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_absolute_path::AbsolutePathBufGuard;
-use kontext_dev_sdk::KontextDevConfig;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
@@ -309,9 +308,6 @@ pub struct Config {
 
     /// Definition for MCP servers that Codex can reach out to for tool calls.
     pub mcp_servers: Constrained<HashMap<String, McpServerConfig>>,
-
-    /// Optional Kontext-Dev configuration that can attach a single MCP server.
-    pub kontext_dev: Option<KontextDevConfig>,
 
     /// Preferred store for MCP OAuth credentials.
     /// keyring: Use an OS-specific keyring service.
@@ -697,7 +693,7 @@ pub(crate) fn deserialize_config_toml_with_base(
 
 fn load_catalog_json(path: &AbsolutePathBuf) -> std::io::Result<ModelsResponse> {
     let file_contents = std::fs::read_to_string(path)?;
-    serde_json::from_str::<ModelsResponse>(&file_contents).map_err(|err| {
+    let catalog = serde_json::from_str::<ModelsResponse>(&file_contents).map_err(|err| {
         std::io::Error::new(
             ErrorKind::InvalidData,
             format!(
@@ -705,7 +701,17 @@ fn load_catalog_json(path: &AbsolutePathBuf) -> std::io::Result<ModelsResponse> 
                 path.display()
             ),
         )
-    })
+    })?;
+    if catalog.models.is_empty() {
+        return Err(std::io::Error::new(
+            ErrorKind::InvalidData,
+            format!(
+                "model_catalog_json path `{}` must contain at least one model",
+                path.display()
+            ),
+        ));
+    }
+    Ok(catalog)
 }
 
 fn load_model_catalog(
@@ -1074,11 +1080,6 @@ pub struct ConfigToml {
     // Uses the raw MCP input shape (custom deserialization) rather than `McpServerConfig`.
     #[schemars(schema_with = "crate::config::schema::mcp_servers_schema")]
     pub mcp_servers: HashMap<String, McpServerConfig>,
-
-    /// Kontext-Dev configuration.
-    #[schemars(skip)]
-    #[serde(default, rename = "kontext-dev")]
-    pub kontext_dev: Option<KontextDevConfig>,
 
     /// Preferred backend for storing MCP OAuth credentials.
     /// keyring: Use an OS-specific keyring service.
@@ -2105,7 +2106,6 @@ impl Config {
             // is important in code to differentiate the mode from the store implementation.
             cli_auth_credentials_store_mode: cfg.cli_auth_credentials_store.unwrap_or_default(),
             mcp_servers,
-            kontext_dev: cfg.kontext_dev,
             // The config.toml omits "_mode" because it's a config file. However, "_mode"
             // is important in code to differentiate the mode from the store implementation.
             mcp_oauth_credentials_store_mode: cfg.mcp_oauth_credentials_store.unwrap_or_default(),
@@ -4643,6 +4643,32 @@ config_file = "./agents/researcher.toml"
         Ok(())
     }
 
+    #[test]
+    fn model_catalog_json_rejects_empty_catalog() -> std::io::Result<()> {
+        let codex_home = TempDir::new()?;
+        let catalog_path = codex_home.path().join("catalog.json");
+        std::fs::write(&catalog_path, r#"{"models":[]}"#)?;
+
+        let cfg = ConfigToml {
+            model_catalog_json: Some(AbsolutePathBuf::from_absolute_path(catalog_path)?),
+            ..Default::default()
+        };
+
+        let err = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides::default(),
+            codex_home.path().to_path_buf(),
+        )
+        .expect_err("empty custom catalog should fail config load");
+
+        assert_eq!(err.kind(), ErrorKind::InvalidData);
+        assert!(
+            err.to_string().contains("must contain at least one model"),
+            "unexpected error: {err}"
+        );
+        Ok(())
+    }
+
     fn create_test_fixture() -> std::io::Result<PrecedenceTestFixture> {
         let toml = r#"
 model = "o3"
@@ -4791,7 +4817,6 @@ model_verbosity = "high"
                 cwd: fixture.cwd(),
                 cli_auth_credentials_store_mode: Default::default(),
                 mcp_servers: Constrained::allow_any(HashMap::new()),
-                kontext_dev: None,
                 mcp_oauth_credentials_store_mode: Default::default(),
                 mcp_oauth_callback_port: None,
                 mcp_oauth_callback_url: None,
@@ -4919,7 +4944,6 @@ model_verbosity = "high"
             cwd: fixture.cwd(),
             cli_auth_credentials_store_mode: Default::default(),
             mcp_servers: Constrained::allow_any(HashMap::new()),
-            kontext_dev: None,
             mcp_oauth_credentials_store_mode: Default::default(),
             mcp_oauth_callback_port: None,
             mcp_oauth_callback_url: None,
@@ -5045,7 +5069,6 @@ model_verbosity = "high"
             cwd: fixture.cwd(),
             cli_auth_credentials_store_mode: Default::default(),
             mcp_servers: Constrained::allow_any(HashMap::new()),
-            kontext_dev: None,
             mcp_oauth_credentials_store_mode: Default::default(),
             mcp_oauth_callback_port: None,
             mcp_oauth_callback_url: None,
@@ -5157,7 +5180,6 @@ model_verbosity = "high"
             cwd: fixture.cwd(),
             cli_auth_credentials_store_mode: Default::default(),
             mcp_servers: Constrained::allow_any(HashMap::new()),
-            kontext_dev: None,
             mcp_oauth_credentials_store_mode: Default::default(),
             mcp_oauth_callback_port: None,
             mcp_oauth_callback_url: None,

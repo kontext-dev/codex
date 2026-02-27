@@ -17,12 +17,12 @@ members = [
     "cli",
     "config",
     "shell-command",
+    "shell-escalation",
     "skills",
     "core",
     "hooks",
     "secrets",
     "exec",
-    "exec-server",
     "execpolicy",
     "execpolicy-legacy",
     "keyring-store",
@@ -68,7 +68,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.105.0-kontext.5"
+version = "0.105.0-kontext.6"
 # Track the edition for all workspace crates in one place. Individual
 # crates can still override this value, but keeping it here means new
 # crates created with `cargo new -w ...` automatically inherit the 2024
@@ -94,7 +94,6 @@ codex-client = { path = "codex-client" }
 codex-cloud-requirements = { path = "cloud-requirements" }
 codex-config = { path = "config" }
 codex-core = { path = "core" }
-kontext-dev-sdk = { version = "=0.1.0" }
 codex-exec = { path = "exec" }
 codex-execpolicy = { path = "execpolicy" }
 codex-experimental-api-macros = { path = "codex-experimental-api-macros" }
@@ -142,7 +141,6 @@ codex-utils-stream-parser = { path = "utils/stream-parser" }
 codex-utils-string = { path = "utils/string" }
 codex-windows-sandbox = { path = "windows-sandbox-rs" }
 core_test_support = { path = "core/tests/common" }
-exec_server_test_support = { path = "exec-server/tests/common" }
 mcp_test_support = { path = "mcp-server/tests/common" }
 
 # External
@@ -191,14 +189,13 @@ image = { version = "^0.25.9", default-features = false }
 iana-time-zone = "0.1.64"
 include_dir = "0.7.4"
 indexmap = "2.12.0"
-indoc = "2.0"
 insta = "1.46.3"
 inventory = "0.3.19"
 itertools = "0.14.0"
 keyring = { version = "3.6", default-features = false }
 landlock = "0.4.4"
 lazy_static = "1"
-libc = "0.2.177"
+libc = "0.2.182"
 log = "0.4"
 lru = "0.16.3"
 maplit = "1.0.2"
@@ -214,7 +211,7 @@ opentelemetry-otlp = "0.31.0"
 opentelemetry-semantic-conventions = "0.31.0"
 opentelemetry_sdk = "0.31.0"
 os_info = "3.12.0"
-owo-colors = "4.2.0"
+owo-colors = "4.3.0"
 path-absolutize = "3.1.1"
 pathdiff = "0.2"
 portable-pty = "0.9.0"

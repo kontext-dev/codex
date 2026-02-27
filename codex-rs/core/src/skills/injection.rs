@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 use crate::analytics_client::AnalyticsEventsClient;
+use crate::analytics_client::InvocationType;
 use crate::analytics_client::SkillInvocation;
 use crate::analytics_client::TrackEventsContext;
 use crate::instructions::SkillInstructions;
@@ -42,7 +43,8 @@ pub(crate) async fn build_skill_injections(
                 invocations.push(SkillInvocation {
                     skill_name: skill.name.clone(),
                     skill_scope: skill.scope,
-                    skill_path: skill.path.clone(),
+                    skill_path: skill.path_to_skills_md.clone(),
+                    invocation_type: InvocationType::Explicit,
                 });
                 result.items.push(ResponseItem::from(SkillInstructions {
                     name: skill.name.clone(),

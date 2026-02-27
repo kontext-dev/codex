@@ -6,16 +6,16 @@ use std::os::fd::OwnedFd;
 use anyhow::Context as _;
 use codex_utils_absolute_path::AbsolutePathBuf;
 
-use crate::posix::escalate_protocol::ESCALATE_SOCKET_ENV_VAR;
-use crate::posix::escalate_protocol::EXEC_WRAPPER_ENV_VAR;
-use crate::posix::escalate_protocol::EscalateAction;
-use crate::posix::escalate_protocol::EscalateRequest;
-use crate::posix::escalate_protocol::EscalateResponse;
-use crate::posix::escalate_protocol::LEGACY_BASH_EXEC_WRAPPER_ENV_VAR;
-use crate::posix::escalate_protocol::SuperExecMessage;
-use crate::posix::escalate_protocol::SuperExecResult;
-use crate::posix::socket::AsyncDatagramSocket;
-use crate::posix::socket::AsyncSocket;
+use crate::unix::escalate_protocol::ESCALATE_SOCKET_ENV_VAR;
+use crate::unix::escalate_protocol::EXEC_WRAPPER_ENV_VAR;
+use crate::unix::escalate_protocol::EscalateAction;
+use crate::unix::escalate_protocol::EscalateRequest;
+use crate::unix::escalate_protocol::EscalateResponse;
+use crate::unix::escalate_protocol::LEGACY_BASH_EXEC_WRAPPER_ENV_VAR;
+use crate::unix::escalate_protocol::SuperExecMessage;
+use crate::unix::escalate_protocol::SuperExecResult;
+use crate::unix::socket::AsyncDatagramSocket;
+use crate::unix::socket::AsyncSocket;
 
 fn get_escalate_client() -> anyhow::Result<AsyncDatagramSocket> {
     // TODO: we should defensively require only calling this once, since AsyncSocket will take ownership of the fd.
@@ -28,7 +28,10 @@ fn get_escalate_client() -> anyhow::Result<AsyncDatagramSocket> {
     Ok(unsafe { AsyncDatagramSocket::from_raw_fd(client_fd) }?)
 }
 
-pub(crate) async fn run(file: String, argv: Vec<String>) -> anyhow::Result<i32> {
+pub async fn run_shell_escalation_execve_wrapper(
+    file: String,
+    argv: Vec<String>,
+) -> anyhow::Result<i32> {
     let handshake_client = get_escalate_client()?;
     let (server, client) = AsyncSocket::pair()?;
     const HANDSHAKE_MESSAGE: [u8; 1] = [0];

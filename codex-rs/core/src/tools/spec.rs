@@ -5,7 +5,6 @@ use crate::client_common::tools::ToolSpec;
 use crate::config::AgentRoleConfig;
 use crate::features::Feature;
 use crate::features::Features;
-use crate::kontext_dev::InjectedKontextToolSpec;
 use crate::mcp_connection_manager::ToolInfo;
 use crate::models_manager::collaboration_mode_presets::CollaborationModesConfig;
 use crate::tools::handlers::PLAN_TOOL;
@@ -82,7 +81,8 @@ impl ToolsConfig {
         let include_js_repl_tools_only =
             include_js_repl && features.enabled(Feature::JsReplToolsOnly);
         let include_collab_tools = features.enabled(Feature::Collab);
-        let include_collaboration_modes_tools = features.enabled(Feature::CollaborationModes);
+        let include_default_mode_request_user_input =
+            features.enabled(Feature::DefaultModeRequestUserInput);
         let include_search_tool = features.enabled(Feature::Apps);
         let include_agent_jobs = include_collab_tools && features.enabled(Feature::Sqlite);
         let request_permission_enabled = features.enabled(Feature::RequestPermissions);
@@ -647,7 +647,7 @@ fn create_spawn_agent_tool(config: &ToolsConfig) -> ToolSpec {
     ToolSpec::Function(ResponsesApiTool {
         name: "spawn_agent".to_string(),
         description:
-            "Spawn a sub-agent for a well-scoped task. Returns the agent id to use to communicate with this agent."
+            "Spawn a sub-agent for a well-scoped task. Returns the agent id (and user-facing nickname when available) to use to communicate with this agent."
                 .to_string(),
         strict: false,
         parameters: JsonSchema::Object {
@@ -1647,14 +1647,12 @@ pub(crate) fn build_specs(
     mcp_tools: Option<HashMap<String, rmcp::model::Tool>>,
     app_tools: Option<HashMap<String, ToolInfo>>,
     dynamic_tools: &[DynamicToolSpec],
-    kontext_tools: &[InjectedKontextToolSpec],
 ) -> ToolRegistryBuilder {
     use crate::tools::handlers::ApplyPatchHandler;
     use crate::tools::handlers::DynamicToolHandler;
     use crate::tools::handlers::GrepFilesHandler;
     use crate::tools::handlers::JsReplHandler;
     use crate::tools::handlers::JsReplResetHandler;
-    use crate::tools::handlers::KontextDevHandler;
     use crate::tools::handlers::ListDirHandler;
     use crate::tools::handlers::McpHandler;
     use crate::tools::handlers::McpResourceHandler;
@@ -1677,7 +1675,6 @@ pub(crate) fn build_specs(
     let plan_handler = Arc::new(PlanHandler);
     let apply_patch_handler = Arc::new(ApplyPatchHandler);
     let dynamic_tool_handler = Arc::new(DynamicToolHandler);
-    let kontext_dev_handler = Arc::new(KontextDevHandler);
     let view_image_handler = Arc::new(ViewImageHandler);
     let mcp_handler = Arc::new(McpHandler);
     let mcp_resource_handler = Arc::new(McpResourceHandler);
@@ -1861,31 +1858,6 @@ pub(crate) fn build_specs(
                 }
                 Err(e) => {
                     tracing::error!("Failed to convert {name:?} MCP tool to OpenAI tool: {e:?}");
-                }
-            }
-        }
-    }
-
-    if !kontext_tools.is_empty() {
-        let mut entries = kontext_tools.to_vec();
-        entries.sort_by(|a, b| a.name.cmp(&b.name));
-
-        for tool in entries {
-            match parse_tool_input_schema(&tool.input_schema) {
-                Ok(parameters) => {
-                    builder.push_spec(ToolSpec::Function(ResponsesApiTool {
-                        name: tool.name.clone(),
-                        description: tool.description,
-                        strict: false,
-                        parameters,
-                    }));
-                    builder.register_handler(tool.name, kontext_dev_handler.clone());
-                }
-                Err(e) => {
-                    tracing::error!(
-                        "Failed to parse Kontext tool schema for {:?}: {e:?}",
-                        tool.name
-                    );
                 }
             }
         }
@@ -2075,7 +2047,7 @@ mod tests {
             web_search_mode: Some(WebSearchMode::Live),
             session_source: SessionSource::Cli,
         });
-        let (tools, _) = build_specs(&config, None, None, &[], &[]).build();
+        let (tools, _) = build_specs(&config, None, None, &[]).build();
 
         // Build actual map name -> spec
         use std::collections::BTreeMap;
@@ -2166,7 +2138,7 @@ mod tests {
                 "agent_job:test".to_string(),
             )),
         });
-        let (tools, _) = build_specs(&tools_config, None, None, &[], &[]).build();
+        let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
         assert_contains_tool_names(
             &tools,
             &[
@@ -2182,31 +2154,59 @@ mod tests {
     }
 
     #[test]
-    fn request_user_input_requires_collaboration_modes_feature() {
+    fn request_user_input_description_reflects_default_mode_feature_flag() {
         let config = test_config();
         let model_info =
             ModelsManager::construct_model_info_offline_for_tests("gpt-5-codex", &config);
         let mut features = Features::with_defaults();
-        features.disable(Feature::CollaborationModes);
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
+            session_source: SessionSource::Cli,
         });
-        let (tools, _) = build_specs(&tools_config, None, None, &[], &[]).build();
-        assert!(
-            !tools.iter().any(|t| t.spec.name() == "request_user_input"),
-            "request_user_input should be disabled when collaboration_modes feature is off"
+        let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
+        let request_user_input_tool = find_tool(&tools, "request_user_input");
+        assert_eq!(
+            request_user_input_tool.spec,
+            create_request_user_input_tool(CollaborationModesConfig::default())
         );
 
-        features.enable(Feature::CollaborationModes);
+        features.enable(Feature::DefaultModeRequestUserInput);
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
+            session_source: SessionSource::Cli,
         });
-        let (tools, _) = build_specs(&tools_config, None, None, &[], &[]).build();
-        assert_contains_tool_names(&tools, &["request_user_input"]);
+        let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
+        let request_user_input_tool = find_tool(&tools, "request_user_input");
+        assert_eq!(
+            request_user_input_tool.spec,
+            create_request_user_input_tool(CollaborationModesConfig {
+                default_mode_request_user_input: true,
+            })
+        );
+    }
+
+    #[test]
+    fn get_memory_requires_feature_flag() {
+        let config = test_config();
+        let model_info =
+            ModelsManager::construct_model_info_offline_for_tests("gpt-5-codex", &config);
+        let mut features = Features::with_defaults();
+        features.disable(Feature::MemoryTool);
+        let tools_config = ToolsConfig::new(&ToolsConfigParams {
+            model_info: &model_info,
+            features: &features,
+            web_search_mode: Some(WebSearchMode::Cached),
+            session_source: SessionSource::Cli,
+        });
+        let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
+        assert!(
+            !tools.iter().any(|t| t.spec.name() == "get_memory"),
+            "get_memory should be disabled when memory_tool feature is off"
+        );
     }
 
     #[test]
@@ -2222,7 +2222,7 @@ mod tests {
             web_search_mode: Some(WebSearchMode::Cached),
             session_source: SessionSource::Cli,
         });
-        let (tools, _) = build_specs(&tools_config, None, None, &[], &[]).build();
+        let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
 
         assert!(
             !tools.iter().any(|tool| tool.spec.name() == "js_repl"),
@@ -2248,7 +2248,7 @@ mod tests {
             web_search_mode: Some(WebSearchMode::Cached),
             session_source: SessionSource::Cli,
         });
-        let (tools, _) = build_specs(&tools_config, None, None, &[], &[]).build();
+        let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
         assert_contains_tool_names(&tools, &["js_repl", "js_repl_reset"]);
     }
 
@@ -2280,7 +2280,7 @@ mod tests {
             web_search_mode,
             session_source: SessionSource::Cli,
         });
-        let (tools, _) = build_specs(&tools_config, None, None, &[], &[]).build();
+        let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
         let tool_names = tools.iter().map(|t| t.spec.name()).collect::<Vec<_>>();
         assert_eq!(&tool_names, &expected_tools,);
     }
@@ -2314,7 +2314,7 @@ mod tests {
             web_search_mode: Some(WebSearchMode::Cached),
             session_source: SessionSource::Cli,
         });
-        let (tools, _) = build_specs(&tools_config, None, None, &[], &[]).build();
+        let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
 
         let tool = find_tool(&tools, "web_search");
         assert_eq!(
@@ -2338,7 +2338,7 @@ mod tests {
             web_search_mode: Some(WebSearchMode::Live),
             session_source: SessionSource::Cli,
         });
-        let (tools, _) = build_specs(&tools_config, None, None, &[], &[]).build();
+        let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
 
         let tool = find_tool(&tools, "web_search");
         assert_eq!(
@@ -2361,7 +2361,7 @@ mod tests {
             web_search_mode: Some(WebSearchMode::Cached),
             session_source: SessionSource::Cli,
         });
-        let (tools, _) = build_specs(&tools_config, None, None, &[], &[]).build();
+        let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
 
         assert!(
             !tools.iter().any(|tool| matches!(
@@ -2384,7 +2384,7 @@ mod tests {
             web_search_mode: Some(WebSearchMode::Cached),
             session_source: SessionSource::Cli,
         });
-        let (tools, _) = build_specs(&tools_config, Some(HashMap::new()), None, &[], &[]).build();
+        let (tools, _) = build_specs(&tools_config, Some(HashMap::new()), None, &[]).build();
 
         assert_contains_tool_names(
             &tools,
@@ -2575,7 +2575,7 @@ mod tests {
             web_search_mode: Some(WebSearchMode::Live),
             session_source: SessionSource::Cli,
         });
-        let (tools, _) = build_specs(&tools_config, Some(HashMap::new()), None, &[], &[]).build();
+        let (tools, _) = build_specs(&tools_config, Some(HashMap::new()), None, &[]).build();
 
         // Only check the shell variant and a couple of core tools.
         let mut subset = vec!["exec_command", "write_stdin", "update_plan"];
@@ -2621,7 +2621,7 @@ mod tests {
             web_search_mode: Some(WebSearchMode::Cached),
             session_source: SessionSource::Cli,
         });
-        let (tools, _) = build_specs(&tools_config, None, None, &[], &[]).build();
+        let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
 
         assert!(find_tool(&tools, "exec_command").supports_parallel_tool_calls);
         assert!(!find_tool(&tools, "write_stdin").supports_parallel_tool_calls);
@@ -2646,7 +2646,7 @@ mod tests {
             web_search_mode: Some(WebSearchMode::Cached),
             session_source: SessionSource::Cli,
         });
-        let (tools, _) = build_specs(&tools_config, None, None, &[], &[]).build();
+        let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
 
         assert!(
             tools
@@ -2704,7 +2704,6 @@ mod tests {
                 ),
             )])),
             None,
-            &[],
             &[],
         )
         .build();
@@ -2783,7 +2782,7 @@ mod tests {
             ),
         ]);
 
-        let (tools, _) = build_specs(&tools_config, Some(tools_map), None, &[], &[]).build();
+        let (tools, _) = build_specs(&tools_config, Some(tools_map), None, &[]).build();
 
         // Only assert that the MCP tools themselves are sorted by fully-qualified name.
         let mcp_names: Vec<_> = tools
@@ -2856,7 +2855,6 @@ mod tests {
                 ),
             ])),
             &[],
-            &[],
         )
         .build();
 
@@ -2898,7 +2896,6 @@ mod tests {
                 ),
             )])),
             None,
-            &[],
             &[],
         )
         .build();
@@ -2953,7 +2950,6 @@ mod tests {
             )])),
             None,
             &[],
-            &[],
         )
         .build();
 
@@ -3005,7 +3001,6 @@ mod tests {
                 ),
             )])),
             None,
-            &[],
             &[],
         )
         .build();
@@ -3062,7 +3057,6 @@ mod tests {
                 ),
             )])),
             None,
-            &[],
             &[],
         )
         .build();
@@ -3212,7 +3206,6 @@ Examples of valid command strings:
                 ),
             )])),
             None,
-            &[],
             &[],
         )
         .build();

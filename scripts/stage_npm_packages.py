@@ -17,7 +17,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 BUILD_SCRIPT = REPO_ROOT / "codex-cli" / "scripts" / "build_npm_package.py"
 INSTALL_NATIVE_DEPS = REPO_ROOT / "codex-cli" / "scripts" / "install_native_deps.py"
 WORKFLOW_NAME = ".github/workflows/rust-release.yml"
-GITHUB_REPO = "kontext-dev/codex"
+GITHUB_REPO = "openai/codex"
 
 _SPEC = importlib.util.spec_from_file_location("codex_build_npm_package", BUILD_SCRIPT)
 if _SPEC is None or _SPEC.loader is None:
@@ -34,7 +34,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--release-version",
         required=True,
-        help="Version to stage (e.g. 0.6.0-kontext.1).",
+        help="Version to stage (e.g. 0.1.0 or 0.1.0-alpha.1).",
     )
     parser.add_argument(
         "--package",
@@ -79,14 +79,11 @@ def expand_packages(packages: list[str]) -> list[str]:
 
 
 def resolve_release_workflow(version: str) -> dict:
-    release_repo = os.environ.get("CODEX_RELEASE_REPO", GITHUB_REPO)
     stdout = subprocess.check_output(
         [
             "gh",
             "run",
             "list",
-            "--repo",
-            release_repo,
             "--branch",
             f"rust-v{version}",
             "--json",
@@ -101,9 +98,7 @@ def resolve_release_workflow(version: str) -> dict:
     )
     workflow = json.loads(stdout or "null")
     if not workflow:
-        raise RuntimeError(
-            f"Unable to find rust-release workflow for version {version} in {release_repo}."
-        )
+        raise RuntimeError(f"Unable to find rust-release workflow for version {version}.")
     return workflow
 
 
@@ -155,7 +150,6 @@ def main() -> int:
 
     vendor_temp_root: Path | None = None
     vendor_src: Path | None = None
-    available_targets: set[str] = set()
     resolved_head_sha: str | None = None
 
     final_messages = []
@@ -168,25 +162,11 @@ def main() -> int:
             vendor_temp_root = Path(tempfile.mkdtemp(prefix="npm-native-", dir=runner_temp))
             install_native_components(workflow_url, native_components, vendor_temp_root)
             vendor_src = vendor_temp_root / "vendor"
-            if vendor_src.exists():
-                available_targets = {
-                    path.name for path in vendor_src.iterdir() if path.is_dir()
-                }
 
         if resolved_head_sha:
             print(f"should `git checkout {resolved_head_sha}`")
 
         for package in packages:
-            platform_package = CODEX_PLATFORM_PACKAGES.get(package)
-            if platform_package is not None:
-                target_triple = platform_package["target_triple"]
-                if target_triple not in available_targets:
-                    print(
-                        f"Skipping {package}: native artifacts for target "
-                        f"{target_triple} are unavailable."
-                    )
-                    continue
-
             staging_dir = Path(tempfile.mkdtemp(prefix=f"npm-stage-{package}-", dir=runner_temp))
             pack_output = output_dir / tarball_name_for_package(package, args.release_version)
 
