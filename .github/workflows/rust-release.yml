@@ -252,6 +252,24 @@ jobs:
           volname="Codex (${target})"
           dmg_path="${release_dir}/codex-${target}.dmg"
 
+          echo "Disk usage before cleanup:"
+          df -h .
+
+          # Free runner disk before DMG creation; this job only needs release binaries now.
+          rm -rf "$HOME/.cargo/registry" "$HOME/.cargo/git" || true
+          rm -rf "target/${target}/build" "target/${target}/incremental" || true
+          rm -rf "target/${target}/release/deps" || true
+
+          echo "Disk usage after cleanup:"
+          df -h .
+
+          required_kb=$((6 * 1024 * 1024))
+          available_kb="$(df -Pk . | awk 'NR==2 { print $4 }')"
+          if (( available_kb < required_kb )); then
+            echo "Not enough disk for dmg build: ${available_kb}KB available, ${required_kb}KB required."
+            exit 1
+          fi
+
           # The previous "MacOS code signing (binaries)" step signs + notarizes the
           # built artifacts in `${release_dir}`. This step packages *those same*
           # signed binaries into a dmg.
