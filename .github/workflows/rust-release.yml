@@ -640,6 +640,7 @@ jobs:
           done
 
   update-branch:
+    if: ${{ github.repository == 'openai/codex' }}
     name: Update latest-alpha-cli branch
     permissions:
       contents: write
