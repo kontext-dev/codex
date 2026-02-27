@@ -1900,6 +1900,7 @@ version = "0.105.0-kontext.5"
 dependencies = [
  "anyhow",
  "clap",
+ "codex-utils-absolute-path",
  "multimap",
  "pretty_assertions",
  "serde",
