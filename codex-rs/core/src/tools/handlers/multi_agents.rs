@@ -91,6 +91,8 @@ impl ToolHandler for MultiAgentHandler {
 
 mod spawn {
     use super::*;
+    use crate::agent::control::SpawnAgentOptions;
+    use crate::agent::role::DEFAULT_ROLE_NAME;
     use crate::agent::role::apply_role_to_config;
 
     use crate::agent::exceeds_thread_spawn_depth_limit;
@@ -102,11 +104,14 @@ mod spawn {
         message: Option<String>,
         items: Option<Vec<UserInput>>,
         agent_type: Option<String>,
+        #[serde(default)]
+        fork_context: bool,
     }
 
     #[derive(Debug, Serialize)]
     struct SpawnAgentResult {
         agent_id: String,
+        nickname: Option<String>,
     }
 
     pub async fn handle(
@@ -153,7 +158,7 @@ mod spawn {
         let result = session
             .services
             .agent_control
-            .spawn_agent(
+            .spawn_agent_with_options(
                 config,
                 input_items,
                 Some(thread_spawn_source(
@@ -161,6 +166,9 @@ mod spawn {
                     child_depth,
                     role_name,
                 )),
+                SpawnAgentOptions {
+                    fork_parent_spawn_call_id: args.fork_context.then(|| call_id.clone()),
+                },
             )
             .await
             .map_err(collab_spawn_error);
@@ -180,6 +188,7 @@ mod spawn {
                 .unwrap_or((None, None)),
             None => (None, None),
         };
+        let nickname = new_agent_nickname.clone();
         session
             .send_event(
                 &turn,
@@ -196,9 +205,13 @@ mod spawn {
             )
             .await;
         let new_thread_id = result?;
+        let role_tag = role_name.unwrap_or(DEFAULT_ROLE_NAME);
+        turn.otel_manager
+            .counter("codex.multi_agent.spawn", 1, &[("role", role_tag)]);
 
         let content = serde_json::to_string(&SpawnAgentResult {
             agent_id: new_thread_id.to_string(),
+            nickname,
         })
         .map_err(|err| {
             FunctionCallError::Fatal(format!("failed to serialize spawn_agent result: {err}"))
@@ -404,6 +417,8 @@ mod resume_agent {
         if let Some(err) = error {
             return Err(err);
         }
+        turn.otel_manager
+            .counter("codex.multi_agent.resume", 1, &[]);
 
         let content = serde_json::to_string(&ResumeAgentResult { status }).map_err(|err| {
             FunctionCallError::Fatal(format!("failed to serialize resume_agent result: {err}"))
@@ -905,7 +920,7 @@ fn build_agent_shared_config(turn: &TurnContext) -> Result<Config, FunctionCallE
     config.model = Some(turn.model_info.slug.clone());
     config.model_provider = turn.provider.clone();
     config.model_reasoning_effort = turn.reasoning_effort;
-    config.model_reasoning_summary = turn.reasoning_summary;
+    config.model_reasoning_summary = Some(turn.reasoning_summary);
     config.developer_instructions = turn.developer_instructions.clone();
     config.compact_prompt = turn.compact_prompt.clone();
     apply_spawn_agent_runtime_overrides(&mut config, turn)?;
@@ -1092,6 +1107,7 @@ mod tests {
         #[derive(Debug, Deserialize)]
         struct SpawnAgentResult {
             agent_id: String,
+            nickname: Option<String>,
         }
 
         let (mut session, mut turn) = make_session_and_context().await;
@@ -1131,6 +1147,12 @@ mod tests {
         let result: SpawnAgentResult =
             serde_json::from_str(&content).expect("spawn_agent result should be json");
         let agent_id = agent_id(&result.agent_id).expect("agent_id should be valid");
+        assert!(
+            result
+                .nickname
+                .as_deref()
+                .is_some_and(|nickname| !nickname.is_empty())
+        );
         let snapshot = manager
             .get_thread(agent_id)
             .await
@@ -1276,6 +1298,7 @@ mod tests {
         #[derive(Debug, Deserialize)]
         struct SpawnAgentResult {
             agent_id: String,
+            nickname: Option<String>,
         }
 
         let (mut session, mut turn) = make_session_and_context().await;
@@ -1313,6 +1336,12 @@ mod tests {
         let result: SpawnAgentResult =
             serde_json::from_str(&content).expect("spawn_agent result should be json");
         assert!(!result.agent_id.is_empty());
+        assert!(
+            result
+                .nickname
+                .as_deref()
+                .is_some_and(|nickname| !nickname.is_empty())
+        );
         assert_eq!(success, Some(true));
     }
 
@@ -2023,7 +2052,7 @@ mod tests {
         expected.model = Some(turn.model_info.slug.clone());
         expected.model_provider = turn.provider.clone();
         expected.model_reasoning_effort = turn.reasoning_effort;
-        expected.model_reasoning_summary = turn.reasoning_summary;
+        expected.model_reasoning_summary = Some(turn.reasoning_summary);
         expected.developer_instructions = turn.developer_instructions.clone();
         expected.compact_prompt = turn.compact_prompt.clone();
         expected.permissions.shell_environment_policy = turn.shell_environment_policy.clone();
@@ -2075,7 +2104,7 @@ mod tests {
         expected.model = Some(turn.model_info.slug.clone());
         expected.model_provider = turn.provider.clone();
         expected.model_reasoning_effort = turn.reasoning_effort;
-        expected.model_reasoning_summary = turn.reasoning_summary;
+        expected.model_reasoning_summary = Some(turn.reasoning_summary);
         expected.developer_instructions = turn.developer_instructions.clone();
         expected.compact_prompt = turn.compact_prompt.clone();
         expected.permissions.shell_environment_policy = turn.shell_environment_policy.clone();
