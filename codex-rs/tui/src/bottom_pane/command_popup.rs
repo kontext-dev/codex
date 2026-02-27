@@ -40,6 +40,7 @@ pub(crate) struct CommandPopupFlags {
     pub(crate) connectors_enabled: bool,
     pub(crate) personality_command_enabled: bool,
     pub(crate) realtime_conversation_enabled: bool,
+    pub(crate) audio_device_selection_enabled: bool,
     pub(crate) windows_degraded_sandbox_active: bool,
 }
 
@@ -51,6 +52,7 @@ impl CommandPopup {
             flags.connectors_enabled,
             flags.personality_command_enabled,
             flags.realtime_conversation_enabled,
+            flags.audio_device_selection_enabled,
             flags.windows_degraded_sandbox_active,
         )
         .into_iter()
@@ -497,6 +499,7 @@ mod tests {
                 connectors_enabled: false,
                 personality_command_enabled: true,
                 realtime_conversation_enabled: false,
+                audio_device_selection_enabled: false,
                 windows_degraded_sandbox_active: false,
             },
         );
@@ -517,6 +520,7 @@ mod tests {
                 connectors_enabled: false,
                 personality_command_enabled: true,
                 realtime_conversation_enabled: false,
+                audio_device_selection_enabled: false,
                 windows_degraded_sandbox_active: false,
             },
         );
@@ -537,6 +541,7 @@ mod tests {
                 connectors_enabled: false,
                 personality_command_enabled: false,
                 realtime_conversation_enabled: false,
+                audio_device_selection_enabled: false,
                 windows_degraded_sandbox_active: false,
             },
         );
@@ -565,6 +570,7 @@ mod tests {
                 connectors_enabled: false,
                 personality_command_enabled: true,
                 realtime_conversation_enabled: false,
+                audio_device_selection_enabled: false,
                 windows_degraded_sandbox_active: false,
             },
         );
@@ -574,6 +580,36 @@ mod tests {
             Some(CommandItem::Builtin(cmd)) => assert_eq!(cmd.command(), "personality"),
             other => panic!("expected personality to be selected for exact match, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn settings_command_hidden_when_audio_device_selection_is_disabled() {
+        let mut popup = CommandPopup::new(
+            Vec::new(),
+            CommandPopupFlags {
+                collaboration_modes_enabled: false,
+                connectors_enabled: false,
+                personality_command_enabled: true,
+                realtime_conversation_enabled: true,
+                audio_device_selection_enabled: false,
+                windows_degraded_sandbox_active: false,
+            },
+        );
+        popup.on_composer_text_change("/aud".to_string());
+
+        let cmds: Vec<&str> = popup
+            .filtered_items()
+            .into_iter()
+            .filter_map(|item| match item {
+                CommandItem::Builtin(cmd) => Some(cmd.command()),
+                CommandItem::UserPrompt(_) => None,
+            })
+            .collect();
+
+        assert!(
+            !cmds.contains(&"settings"),
+            "expected '/settings' to be hidden when audio device selection is disabled, got {cmds:?}"
+        );
     }
 
     #[test]
