@@ -6,6 +6,7 @@
 
 use super::*;
 use crate::app_event::AppEvent;
+use crate::app_event::ConnectorsSnapshot;
 use crate::app_event::ExitMode;
 #[cfg(all(not(target_os = "linux"), feature = "voice-input"))]
 use crate::app_event::RealtimeAudioDeviceKind;
@@ -8156,6 +8157,61 @@ async fn status_line_branch_state_resets_when_git_branch_disabled() {
     assert_eq!(chat.status_line_branch, None);
     assert!(!chat.status_line_branch_pending);
     assert!(!chat.status_line_branch_lookup_complete);
+}
+
+#[test]
+fn status_line_kontext_status_parses_from_kebab_case() {
+    let parsed = "kontext-status"
+        .parse::<StatusLineItem>()
+        .expect("kontext-status should parse");
+    assert_eq!(parsed, StatusLineItem::KontextStatus);
+}
+
+#[tokio::test]
+async fn status_line_kontext_status_renders_connected_state() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    chat.connectors_cache = ConnectorsCacheState::Ready(ConnectorsSnapshot {
+        connectors: vec![
+            codex_chatgpt::connectors::AppInfo {
+                id: "connector-github".to_string(),
+                name: "GitHub".to_string(),
+                description: None,
+                logo_url: None,
+                logo_url_dark: None,
+                distribution_channel: None,
+                branding: None,
+                app_metadata: None,
+                labels: None,
+                install_url: None,
+                is_accessible: true,
+                is_enabled: true,
+            },
+            codex_chatgpt::connectors::AppInfo {
+                id: "connector-linear".to_string(),
+                name: "Linear".to_string(),
+                description: None,
+                logo_url: None,
+                logo_url_dark: None,
+                distribution_channel: None,
+                branding: None,
+                app_metadata: None,
+                labels: None,
+                install_url: None,
+                is_accessible: false,
+                is_enabled: true,
+            },
+        ],
+    });
+
+    let value = chat.status_line_value_for_item(&StatusLineItem::KontextStatus);
+    assert_eq!(value, Some("GitHub ✓ Linear ✗".to_string()));
+}
+
+#[tokio::test]
+async fn status_line_kontext_status_omits_when_unavailable() {
+    let (chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    let value = chat.status_line_value_for_item(&StatusLineItem::KontextStatus);
+    assert_eq!(value, None);
 }
 
 #[tokio::test]
