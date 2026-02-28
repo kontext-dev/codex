@@ -16,6 +16,10 @@ REPO_ROOT = CODEX_CLI_ROOT.parent
 RESPONSES_API_PROXY_NPM_ROOT = REPO_ROOT / "codex-rs" / "responses-api-proxy" / "npm"
 CODEX_SDK_ROOT = REPO_ROOT / "sdk" / "typescript"
 DEFAULT_NPM_SCOPE = "openai"
+KONTEXT_NPM_SCOPE = "kontext-dev"
+KONTEXT_CODEX_DESCRIPTION = (
+    "Kontext Codex CLI fork with baked Kontext OAuth and MCP integration defaults."
+)
 
 
 def _normalized_npm_scope() -> str:
@@ -113,6 +117,39 @@ COMPONENT_DEST_DIR: dict[str, str] = {
     "codex-command-runner": "codex",
     "rg": "path",
 }
+
+
+def _is_kontext_scope() -> bool:
+    return NPM_SCOPE == KONTEXT_NPM_SCOPE
+
+
+def _codex_readme_source() -> Path:
+    if _is_kontext_scope():
+        kontext_readme = CODEX_CLI_ROOT / "README.kontext.md"
+        if kontext_readme.exists():
+            return kontext_readme
+    return REPO_ROOT / "README.md"
+
+
+def _copy_codex_readme(staging_dir: Path) -> None:
+    readme_src = _codex_readme_source()
+    if readme_src.exists():
+        shutil.copy2(readme_src, staging_dir / "README.md")
+
+
+def _apply_kontext_codex_metadata(package_json: dict, package: str) -> None:
+    if not _is_kontext_scope():
+        return
+    if package == "codex":
+        package_json["description"] = KONTEXT_CODEX_DESCRIPTION
+        package_json["repository"] = {
+            "type": "git",
+            "url": "git+https://github.com/kontext-dev/codex.git",
+            "directory": "codex-cli",
+        }
+        return
+    if package in CODEX_PLATFORM_PACKAGES:
+        package_json["description"] = KONTEXT_CODEX_DESCRIPTION
 
 
 def parse_args() -> argparse.Namespace:
@@ -265,9 +302,7 @@ def stage_sources(staging_dir: Path, version: str, package: str) -> None:
         if rg_manifest.exists():
             shutil.copy2(rg_manifest, bin_dir / "rg")
 
-        readme_src = REPO_ROOT / "README.md"
-        if readme_src.exists():
-            shutil.copy2(readme_src, staging_dir / "README.md")
+        _copy_codex_readme(staging_dir)
 
         package_json_path = CODEX_CLI_ROOT / "package.json"
     elif package in CODEX_PLATFORM_PACKAGES:
@@ -275,9 +310,7 @@ def stage_sources(staging_dir: Path, version: str, package: str) -> None:
         platform_npm_tag = platform_package["npm_tag"]
         platform_version = compute_platform_package_version(version, platform_npm_tag)
 
-        readme_src = REPO_ROOT / "README.md"
-        if readme_src.exists():
-            shutil.copy2(readme_src, staging_dir / "README.md")
+        _copy_codex_readme(staging_dir)
 
         with open(CODEX_CLI_ROOT / "package.json", "r", encoding="utf-8") as fh:
             codex_package_json = json.load(fh)
@@ -326,6 +359,8 @@ def stage_sources(staging_dir: Path, version: str, package: str) -> None:
             package_json["name"] = _scoped_package_name("codex-responses-api-proxy")
         elif package == "codex-sdk":
             package_json["name"] = _scoped_package_name("codex-sdk")
+
+    _apply_kontext_codex_metadata(package_json, package)
 
     if package == "codex":
         package_json["files"] = ["bin"]
