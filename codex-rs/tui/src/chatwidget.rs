@@ -4834,6 +4834,43 @@ impl ChatWidget {
         });
     }
 
+    fn status_line_kontext_status(&self) -> Option<String> {
+        let ConnectorsCacheState::Ready(snapshot) = &self.connectors_cache else {
+            return None;
+        };
+
+        let mut connectors = snapshot
+            .connectors
+            .iter()
+            .filter(|connector| connector.is_enabled)
+            .collect::<Vec<_>>();
+        if connectors.is_empty() {
+            return None;
+        }
+
+        connectors.sort_by(|left, right| left.name.cmp(&right.name));
+        let hidden_count = connectors.len().saturating_sub(3);
+        let mut parts = connectors
+            .iter()
+            .take(3)
+            .map(|connector| {
+                let label = connectors::connector_display_label(connector);
+                let status = if connector.is_accessible {
+                    "✓"
+                } else {
+                    "✗"
+                };
+                format!("{label} {status}")
+            })
+            .collect::<Vec<_>>();
+
+        if hidden_count > 0 {
+            parts.push(format!("+{hidden_count}"));
+        }
+
+        Some(parts.join(" "))
+    }
+
     /// Resolves a display string for one configured status-line item.
     ///
     /// Returning `None` means "omit this item for now", not "configuration error". Callers rely on
@@ -4902,6 +4939,7 @@ impl ChatWidget {
                 format_tokens_compact(self.status_line_total_usage().output_tokens)
             )),
             StatusLineItem::SessionId => self.thread_id.map(|id| id.to_string()),
+            StatusLineItem::KontextStatus => self.status_line_kontext_status(),
         }
     }
 
