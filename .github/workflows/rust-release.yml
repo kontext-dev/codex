@@ -490,7 +490,7 @@ jobs:
             echo "npm_registry=https://registry.npmjs.org" >> "$GITHUB_OUTPUT"
           elif [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+-kontext\.[0-9]+$ ]]; then
             echo "should_publish=true" >> "$GITHUB_OUTPUT"
-            echo "npm_tag=" >> "$GITHUB_OUTPUT"
+            echo "npm_tag=latest" >> "$GITHUB_OUTPUT"
             echo "npm_scope=@kontext-dev" >> "$GITHUB_OUTPUT"
             echo "npm_registry=https://npm.pkg.github.com" >> "$GITHUB_OUTPUT"
           else
