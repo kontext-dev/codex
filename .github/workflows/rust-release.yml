@@ -410,6 +410,8 @@ jobs:
       tag: ${{ github.ref_name }}
       should_publish_npm: ${{ steps.npm_publish_settings.outputs.should_publish }}
       npm_tag: ${{ steps.npm_publish_settings.outputs.npm_tag }}
+      npm_scope: ${{ steps.npm_publish_settings.outputs.npm_scope }}
+      npm_registry: ${{ steps.npm_publish_settings.outputs.npm_registry }}
 
     steps:
       - name: Checkout repository
@@ -479,12 +481,23 @@ jobs:
           if [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "should_publish=true" >> "$GITHUB_OUTPUT"
             echo "npm_tag=" >> "$GITHUB_OUTPUT"
+            echo "npm_scope=@openai" >> "$GITHUB_OUTPUT"
+            echo "npm_registry=https://registry.npmjs.org" >> "$GITHUB_OUTPUT"
           elif [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+-alpha\.[0-9]+$ ]]; then
             echo "should_publish=true" >> "$GITHUB_OUTPUT"
             echo "npm_tag=alpha" >> "$GITHUB_OUTPUT"
+            echo "npm_scope=@openai" >> "$GITHUB_OUTPUT"
+            echo "npm_registry=https://registry.npmjs.org" >> "$GITHUB_OUTPUT"
+          elif [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+-kontext\.[0-9]+$ ]]; then
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+            echo "npm_tag=" >> "$GITHUB_OUTPUT"
+            echo "npm_scope=@kontext-dev" >> "$GITHUB_OUTPUT"
+            echo "npm_registry=https://npm.pkg.github.com" >> "$GITHUB_OUTPUT"
           else
             echo "should_publish=false" >> "$GITHUB_OUTPUT"
             echo "npm_tag=" >> "$GITHUB_OUTPUT"
+            echo "npm_scope=@openai" >> "$GITHUB_OUTPUT"
+            echo "npm_registry=https://registry.npmjs.org" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Setup pnpm
@@ -505,6 +518,7 @@ jobs:
       - name: Stage npm packages
         env:
           GH_TOKEN: ${{ github.token }}
+          CODEX_NPM_SCOPE: ${{ steps.npm_publish_settings.outputs.npm_scope }}
         run: |
           ./scripts/stage_npm_packages.py \
             --release-version "${{ steps.release_name.outputs.name }}" \
@@ -547,9 +561,7 @@ jobs:
             exit 1
           fi
 
-  # Publish to npm using OIDC authentication.
-  # July 31, 2025: https://github.blog/changelog/2025-07-31-npm-trusted-publishing-with-oidc-is-generally-available/
-  # npm docs: https://docs.npmjs.com/trusted-publishers
+  # Publish npm tarballs to the configured registry.
   publish-npm:
     # Publish to npm for stable releases and alpha pre-releases with numeric suffixes.
     if: ${{ needs.release.outputs.should_publish_npm == 'true' }}
@@ -559,14 +571,15 @@ jobs:
     permissions:
       id-token: write # Required for OIDC
       contents: read
+      packages: write
 
     steps:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
           node-version: 22
-          registry-url: "https://registry.npmjs.org"
-          scope: "@openai"
+          registry-url: ${{ needs.release.outputs.npm_registry }}
+          scope: ${{ needs.release.outputs.npm_scope }}
 
       # Trusted publishing requires npm CLI version 11.5.1 or later.
       - name: Update npm
@@ -600,6 +613,7 @@ jobs:
         env:
           VERSION: ${{ needs.release.outputs.version }}
           NPM_TAG: ${{ needs.release.outputs.npm_tag }}
+          NODE_AUTH_TOKEN: ${{ needs.release.outputs.npm_registry == 'https://npm.pkg.github.com' && secrets.GITHUB_TOKEN || '' }}
         run: |
           set -euo pipefail
           prefix=""
