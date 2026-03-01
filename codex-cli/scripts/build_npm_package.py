@@ -42,7 +42,7 @@ CODEX_NPM_NAME = _scoped_package_name("codex")
 
 # `npm_name` is the local optional-dependency alias consumed by `bin/codex.js`.
 # The underlying package published to npm is always CODEX_NPM_NAME.
-CODEX_PLATFORM_PACKAGES: dict[str, dict[str, str]] = {
+ALL_CODEX_PLATFORM_PACKAGES: dict[str, dict[str, str]] = {
     "codex-linux-x64": {
         "npm_name": _scoped_package_name("codex-linux-x64"),
         "npm_tag": "linux-x64",
@@ -87,21 +87,28 @@ CODEX_PLATFORM_PACKAGES: dict[str, dict[str, str]] = {
     },
 }
 
+# Hard cutover for Kontext releases: publish only Apple Silicon npm platform artifacts.
+if NPM_SCOPE == KONTEXT_NPM_SCOPE:
+    CODEX_PLATFORM_PACKAGES: dict[str, dict[str, str]] = {
+        "codex-darwin-arm64": ALL_CODEX_PLATFORM_PACKAGES["codex-darwin-arm64"],
+    }
+else:
+    CODEX_PLATFORM_PACKAGES = ALL_CODEX_PLATFORM_PACKAGES
+
 PACKAGE_EXPANSIONS: dict[str, list[str]] = {
     "codex": ["codex", *CODEX_PLATFORM_PACKAGES],
 }
 
 PACKAGE_NATIVE_COMPONENTS: dict[str, list[str]] = {
     "codex": [],
-    "codex-linux-x64": ["codex", "rg"],
-    "codex-linux-arm64": ["codex", "rg"],
-    "codex-darwin-x64": ["codex", "rg"],
-    "codex-darwin-arm64": ["codex", "rg"],
-    "codex-win32-x64": ["codex", "rg", "codex-windows-sandbox-setup", "codex-command-runner"],
-    "codex-win32-arm64": ["codex", "rg", "codex-windows-sandbox-setup", "codex-command-runner"],
     "codex-responses-api-proxy": ["codex-responses-api-proxy"],
     "codex-sdk": [],
 }
+for package_name, package_config in CODEX_PLATFORM_PACKAGES.items():
+    native_components = ["codex", "rg"]
+    if package_config["os"] == "win32":
+        native_components.extend(["codex-windows-sandbox-setup", "codex-command-runner"])
+    PACKAGE_NATIVE_COMPONENTS[package_name] = native_components
 
 PACKAGE_TARGET_FILTERS: dict[str, str] = {
     package_name: package_config["target_triple"]

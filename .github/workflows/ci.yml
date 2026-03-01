@@ -6,7 +6,7 @@ on:
 
 jobs:
   build-test:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
     env:
       NODE_OPTIONS: --max-old-space-size=4096
@@ -32,7 +32,7 @@ jobs:
 
       - name: Stage npm package
         id: stage_npm_package
-        if: ${{ github.ref_name != 'kontext-dev' }}
+        if: ${{ github.repository_owner == 'openai' && github.ref_name != 'kontext-dev' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -55,7 +55,7 @@ jobs:
           echo "pack_output=$PACK_OUTPUT" >> "$GITHUB_OUTPUT"
 
       - name: Upload staged npm package artifact
-        if: ${{ github.ref_name != 'kontext-dev' }}
+        if: ${{ github.repository_owner == 'openai' && github.ref_name != 'kontext-dev' }}
         uses: actions/upload-artifact@v6
         with:
           name: codex-npm-staging

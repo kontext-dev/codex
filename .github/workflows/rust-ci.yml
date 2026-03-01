@@ -12,7 +12,7 @@ jobs:
   # --- Detect what changed to detect which tests to run (always runs) -------------------------------------
   changed:
     name: Detect changed areas
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
       codex: ${{ steps.detect.outputs.codex }}
       workflows: ${{ steps.detect.outputs.workflows }}
@@ -51,7 +51,7 @@ jobs:
   # --- CI that doesn't need specific targets ---------------------------------
   general:
     name: Format / etc
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: changed
     if: ${{ needs.changed.outputs.codex == 'true' || needs.changed.outputs.workflows == 'true' || github.event_name == 'push' }}
     defaults:
@@ -67,7 +67,7 @@ jobs:
 
   cargo_shear:
     name: cargo shear
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: changed
     if: ${{ needs.changed.outputs.codex == 'true' || needs.changed.outputs.workflows == 'true' || github.event_name == 'push' }}
     defaults:
@@ -86,7 +86,7 @@ jobs:
   # --- CI to validate on different os/targets --------------------------------
   lint_build:
     name: Lint/Build — ${{ matrix.runner }} - ${{ matrix.target }}${{ matrix.profile == 'release' && ' (release)' || '' }}
-    runs-on: ${{ github.repository == 'openai/codex' && matrix.runs_on || matrix.fallback_runs_on || matrix.runner }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     needs: changed
     # Keep job-level if to avoid spinning up runners when not needed
@@ -109,87 +109,12 @@ jobs:
           - runner: macos-15-xlarge
             target: aarch64-apple-darwin
             profile: dev
-          - runner: macos-15-xlarge
-            target: x86_64-apple-darwin
-            profile: dev
-          - runner: ubuntu-24.04
-            target: x86_64-unknown-linux-musl
-            profile: dev
-            fallback_runs_on: ubuntu-24.04
-            runs_on:
-              group: codex-runners
-              labels: codex-linux-x64
-          - runner: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-            profile: dev
-            fallback_runs_on: ubuntu-24.04
-            runs_on:
-              group: codex-runners
-              labels: codex-linux-x64
-          - runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-musl
-            profile: dev
-            fallback_runs_on: ubuntu-24.04-arm
-            runs_on:
-              group: codex-runners
-              labels: codex-linux-arm64
-          - runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-            profile: dev
-            fallback_runs_on: ubuntu-24.04-arm
-            runs_on:
-              group: codex-runners
-              labels: codex-linux-arm64
-          - runner: windows-x64
-            target: x86_64-pc-windows-msvc
-            profile: dev
-            fallback_runs_on: windows-2022
-            runs_on:
-              group: codex-runners
-              labels: codex-windows-x64
-          - runner: windows-arm64
-            target: aarch64-pc-windows-msvc
-            profile: dev
-            fallback_runs_on: windows-11-arm
-            runs_on:
-              group: codex-runners
-              labels: codex-windows-arm64
 
-          # Also run representative release builds on Mac and Linux because
+          # Also run a representative release build on Apple Silicon because
           # there could be release-only build errors we want to catch.
-          # Hopefully this also pre-populates the build cache to speed up
-          # releases.
           - runner: macos-15-xlarge
             target: aarch64-apple-darwin
             profile: release
-          - runner: ubuntu-24.04
-            target: x86_64-unknown-linux-musl
-            profile: release
-            fallback_runs_on: ubuntu-24.04
-            runs_on:
-              group: codex-runners
-              labels: codex-linux-x64
-          - runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-musl
-            profile: release
-            fallback_runs_on: ubuntu-24.04-arm
-            runs_on:
-              group: codex-runners
-              labels: codex-linux-arm64
-          - runner: windows-x64
-            target: x86_64-pc-windows-msvc
-            profile: release
-            fallback_runs_on: windows-2022
-            runs_on:
-              group: codex-runners
-              labels: codex-windows-x64
-          - runner: windows-arm64
-            target: aarch64-pc-windows-msvc
-            profile: release
-            fallback_runs_on: windows-11-arm
-            runs_on:
-              group: codex-runners
-              labels: codex-windows-arm64
 
     steps:
       - uses: actions/checkout@v6
@@ -462,7 +387,7 @@ jobs:
 
   tests:
     name: Tests — ${{ matrix.runner }} - ${{ matrix.target }}
-    runs-on: ${{ github.repository == 'openai/codex' && matrix.runs_on || matrix.fallback_runs_on || matrix.runner }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     needs: changed
     if: ${{ needs.changed.outputs.codex == 'true' || needs.changed.outputs.workflows == 'true' || github.event_name == 'push' }}
@@ -482,34 +407,6 @@ jobs:
           - runner: macos-15-xlarge
             target: aarch64-apple-darwin
             profile: dev
-          - runner: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-            profile: dev
-            fallback_runs_on: ubuntu-24.04
-            runs_on:
-              group: codex-runners
-              labels: codex-linux-x64
-          - runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-            profile: dev
-            fallback_runs_on: ubuntu-24.04-arm
-            runs_on:
-              group: codex-runners
-              labels: codex-linux-arm64
-          - runner: windows-x64
-            target: x86_64-pc-windows-msvc
-            profile: dev
-            fallback_runs_on: windows-2022
-            runs_on:
-              group: codex-runners
-              labels: codex-windows-x64
-          - runner: windows-arm64
-            target: aarch64-pc-windows-msvc
-            profile: dev
-            fallback_runs_on: windows-11-arm
-            runs_on:
-              group: codex-runners
-              labels: codex-windows-arm64
 
     steps:
       - uses: actions/checkout@v6
@@ -601,13 +498,15 @@ jobs:
 
       - name: Enable unprivileged user namespaces (Linux)
         if: runner.os == 'Linux'
+        shell: bash
         run: |
+          set -euo pipefail
           # Required for bubblewrap to work on Linux CI runners.
-          sudo sysctl -w kernel.unprivileged_userns_clone=1
+          sudo sysctl -w kernel.unprivileged_userns_clone=1 || true
           # Ubuntu 24.04+ can additionally gate unprivileged user namespaces
           # behind AppArmor.
           if sudo sysctl -a 2>/dev/null | grep -q '^kernel.apparmor_restrict_unprivileged_userns'; then
-            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           fi
 
       - name: tests
@@ -673,7 +572,7 @@ jobs:
     name: CI results (required)
     needs: [changed, general, cargo_shear, lint_build, tests]
     if: always()
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - name: Summarize
         shell: bash

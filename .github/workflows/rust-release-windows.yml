@@ -131,7 +131,7 @@ jobs:
             target: x86_64-pc-windows-msvc
             runs_on: windows-2022
           - runner: windows-arm64
-            target: aarch64-pc-windows-msvc
+            target: blacksmith-4vcpu-windows-2025
             runs_on: windows-2022
 
     steps:

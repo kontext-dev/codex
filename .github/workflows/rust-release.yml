@@ -17,7 +17,7 @@ concurrency:
 
 jobs:
   tag-check:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@1.92
@@ -48,7 +48,7 @@ jobs:
   build:
     needs: tag-check
     name: Build - ${{ matrix.runner }} - ${{ matrix.target }}
-    runs-on: ${{ matrix.runs_on || matrix.runner }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     permissions:
       contents: read
@@ -65,16 +65,6 @@ jobs:
         include:
           - runner: macos-15-xlarge
             target: aarch64-apple-darwin
-          - runner: macos-15-xlarge
-            target: x86_64-apple-darwin
-          - runner: ubuntu-24.04
-            target: x86_64-unknown-linux-musl
-          - runner: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-          - runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-musl
-          - runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
 
     steps:
       - uses: actions/checkout@v6
@@ -379,13 +369,6 @@ jobs:
           path: |
             codex-rs/dist/${{ matrix.target }}/*
 
-  build-windows:
-    needs: tag-check
-    uses: ./.github/workflows/rust-release-windows.yml
-    with:
-      release-lto: ${{ contains(github.ref_name, '-alpha') && 'thin' || 'fat' }}
-    secrets: inherit
-
   shell-tool-mcp:
     name: shell-tool-mcp
     needs: tag-check
@@ -398,10 +381,9 @@ jobs:
   release:
     needs:
       - build
-      - build-windows
       - shell-tool-mcp
     name: release
-    runs-on: ubuntu-latest
+    runs-on: macos-15-xlarge
     permissions:
       contents: write
       actions: read
@@ -567,7 +549,7 @@ jobs:
     if: ${{ needs.release.outputs.should_publish_npm == 'true' }}
     name: publish-npm
     needs: release
-    runs-on: ubuntu-latest
+    runs-on: macos-15-xlarge
     permissions:
       id-token: write # Required for OIDC
       contents: read
@@ -592,15 +574,18 @@ jobs:
           set -euo pipefail
           version="${{ needs.release.outputs.version }}"
           tag="${{ needs.release.outputs.tag }}"
+          npm_scope="${{ needs.release.outputs.npm_scope }}"
           mkdir -p dist/npm
-          patterns=(
-            "codex-npm-${version}.tgz"
-            "codex-npm-linux-*-${version}.tgz"
-            "codex-npm-darwin-*-${version}.tgz"
-            "codex-npm-win32-*-${version}.tgz"
-            "codex-responses-api-proxy-npm-${version}.tgz"
-            "codex-sdk-npm-${version}.tgz"
-          )
+          patterns=("codex-npm-${version}.tgz")
+          if [[ "${npm_scope}" == "@kontext-dev" ]]; then
+            patterns+=("codex-npm-darwin-arm64-${version}.tgz")
+          else
+            patterns+=("codex-npm-darwin-*-${version}.tgz")
+            patterns+=("codex-npm-linux-*-${version}.tgz")
+            patterns+=("codex-npm-win32-*-${version}.tgz")
+          fi
+          patterns+=("codex-responses-api-proxy-npm-${version}.tgz")
+          patterns+=("codex-sdk-npm-${version}.tgz")
           for pattern in "${patterns[@]}"; do
             gh release download "$tag" \
               --repo "${GITHUB_REPOSITORY}" \
@@ -633,7 +618,7 @@ jobs:
             tag=""
 
             case "${filename}" in
-              codex-npm-linux-*-"${VERSION}".tgz|codex-npm-darwin-*-"${VERSION}".tgz|codex-npm-win32-*-"${VERSION}".tgz)
+              codex-npm-*-"${VERSION}".tgz)
                 platform="${filename#codex-npm-}"
                 platform="${platform%-${VERSION}.tgz}"
                 tag="${prefix}${platform}"
@@ -677,7 +662,7 @@ jobs:
     permissions:
       contents: write
     needs: release
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
 
     steps:
       - name: Update latest-alpha-cli branch
