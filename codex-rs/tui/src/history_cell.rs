@@ -2452,6 +2452,13 @@ mod tests {
             .collect()
     }
 
+    fn render_transcript_with_width(cell: &dyn HistoryCell, width: u16) -> Vec<String> {
+        render_lines(&cell.transcript_lines(width))
+            .into_iter()
+            .map(sanitize_version_header)
+            .collect()
+    }
+
     fn sanitize_version_header(line: String) -> String {
         let Some(version_start) = line
             .find("OpenAI Codex (v")
@@ -2639,7 +2646,7 @@ mod tests {
             Some(PlanType::Free),
         );
 
-        let rendered = render_transcript(&cell).join("\n");
+        let rendered = render_transcript_with_width(&cell, 39).join("\n");
         insta::assert_snapshot!(rendered);
     }
 
