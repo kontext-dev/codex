@@ -593,7 +593,9 @@ fn extract_json_resource_text(result: &Value) -> Option<&str> {
             continue;
         }
 
-        let resource = item.get("resource")?;
+        let Some(resource) = item.get("resource") else {
+            continue;
+        };
         if resource.get("mimeType").and_then(Value::as_str) != Some("application/json") {
             continue;
         }
