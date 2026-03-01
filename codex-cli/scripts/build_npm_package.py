@@ -142,6 +142,9 @@ def _apply_kontext_codex_metadata(package_json: dict, package: str) -> None:
         return
     if package == "codex":
         package_json["description"] = KONTEXT_CODEX_DESCRIPTION
+        # Publish the fork binary under a distinct name so it can be installed
+        # side-by-side with @openai/codex without a global-bin collision.
+        package_json["bin"] = {"codex-kontext": "bin/codex.js"}
         package_json["repository"] = {
             "type": "git",
             "url": "git+https://github.com/kontext-dev/codex.git",
