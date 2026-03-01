@@ -86,7 +86,7 @@ jobs:
   # --- CI to validate on different os/targets --------------------------------
   lint_build:
     name: Lint/Build — ${{ matrix.runner }} - ${{ matrix.target }}${{ matrix.profile == 'release' && ' (release)' || '' }}
-    runs-on: ${{ matrix.runs_on || matrix.runner }}
+    runs-on: ${{ github.repository == 'openai/codex' && matrix.runs_on || matrix.fallback_runs_on || matrix.runner }}
     timeout-minutes: 30
     needs: changed
     # Keep job-level if to avoid spinning up runners when not needed
@@ -115,36 +115,42 @@ jobs:
           - runner: ubuntu-24.04
             target: x86_64-unknown-linux-musl
             profile: dev
+            fallback_runs_on: ubuntu-24.04
             runs_on:
               group: codex-runners
               labels: codex-linux-x64
           - runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             profile: dev
+            fallback_runs_on: ubuntu-24.04
             runs_on:
               group: codex-runners
               labels: codex-linux-x64
           - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
             profile: dev
+            fallback_runs_on: ubuntu-24.04-arm
             runs_on:
               group: codex-runners
               labels: codex-linux-arm64
           - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             profile: dev
+            fallback_runs_on: ubuntu-24.04-arm
             runs_on:
               group: codex-runners
               labels: codex-linux-arm64
           - runner: windows-x64
             target: x86_64-pc-windows-msvc
             profile: dev
+            fallback_runs_on: windows-2022
             runs_on:
               group: codex-runners
               labels: codex-windows-x64
           - runner: windows-arm64
             target: aarch64-pc-windows-msvc
             profile: dev
+            fallback_runs_on: windows-11-arm
             runs_on:
               group: codex-runners
               labels: codex-windows-arm64
@@ -159,24 +165,28 @@ jobs:
           - runner: ubuntu-24.04
             target: x86_64-unknown-linux-musl
             profile: release
+            fallback_runs_on: ubuntu-24.04
             runs_on:
               group: codex-runners
               labels: codex-linux-x64
           - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
             profile: release
+            fallback_runs_on: ubuntu-24.04-arm
             runs_on:
               group: codex-runners
               labels: codex-linux-arm64
           - runner: windows-x64
             target: x86_64-pc-windows-msvc
             profile: release
+            fallback_runs_on: windows-2022
             runs_on:
               group: codex-runners
               labels: codex-windows-x64
           - runner: windows-arm64
             target: aarch64-pc-windows-msvc
             profile: release
+            fallback_runs_on: windows-11-arm
             runs_on:
               group: codex-runners
               labels: codex-windows-arm64
@@ -452,7 +462,7 @@ jobs:
 
   tests:
     name: Tests — ${{ matrix.runner }} - ${{ matrix.target }}
-    runs-on: ${{ matrix.runs_on || matrix.runner }}
+    runs-on: ${{ github.repository == 'openai/codex' && matrix.runs_on || matrix.fallback_runs_on || matrix.runner }}
     timeout-minutes: 30
     needs: changed
     if: ${{ needs.changed.outputs.codex == 'true' || needs.changed.outputs.workflows == 'true' || github.event_name == 'push' }}
@@ -475,24 +485,28 @@ jobs:
           - runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             profile: dev
+            fallback_runs_on: ubuntu-24.04
             runs_on:
               group: codex-runners
               labels: codex-linux-x64
           - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             profile: dev
+            fallback_runs_on: ubuntu-24.04-arm
             runs_on:
               group: codex-runners
               labels: codex-linux-arm64
           - runner: windows-x64
             target: x86_64-pc-windows-msvc
             profile: dev
+            fallback_runs_on: windows-2022
             runs_on:
               group: codex-runners
               labels: codex-windows-x64
           - runner: windows-arm64
             target: aarch64-pc-windows-msvc
             profile: dev
+            fallback_runs_on: windows-11-arm
             runs_on:
               group: codex-runners
               labels: codex-windows-arm64
