@@ -382,8 +382,13 @@ impl KontextDevRuntime {
 pub(crate) async fn initialize_kontext_dev_runtime(
     _config: &Config,
 ) -> Result<Option<Arc<KontextDevRuntime>>> {
-    // Keep core tests deterministic/offline: test harness runs should not trigger PKCE.
-    if cfg!(test) || std::env::var_os("RUST_TEST_THREADS").is_some() {
+    // Keep tests deterministic/offline: harness and nextest runs should not trigger PKCE.
+    if cfg!(test)
+        || std::env::var_os("RUST_TEST_THREADS").is_some()
+        || std::env::var_os("NEXTEST").is_some()
+        || std::env::var_os("NEXTEST_STATUS_LEVEL").is_some()
+        || std::env::var_os("CARGO_TARGET_TMPDIR").is_some()
+    {
         return Ok(None);
     }
 
