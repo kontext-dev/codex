@@ -26,6 +26,7 @@ _SPEC.loader.exec_module(_BUILD_MODULE)
 PACKAGE_NATIVE_COMPONENTS = getattr(_BUILD_MODULE, "PACKAGE_NATIVE_COMPONENTS", {})
 PACKAGE_EXPANSIONS = getattr(_BUILD_MODULE, "PACKAGE_EXPANSIONS", {})
 CODEX_PLATFORM_PACKAGES = getattr(_BUILD_MODULE, "CODEX_PLATFORM_PACKAGES", {})
+PACKAGE_TARGET_FILTERS = getattr(_BUILD_MODULE, "PACKAGE_TARGET_FILTERS", {})
 
 
 def parse_args() -> argparse.Namespace:
@@ -65,6 +66,15 @@ def collect_native_components(packages: list[str]) -> set[str]:
     for package in packages:
         components.update(PACKAGE_NATIVE_COMPONENTS.get(package, []))
     return components
+
+
+def collect_native_targets(packages: list[str]) -> set[str]:
+    targets: set[str] = set()
+    for package in packages:
+        target = PACKAGE_TARGET_FILTERS.get(package)
+        if target:
+            targets.add(target)
+    return targets
 
 
 def expand_packages(packages: list[str]) -> list[str]:
@@ -121,12 +131,15 @@ def resolve_workflow_url(version: str, override: str | None) -> tuple[str, str |
 def install_native_components(
     workflow_url: str,
     components: set[str],
+    targets: set[str],
     vendor_root: Path,
 ) -> None:
     if not components:
         return
 
     cmd = [str(INSTALL_NATIVE_DEPS), "--workflow-url", workflow_url]
+    for target in sorted(targets):
+        cmd.extend(["--target", target])
     for component in sorted(components):
         cmd.extend(["--component", component])
     cmd.append(str(vendor_root))
@@ -155,6 +168,7 @@ def main() -> int:
 
     packages = expand_packages(list(args.packages))
     native_components = collect_native_components(packages)
+    native_targets = collect_native_targets(packages)
 
     vendor_temp_root: Path | None = None
     vendor_src: Path | None = None
@@ -168,7 +182,12 @@ def main() -> int:
                 args.release_version, args.workflow_url
             )
             vendor_temp_root = Path(tempfile.mkdtemp(prefix="npm-native-", dir=runner_temp))
-            install_native_components(workflow_url, native_components, vendor_temp_root)
+            install_native_components(
+                workflow_url,
+                native_components,
+                native_targets,
+                vendor_temp_root,
+            )
             vendor_src = vendor_temp_root / "vendor"
 
         if resolved_head_sha:

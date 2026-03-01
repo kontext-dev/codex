@@ -143,6 +143,16 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--target",
+        dest="targets",
+        action="append",
+        choices=BINARY_TARGETS,
+        help=(
+            "Limit installation to the specified compilation target(s). "
+            "May be repeated."
+        ),
+    )
+    parser.add_argument(
         "root",
         nargs="?",
         type=Path,
@@ -183,6 +193,7 @@ def main() -> int:
         "codex-command-runner",
         "rg",
     ]
+    selected_targets = args.targets or list(BINARY_TARGETS)
 
     workflow_url = (args.workflow_url or DEFAULT_WORKFLOW_URL).strip()
     if not workflow_url:
@@ -199,12 +210,13 @@ def main() -> int:
                 artifacts_dir,
                 vendor_dir,
                 [BINARY_COMPONENTS[name] for name in components if name in BINARY_COMPONENTS],
+                selected_targets,
             )
 
     if "rg" in components:
         with _gha_group("Fetch ripgrep binaries"):
             print("Fetching ripgrep binaries...")
-            fetch_rg(vendor_dir, DEFAULT_RG_TARGETS, manifest_path=RG_MANIFEST)
+            fetch_rg(vendor_dir, selected_targets, manifest_path=RG_MANIFEST)
 
     print(f"Installed native dependencies into {vendor_dir}")
     return 0
@@ -384,12 +396,19 @@ def install_binary_components(
     artifacts_dir: Path,
     vendor_dir: Path,
     selected_components: Sequence[BinaryComponent],
+    selected_targets: Sequence[str] | None = None,
 ) -> None:
     if not selected_components:
         return
 
+    selected_target_set = set(selected_targets) if selected_targets else None
+
     for component in selected_components:
         component_targets = list(component.targets or BINARY_TARGETS)
+        if selected_target_set is not None:
+            component_targets = [t for t in component_targets if t in selected_target_set]
+        if not component_targets:
+            continue
 
         print(
             f"Installing {component.binary_basename} binaries for targets: "
