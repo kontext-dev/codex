@@ -1643,6 +1643,7 @@ fn sanitize_json_schema(value: &mut JsonValue) {
 }
 
 /// Builds the tool registry builder while collecting tool specs for later serialization.
+#[cfg(test)]
 pub(crate) fn build_specs(
     config: &ToolsConfig,
     mcp_tools: Option<HashMap<String, rmcp::model::Tool>>,
