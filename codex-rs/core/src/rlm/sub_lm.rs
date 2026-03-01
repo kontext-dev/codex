@@ -149,7 +149,10 @@ impl SubLmInvoker {
         lm_handler: &LmHandler,
     ) -> Result<SubLmResult, RlmError> {
         // 1. Budget check.
-        let check = self.budget_manager.can_proceed(params.estimated_tokens).await;
+        let check = self
+            .budget_manager
+            .can_proceed(params.estimated_tokens)
+            .await;
         if !check.can_proceed() {
             return Err(RlmError::BudgetExhausted(format!(
                 "Cannot proceed with estimated {} tokens: {check:?}",

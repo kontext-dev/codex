@@ -28,13 +28,59 @@ fn estimate_tokens(text: &str) -> i64 {
     (text.len() / 4).max(1) as i64
 }
 
+/// Clamp a desired byte end index to a valid UTF-8 char boundary while ensuring progress.
+fn clamp_end_to_char_boundary(text: &str, start: usize, desired_end: usize) -> usize {
+    debug_assert!(text.is_char_boundary(start));
+    let capped_end = desired_end.min(text.len());
+    if capped_end <= start {
+        return start;
+    }
+    if text.is_char_boundary(capped_end) {
+        return capped_end;
+    }
+
+    let mut end = capped_end;
+    while end > start && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    if end > start {
+        return end;
+    }
+
+    // Fallback: if max size is smaller than one codepoint, still advance by one char.
+    let mut end = start + 1;
+    while end < text.len() && !text.is_char_boundary(end) {
+        end += 1;
+    }
+    end.min(text.len())
+}
+
+/// Return the first `max_chars` chars of `text`, plus a truncation flag.
+fn prefix_by_chars(text: &str, max_chars: usize) -> (&str, bool) {
+    let end = text
+        .char_indices()
+        .nth(max_chars)
+        .map(|(idx, _)| idx)
+        .unwrap_or(text.len());
+    (&text[..end], end < text.len())
+}
+
+/// Return byte index after the last whitespace char in `text`.
+fn last_whitespace_boundary(text: &str) -> Option<usize> {
+    text.char_indices()
+        .rev()
+        .find(|(_, ch)| ch.is_whitespace())
+        .map(|(idx, ch)| idx + ch.len_utf8())
+}
+
 /// Truncate text to fit within a token budget.
 fn truncate_to_tokens(text: &str, max_tokens: i64) -> String {
-    let max_chars = (max_tokens * 4) as usize;
-    if text.len() <= max_chars {
+    let max_bytes = (max_tokens * 4) as usize;
+    if text.len() <= max_bytes {
         text.to_string()
     } else {
-        format!("{}...[truncated]", &text[..max_chars])
+        let end = clamp_end_to_char_boundary(text, 0, max_bytes);
+        format!("{}...[truncated]", &text[..end])
     }
 }
 
@@ -207,13 +253,13 @@ impl RlmCorpus {
         let mut chunk_idx = 0;
 
         while offset < total_bytes {
-            let end = (offset + chunk_size_bytes).min(total_bytes);
+            let desired_end = (offset + chunk_size_bytes).min(total_bytes);
+            let end = clamp_end_to_char_boundary(prompt, offset, desired_end);
 
             // Try to break at a word boundary
             let actual_end = if end < total_bytes {
-                prompt[offset..end]
-                    .rfind(char::is_whitespace)
-                    .map(|pos| offset + pos + 1)
+                last_whitespace_boundary(&prompt[offset..end])
+                    .map(|pos| offset + pos)
                     .unwrap_or(end)
             } else {
                 end
@@ -233,10 +279,11 @@ impl RlmCorpus {
                 .map_err(|e| RlmError::Internal(format!("Failed to write chunk: {e}")))?;
 
             // Generate summary (first 100 chars)
-            let summary = if chunk_content.len() > 100 {
-                Some(format!("{}...", &chunk_content[..100]))
+            let (summary_prefix, truncated) = prefix_by_chars(chunk_content, 100);
+            let summary = if truncated {
+                Some(format!("{summary_prefix}..."))
             } else {
-                Some(chunk_content.to_string())
+                Some(summary_prefix.to_string())
             };
 
             // Add to manifest
@@ -493,13 +540,13 @@ impl RlmCorpus {
         let mut chunk_idx = 0;
 
         while offset < content_bytes {
-            let end = (offset + chunk_size_bytes).min(content_bytes);
+            let desired_end = (offset + chunk_size_bytes).min(content_bytes);
+            let end = clamp_end_to_char_boundary(content, offset, desired_end);
 
             // Try to break at a word boundary
             let actual_end = if end < content_bytes {
-                content[offset..end]
-                    .rfind(char::is_whitespace)
-                    .map(|pos| offset + pos + 1)
+                last_whitespace_boundary(&content[offset..end])
+                    .map(|pos| offset + pos)
                     .unwrap_or(end)
             } else {
                 end
@@ -519,10 +566,11 @@ impl RlmCorpus {
                 .map_err(|e| RlmError::Internal(format!("Failed to write chunk: {e}")))?;
 
             // Generate summary (first 100 chars)
-            let summary = if chunk_content.len() > 100 {
-                Some(format!("{}...", &chunk_content[..100]))
+            let (summary_prefix, truncated) = prefix_by_chars(chunk_content, 100);
+            let summary = if truncated {
+                Some(format!("{summary_prefix}..."))
             } else {
-                Some(chunk_content.to_string())
+                Some(summary_prefix.to_string())
             };
 
             // Create chunk info with source tracking
@@ -762,6 +810,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_append_content_unicode_summary_no_panic() {
+        let initial = "Initial.";
+        let (_temp, corpus) = test_corpus(initial).await;
+
+        let unicode_content = "`beginWork` → `completeWork` - **Commit phase** (uninterruptible): before-mutation → mutation → layout → passive. ".repeat(4);
+        let new_chunks = corpus
+            .append_content(&unicode_content, "tool:deepwiki:call_unicode")
+            .await
+            .unwrap();
+
+        assert!(!new_chunks.is_empty());
+        let summary = new_chunks[0].summary.clone().unwrap_or_default();
+        assert!(!summary.is_empty());
+    }
+
+    #[tokio::test]
     async fn test_get_chunks_by_source() {
         let initial = "Initial content.";
         let (_temp, corpus) = test_corpus(initial).await;
@@ -824,5 +888,12 @@ mod tests {
         // Search should work after rebuild
         let results = restored.search("flamingo", 10).await;
         assert!(!results.is_empty());
+    }
+
+    #[test]
+    fn test_truncate_to_tokens_unicode_safe() {
+        let text = "→".repeat(300);
+        let truncated = truncate_to_tokens(&text, 10);
+        assert!(truncated.ends_with("...[truncated]"));
     }
 }

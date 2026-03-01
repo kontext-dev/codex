@@ -13,7 +13,13 @@ use serde_json::Value;
 fn sanitize_identifier(name: &str) -> String {
     let mut s: String = name
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     if s.starts_with(|c: char| c.is_ascii_digit()) {
         s.insert(0, '_');
@@ -130,14 +136,13 @@ pub fn generate_codemode_types(tools: &[GatewayTool]) -> String {
         let input_type_name = format!("{}_Input", safe_name);
 
         // Generate the input type from the tool's input_schema
-        let input_type = if tool.input_schema.is_object()
-            && tool.input_schema.get("properties").is_some()
-        {
-            json_schema_to_ts_type(&tool.input_schema)
-        } else {
-            // No properties — accept an empty object
-            "object".to_string()
-        };
+        let input_type =
+            if tool.input_schema.is_object() && tool.input_schema.get("properties").is_some() {
+                json_schema_to_ts_type(&tool.input_schema)
+            } else {
+                // No properties — accept an empty object
+                "object".to_string()
+            };
 
         type_defs.push(format!("type {} = {};", input_type_name, input_type));
 
@@ -222,8 +227,10 @@ pub fn generate_codemode_js_preamble(tools: &[GatewayTool]) -> String {
     for line in preamble.lines() {
         let trimmed = line.trim();
         if !trimmed.is_empty() && trimmed.starts_with(|c: char| c.is_ascii_digit()) {
-            tracing::warn!("  [codemode] INVALID JS KEY (starts with digit): {}",
-                &trimmed[..trimmed.len().min(60)]);
+            tracing::warn!(
+                "  [codemode] INVALID JS KEY (starts with digit): {}",
+                &trimmed[..trimmed.len().min(60)]
+            );
         }
     }
 
@@ -303,10 +310,7 @@ mod tests {
     #[test]
     fn test_enum_mixed() {
         let schema = json!({"enum": ["a", 1, true, null]});
-        assert_eq!(
-            json_schema_to_ts_type(&schema),
-            "\"a\" | 1 | true | null"
-        );
+        assert_eq!(json_schema_to_ts_type(&schema), "\"a\" | 1 | true | null");
     }
 
     #[test]
@@ -345,10 +349,7 @@ mod tests {
             "type": "array",
             "items": {"anyOf": [{"type": "string"}, {"type": "number"}]}
         });
-        assert_eq!(
-            json_schema_to_ts_type(&schema),
-            "(string | number)[]"
-        );
+        assert_eq!(json_schema_to_ts_type(&schema), "(string | number)[]");
     }
 
     // ── generate_codemode_types ──────────────────────────────────────
@@ -432,12 +433,7 @@ mod tests {
 
     #[test]
     fn test_tool_with_no_schema_properties() {
-        let tools = vec![make_tool(
-            "Ping",
-            "ping",
-            "Ping the server",
-            json!({}),
-        )];
+        let tools = vec![make_tool("Ping", "ping", "Ping the server", json!({}))];
 
         let output = generate_codemode_types(&tools);
         assert!(output.contains("type Ping_ping_Input = object;"));

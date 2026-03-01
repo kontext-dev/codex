@@ -12,6 +12,7 @@
 //! - **BaselineRlm**: EXECUTE_TOOL with RLM routing for large results
 //! - **Rlm**: True RLM mode with Python REPL and sub-LLM calls
 //! - **CodeMode+RLM**: RLM REPL with Gateway tool execution via execute_code()
+//! - **RLM+Native**: RLM REPL with Python-native tool wrappers and field projection
 //!
 //! ## Scoring
 //!
@@ -27,6 +28,7 @@
 pub mod codemode_types;
 pub mod dataset;
 pub mod judge;
+pub mod pythonic_tools;
 pub mod runner;
 
 pub use codemode_types::generate_codemode_js_preamble;
@@ -37,6 +39,8 @@ pub use dataset::load_dataset;
 pub use judge::ClaimJudge;
 pub use judge::ClaimScore;
 pub use judge::ClaimVerificationResult;
+pub use pythonic_tools::format_tool_list_for_native_prompt;
+pub use pythonic_tools::generate_pythonic_tool_wrappers;
 pub use runner::GatewayTool;
 pub use runner::TaskResult;
 pub use runner::ToolCallRecord;

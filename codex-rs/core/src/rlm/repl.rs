@@ -6,6 +6,7 @@
 //! - `llm_query(prompt, model=None)` — sub-LLM calls via HTTP
 //! - `llm_query_batched(prompts, model=None)` — batched sub-LLM calls
 //! - `execute_tool(tool_id, args)` — call Gateway tool via EXECUTE_TOOL (RLM)
+//! - `execute_tool_json(tool_id, args)` — parsed tool results for Python-native handling
 //! - `execute_code(ts_code)` — run TS/JS on Gateway via EXECUTE_CODE (RLM+CodeMode)
 //! - `corpus_search(query, max_results=5)` — search RLM corpus (RLM+CodeMode)
 //! - `corpus_get_chunk(chunk_id)` — retrieve corpus chunk (RLM+CodeMode)
@@ -170,10 +171,7 @@ impl LocalRepl {
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string(),
-                execution_time_ms: resp
-                    .get("time_ms")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0),
+                execution_time_ms: resp.get("time_ms").and_then(|v| v.as_u64()).unwrap_or(0),
             })
         } else {
             let error = resp
@@ -219,8 +217,14 @@ import urllib.request
 LM_HANDLER_PORT = {port}
 
 # ---------- persistent namespace ----------
-_globals = {{"__builtins__": {{}}}}
-_locals = {{}}
+# IMPORTANT: Use a SINGLE dict for both globals and locals in exec().
+# When exec(code, globals_dict, locals_dict) uses two separate dicts,
+# functions/lambdas defined inside exec() get __globals__ = globals_dict,
+# so they CANNOT see variables or imports from locals_dict. This causes
+# NameError when functions reference modules (json, re) or variables
+# assigned in the same or previous exec() calls. Using one dict avoids
+# this by making all names visible to function bodies.
+_ns = {{"__builtins__": {{}}, "__name__": "__repl__"}}
 
 # ---------- restricted builtins ----------
 import builtins as _builtins
@@ -275,6 +279,7 @@ _ALLOWED_BUILTINS = {{
     "vars": _builtins.vars,
     "zip": _builtins.zip,
     "__import__": _builtins.__import__,
+    "__build_class__": _builtins.__build_class__,
     "KeyError": _builtins.KeyError,
     "ValueError": _builtins.ValueError,
     "TypeError": _builtins.TypeError,
@@ -288,7 +293,7 @@ _ALLOWED_BUILTINS = {{
     "None": None,
 }}
 
-_globals["__builtins__"] = _ALLOWED_BUILTINS
+_ns["__builtins__"] = _ALLOWED_BUILTINS
 
 # ---------- helper functions injected into namespace ----------
 
@@ -304,7 +309,11 @@ def _llm_query(prompt, model=None):
     try:
         with urllib.request.urlopen(req, timeout=120) as resp:
             body = json.loads(resp.read().decode())
-            return body.get("response", "")
+            resp_val = body.get("response")
+            if resp_val is None:
+                err = body.get("error", "unknown error")
+                return f"[llm_query error: {{err}}]"
+            return resp_val
     except Exception as e:
         return f"[llm_query error: {{e}}]"
 
@@ -320,20 +329,24 @@ def _llm_query_batched(prompts, model=None):
     try:
         with urllib.request.urlopen(req, timeout=300) as resp:
             body = json.loads(resp.read().decode())
-            return body.get("responses", [])
+            resp_val = body.get("responses")
+            if resp_val is None:
+                err = body.get("error", "unknown error")
+                return [f"[llm_query_batched error: {{err}}]"]
+            return resp_val
     except Exception as e:
         return [f"[llm_query_batched error: {{e}}]"]
 
 def _final_var(name):
     """Mark a variable as the final answer."""
-    if name in _locals:
-        return str(_locals[name])
+    if name in _ns:
+        return str(_ns[name])
     raise KeyError(f"Variable '{{name}}' not found in namespace")
 
 def _show_vars():
     """List all user-defined variables."""
     items = []
-    for k, v in sorted(_locals.items()):
+    for k, v in sorted(_ns.items()):
         if not k.startswith("_"):
             val_repr = repr(v)
             if len(val_repr) > 200:
@@ -341,19 +354,11 @@ def _show_vars():
             items.append(f"  {{k}} = {{val_repr}}")
     return "\n".join(items) if items else "(no variables)"
 
-def _execute_tool(tool_id, args=None):
-    """Call a Gateway tool directly via EXECUTE_TOOL (like Baseline mode).
-
-    Args:
-        tool_id: The tool identifier (e.g., 'linear_list_projects',
-                 'github_get_repo').
-        args: Optional dict of tool arguments.
-
-    Returns: str — the full tool result as JSON.
-    """
+def _execute_tool_object(tool_id, args=None, fields=None):
+    """Call /execute_tool and return the structured response object."""
     if args is None:
         args = {{}}
-    payload = json.dumps({{"tool_id": tool_id, "args": args}}).encode()
+    payload = json.dumps({{"tool_id": tool_id, "args": args, "fields": fields}}).encode()
     req = urllib.request.Request(
         "http://127.0.0.1:{port}/execute_tool",
         data=payload,
@@ -363,11 +368,70 @@ def _execute_tool(tool_id, args=None):
     try:
         with urllib.request.urlopen(req, timeout=120) as resp:
             body = json.loads(resp.read().decode())
-            if body.get("error"):
-                return f"[execute_tool error: {{body['error']}}]"
-            return body.get("result", "")
+            if not isinstance(body, dict):
+                return {{"error": "invalid execute_tool response"}}
+            return body
     except Exception as e:
-        return f"[execute_tool error: {{e}}]"
+        return {{"error": str(e)}}
+
+def _execute_tool(tool_id, args=None, fields=None):
+    """Call a Gateway tool directly via EXECUTE_TOOL (like Baseline mode).
+
+    Args:
+        tool_id: The tool identifier (e.g., 'linear_list_projects',
+                 'github_get_repo').
+        args: Optional dict of tool arguments.
+        fields: Optional list of fields to project server-side.
+
+    Returns: str — JSON string. For large results this returns a metadata object:
+      {{"_stored_in_corpus": true, "summary": "...", "chunk_ids": [...], "tool_id": "..."}}
+    """
+    body = _execute_tool_object(tool_id, args=args, fields=fields)
+    if body.get("error") and not body.get("result") and not body.get("stored_in_corpus"):
+        msg = body.get("error", "unknown error")
+        result = json.dumps({{"_error": msg, "tool_id": tool_id}})
+        print(f"-> {{tool_id}}: ERROR {{msg}}")
+        return result
+
+    if body.get("stored_in_corpus"):
+        result = json.dumps({{
+            "_stored_in_corpus": True,
+            "summary": body.get("summary") or "(stored in corpus)",
+            "chunk_ids": body.get("chunk_ids") or [],
+            "tool_id": tool_id,
+        }})
+        print(f"-> {{tool_id}}: {{len(result)}} chars")
+        return result
+
+    result_val = body.get("result")
+    if isinstance(result_val, str):
+        result = result_val
+    else:
+        result = json.dumps(result_val)
+    print(f"-> {{tool_id}}: {{len(result)}} chars")
+    return result
+
+def _execute_tool_json(tool_id, args=None, fields=None):
+    """Call EXECUTE_TOOL and return a Python object (preferred over execute_tool)."""
+    body = _execute_tool_object(tool_id, args=args, fields=fields)
+    if body.get("error") and not body.get("result") and not body.get("stored_in_corpus"):
+        raise RuntimeError(body.get("error", "unknown error"))
+
+    if body.get("stored_in_corpus"):
+        return {{
+            "_stored_in_corpus": True,
+            "summary": body.get("summary") or "(stored in corpus)",
+            "chunk_ids": body.get("chunk_ids") or [],
+            "tool_id": tool_id,
+        }}
+
+    result_val = body.get("result")
+    if isinstance(result_val, str):
+        try:
+            return json.loads(result_val)
+        except Exception:
+            return result_val
+    return result_val
 
 def _execute_code(code):
     """Execute TypeScript/JS code on the Gateway via EXECUTE_CODE.
@@ -435,14 +499,16 @@ def _corpus_get_chunk(chunk_id):
     except Exception as e:
         return f"[corpus_get_chunk error: {{e}}]"
 
-_locals["llm_query"] = _llm_query
-_locals["llm_query_batched"] = _llm_query_batched
-_locals["execute_tool"] = _execute_tool
-_locals["execute_code"] = _execute_code
-_locals["corpus_search"] = _corpus_search
-_locals["corpus_get_chunk"] = _corpus_get_chunk
-_locals["FINAL_VAR"] = _final_var
-_locals["SHOW_VARS"] = _show_vars
+_ns["llm_query"] = _llm_query
+_ns["llm_query_batched"] = _llm_query_batched
+_ns["execute_tool"] = _execute_tool
+_ns["execute_tool_object"] = _execute_tool_object
+_ns["execute_tool_json"] = _execute_tool_json
+_ns["execute_code"] = _execute_code
+_ns["corpus_search"] = _corpus_search
+_ns["corpus_get_chunk"] = _corpus_get_chunk
+_ns["FINAL_VAR"] = _final_var
+_ns["SHOW_VARS"] = _show_vars
 
 # ---------- response helper ----------
 
@@ -453,11 +519,15 @@ def _respond(obj):
 # ---------- locals summary ----------
 
 def _locals_summary():
+    _SKIP = {{"__builtins__", "__name__", "llm_query", "llm_query_batched",
+              "execute_tool", "execute_tool_object", "execute_tool_json",
+              "execute_code", "corpus_search",
+              "corpus_get_chunk", "FINAL_VAR", "SHOW_VARS"}}
     items = []
-    for k, v in sorted(_locals.items()):
-        if k.startswith("_"):
+    for k, v in sorted(_ns.items()):
+        if k.startswith("_") or k in _SKIP:
             continue
-        if callable(v) and k in ("llm_query", "llm_query_batched", "execute_tool", "execute_code", "corpus_search", "corpus_get_chunk", "FINAL_VAR", "SHOW_VARS"):
+        if k in ("tools",) or isinstance(v, type):
             continue
         val_repr = repr(v)
         if len(val_repr) > 200:
@@ -492,7 +562,7 @@ for raw_line in sys.stdin:
 
         t0 = time.time()
         try:
-            exec(code, _globals, _locals)
+            exec(code, _ns)
         except Exception:
             traceback.print_exc(file=stderr_capture)
         elapsed_ms = int((time.time() - t0) * 1000)
@@ -510,15 +580,15 @@ for raw_line in sys.stdin:
 
     elif cmd == "set_context":
         ctx = msg.get("context", "")
-        _locals["context"] = ctx
+        _ns["context"] = ctx
         _respond({{"ok": True, "stdout": "", "stderr": "", "locals": "", "time_ms": 0}})
 
     elif cmd == "resolve_var":
         name = msg.get("name", "")
-        if name in _locals:
+        if name in _ns:
             _respond({{
                 "ok": True,
-                "stdout": str(_locals[name]),
+                "stdout": str(_ns[name]),
                 "stderr": "",
                 "locals": "",
                 "time_ms": 0,
@@ -635,7 +705,10 @@ mod tests {
     async fn test_repl_imports() {
         let mut repl = LocalRepl::new(0).await.unwrap();
 
-        let result = repl.execute("import json\nprint(json.dumps({'a': 1}))").await.unwrap();
+        let result = repl
+            .execute("import json\nprint(json.dumps({'a': 1}))")
+            .await
+            .unwrap();
         assert_eq!(result.stdout.trim(), r#"{"a": 1}"#);
 
         repl.cleanup().await;
@@ -657,10 +730,7 @@ mod tests {
     async fn test_repl_execution_time() {
         let mut repl = LocalRepl::new(0).await.unwrap();
 
-        let result = repl
-            .execute("import time\ntime.sleep(0.05)")
-            .await
-            .unwrap();
+        let result = repl.execute("import time\ntime.sleep(0.05)").await.unwrap();
         assert!(result.execution_time_ms >= 40);
 
         repl.cleanup().await;
@@ -671,5 +741,78 @@ mod tests {
         let mut repl = LocalRepl::new(0).await.unwrap();
         repl.cleanup().await;
         // Should not panic — cleanup is idempotent
+    }
+
+    /// Verify that generated Python tool wrappers work in the REPL's exec() context.
+    ///
+    /// This tests the critical scoping fix: class methods defined inside exec()
+    /// must be able to call `_call_tool()` from the enclosing `_setup_tools()` closure.
+    /// Without the closure wrapper, `_call_tool` would be in `_locals` but invisible
+    /// to class method bodies (which only see `_globals` in exec context).
+    #[tokio::test]
+    async fn test_repl_pythonic_tool_wrappers_scope() {
+        use crate::eval::pythonic_tools::generate_pythonic_tool_wrappers;
+        use crate::eval::runner::GatewayTool;
+        use serde_json::json;
+
+        let mut repl = LocalRepl::new(0).await.unwrap();
+
+        // Generate wrappers for a fake tool
+        let tools = vec![GatewayTool {
+            id: "TestServer:test_method".to_string(),
+            server: "TestServer".to_string(),
+            name: "test_method".to_string(),
+            description: "A test tool".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"}
+                }
+            }),
+        }];
+        let wrapper_code = generate_pythonic_tool_wrappers(&tools);
+
+        // Inject wrappers — this must not error
+        let result = repl.execute(&wrapper_code).await.unwrap();
+        assert!(
+            result.stderr.is_empty(),
+            "Wrapper injection had stderr: {}",
+            result.stderr
+        );
+
+        // Verify `tools` object exists and has the right structure
+        let result = repl.execute("print(type(tools).__name__)").await.unwrap();
+        assert_eq!(result.stdout.trim(), "_Ns");
+
+        // Verify the server namespace exists
+        let result = repl
+            .execute("print(hasattr(tools, 'TestServer'))")
+            .await
+            .unwrap();
+        assert_eq!(result.stdout.trim(), "True");
+
+        // Verify the method exists
+        let result = repl
+            .execute("print(hasattr(tools.TestServer, 'test_method'))")
+            .await
+            .unwrap();
+        assert_eq!(result.stdout.trim(), "True");
+
+        // Call the method — it will fail at execute_tool (no LM handler) but
+        // the important thing is that it reaches _call_tool without a NameError.
+        // A NameError would mean the scoping fix failed.
+        let result = repl
+            .execute("try:\n    tools.TestServer.test_method(query='hello')\nexcept Exception as e:\n    print(type(e).__name__)")
+            .await
+            .unwrap();
+        // Should NOT be a NameError (which would mean scoping is broken)
+        assert!(
+            !result.stdout.contains("NameError"),
+            "Got NameError — scoping fix failed! stdout: {} stderr: {}",
+            result.stdout,
+            result.stderr
+        );
+
+        repl.cleanup().await;
     }
 }

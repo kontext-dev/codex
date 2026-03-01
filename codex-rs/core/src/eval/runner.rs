@@ -6,8 +6,10 @@
 //! - BaselineRlm: Tool calls with RLM routing for large results
 //! - Rlm: True RLM mode with Python REPL and sub-LLM calls
 //! - CodeMode+RLM: RLM REPL with Gateway tool execution via execute_code()
+//! - RlmNative: RLM REPL with Python-native tool wrappers and field projection
 
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
@@ -15,6 +17,7 @@ use std::time::Instant;
 use anyhow::Context;
 use anyhow::Result;
 use async_openai::Client;
+use async_openai::config::Config;
 use async_openai::config::OpenAIConfig;
 use async_openai::types::ChatCompletionMessageToolCall;
 use async_openai::types::ChatCompletionRequestAssistantMessageArgs;
@@ -25,7 +28,9 @@ use async_openai::types::ChatCompletionRequestUserMessageArgs;
 use async_openai::types::ChatCompletionTool;
 use async_openai::types::ChatCompletionToolArgs;
 use async_openai::types::ChatCompletionToolType;
+use async_openai::types::CreateChatCompletionRequest;
 use async_openai::types::CreateChatCompletionRequestArgs;
+use async_openai::types::CreateChatCompletionResponse;
 use async_openai::types::FunctionObjectArgs;
 use codex_rmcp_client::RmcpClient;
 use regex_lite::Regex;
@@ -46,11 +51,14 @@ use crate::rlm::ReplResult;
 use crate::rlm::RlmConfig;
 use crate::rlm::RlmCorpus;
 use crate::rlm::build_rlm_codemode_system_prompt;
+use crate::rlm::build_rlm_native_system_prompt;
 use crate::rlm::build_rlm_system_prompt;
 use crate::rlm::build_rlm_user_prompt;
 use crate::rlm::find_code_blocks;
 use crate::rlm::find_final_answer;
 use crate::rlm::format_repl_feedback;
+
+const RLM_LLM_CALL_TIMEOUT_SECS: u64 = 90;
 
 /// Execution mode for tool-calling client
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -65,6 +73,10 @@ pub enum ToolCallingMode {
     Rlm,
     /// CodeMode+RLM: Python REPL with Gateway tool execution via execute_code()
     RlmCodeMode,
+    /// RLM with Python-native tool wrappers: `tools.Server.method(fields=[...])`
+    /// Combines RLM's iterative REPL with CodeMode's token efficiency via
+    /// field projection, without requiring the LLM to write TypeScript.
+    RlmNative,
 }
 
 impl std::fmt::Display for ToolCallingMode {
@@ -75,6 +87,7 @@ impl std::fmt::Display for ToolCallingMode {
             ToolCallingMode::BaselineRlm => write!(f, "Baseline+RLM"),
             ToolCallingMode::Rlm => write!(f, "RLM"),
             ToolCallingMode::RlmCodeMode => write!(f, "CodeMode+RLM"),
+            ToolCallingMode::RlmNative => write!(f, "RLM+Native"),
         }
     }
 }
@@ -207,7 +220,7 @@ impl ToolCallingRunner {
             llm_client,
             rlm_router,
             agent_model: std::env::var("EVAL_MODEL").unwrap_or_else(|_| "gpt-4o".to_string()),
-            max_turns: 10,
+            max_turns: 25,
             gateway_tools,
             tool_lookup,
         })
@@ -247,7 +260,11 @@ impl ToolCallingRunner {
             map.insert(tool.id.to_lowercase(), tool.id.clone());
             map.insert(tool.prefixed_name().to_lowercase(), tool.id.clone());
             // Common LLM guesses: server:name without proper casing
-            let colon_form = format!("{}:{}", tool.server.to_lowercase(), tool.name.to_lowercase());
+            let colon_form = format!(
+                "{}:{}",
+                tool.server.to_lowercase(),
+                tool.name.to_lowercase()
+            );
             map.insert(colon_form, tool.id.clone());
         }
         map
@@ -259,9 +276,14 @@ impl ToolCallingRunner {
             return String::new();
         }
 
-        let mut section = String::from("\n\n# Available Gateway Tools\n\nYou can call these tools using `execute_tool(tool_id, args)`. Use the EXACT tool_id shown below:\n\n");
+        let mut section = String::from(
+            "\n\n# Available Gateway Tools\n\nYou can call these tools using `execute_tool(tool_id, args)`. Use the EXACT tool_id shown below:\n\n",
+        );
         for tool in &self.gateway_tools {
-            section.push_str(&format!("- `\"{}\"` — {} (server: {})\n", tool.id, tool.description, tool.server));
+            section.push_str(&format!(
+                "- `\"{}\"` — {} (server: {})\n",
+                tool.id, tool.description, tool.server
+            ));
         }
         section.push_str("\nExample: `execute_tool(\"");
         if let Some(first) = self.gateway_tools.first() {
@@ -285,7 +307,9 @@ impl ToolCallingRunner {
             return String::new();
         }
 
-        let mut section = String::from("\n\n# Available Gateway Tools\n\nCall these via `execute_code()` using `codemode.<FunctionName>({...})`. Available functions:\n\n");
+        let mut section = String::from(
+            "\n\n# Available Gateway Tools\n\nCall these via `execute_code()` using `codemode.<FunctionName>({...})`. Available functions:\n\n",
+        );
         for tool in &self.gateway_tools {
             section.push_str(&format!(
                 "- `codemode.{}({{}})` — {}\n",
@@ -310,6 +334,45 @@ impl ToolCallingRunner {
         section
     }
 
+    async fn chat_create(
+        &self,
+        request: CreateChatCompletionRequest,
+    ) -> Result<CreateChatCompletionResponse, String> {
+        let config = self.llm_client.config();
+        let url = config.url("/chat/completions");
+        let headers = config.headers();
+        let client = reqwest::Client::new();
+        let mut req = client.post(&url).json(&request);
+        for (k, v) in headers.iter() {
+            if let Ok(s) = v.to_str() {
+                req = req.header(k.as_str(), s);
+            }
+        }
+        let response = req.send().await.map_err(|e| format!("{e}"))?;
+        let status = response.status();
+        let bytes = response.bytes().await.map_err(|e| format!("{e}"))?;
+        if !status.is_success() {
+            if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                // OpenAI format: {"error": {"message": "..."}}
+                let err_obj = v
+                    .get("error")
+                    // Gemini format: [{"error": {"message": "..."}}]
+                    .or_else(|| v.get(0).and_then(|item| item.get("error")));
+                if let Some(err) = err_obj {
+                    if let Some(msg) = err.get("message").and_then(|m| m.as_str()) {
+                        return Err(format!("API error ({status}): {msg}"));
+                    }
+                }
+            }
+            let body_str = String::from_utf8_lossy(&bytes);
+            return Err(format!(
+                "API error ({status}): {}",
+                &body_str[..body_str.len().min(500)]
+            ));
+        }
+        serde_json::from_slice(&bytes).map_err(|e| format!("deserialize response: {e}"))
+    }
+
     /// Execute a task in the specified mode
     pub async fn run_task(&self, task: &McpAtlasTask, mode: ToolCallingMode) -> TaskResult {
         // Dispatch to mode-specific runners
@@ -317,6 +380,7 @@ impl ToolCallingRunner {
             ToolCallingMode::CodeMode => return self.run_task_codemode(task).await,
             ToolCallingMode::Rlm => return self.run_task_rlm(task).await,
             ToolCallingMode::RlmCodeMode => return self.run_task_rlm_codemode(task).await,
+            ToolCallingMode::RlmNative => return self.run_task_rlm_native(task).await,
             _ => {} // Baseline and BaselineRlm continue below
         }
 
@@ -413,10 +477,7 @@ Important:
             ),
         ];
 
-        tracing::trace!(
-            "[TOKEN DEBUG] Task: {}, Mode: {:?}",
-            task.task_id, mode
-        );
+        tracing::trace!("[TOKEN DEBUG] Task: {}, Mode: {:?}", task.task_id, mode);
 
         // Agent loop
         for _turn in 0..self.max_turns {
@@ -451,7 +512,7 @@ Important:
 
             // Call the agent LLM
             let llm_t = Instant::now();
-            let response = match self.llm_client.chat().create(request).await {
+            let response = match self.chat_create(request).await {
                 Ok(r) => r,
                 Err(e) => {
                     return TaskResult {
@@ -871,6 +932,11 @@ Important:
                 // and does not use standard tool call dispatch
                 self.execute_baseline(&tool_id, &args).await
             }
+            ToolCallingMode::RlmNative => {
+                // RlmNative is dispatched to run_task_rlm_native() directly
+                // and does not use standard tool call dispatch
+                self.execute_baseline(&tool_id, &args).await
+            }
         }
     }
 
@@ -1019,8 +1085,7 @@ return result;"#,
 
     /// Build system prompt for CodeMode - instructs LLM to generate JavaScript code
     fn build_codemode_system_prompt(&self) -> String {
-        let generated_types =
-            super::codemode_types::generate_codemode_types(&self.gateway_tools);
+        let generated_types = super::codemode_types::generate_codemode_types(&self.gateway_tools);
 
         // Get a sample tool name for the example
         let sample_name = self
@@ -1132,7 +1197,11 @@ Your final answer must be plain text that directly answers the task question, no
 
         // Agent loop
         for turn in 0..self.max_turns {
-            tracing::warn!("  [codemode] turn {}/{} — calling LLM...", turn + 1, self.max_turns);
+            tracing::warn!(
+                "  [codemode] turn {}/{} — calling LLM...",
+                turn + 1,
+                self.max_turns
+            );
             // Call LLM WITHOUT tools - we want code generation, not tool calls
             let request_result = CreateChatCompletionRequestArgs::default()
                 .model(&self.agent_model)
@@ -1170,11 +1239,21 @@ Your final answer must be plain text that directly answers the task question, no
                     if attempt > 0 {
                         let delay = Duration::from_millis(1000 * 2u64.pow(attempt - 1));
                         tokio::time::sleep(delay).await;
-                        tracing::warn!("  [codemode] retrying LLM call (attempt {}/3)...", attempt + 1);
+                        tracing::warn!(
+                            "  [codemode] retrying LLM call (attempt {}/3)...",
+                            attempt + 1
+                        );
                     }
-                    match self.llm_client.chat().create(request.clone()).await {
-                        Ok(r) => {
-                            let has_content = r.choices.first()
+                    match tokio::time::timeout(
+                        Duration::from_secs(RLM_LLM_CALL_TIMEOUT_SECS),
+                        self.chat_create(request.clone()),
+                    )
+                    .await
+                    {
+                        Ok(Ok(r)) => {
+                            let has_content = r
+                                .choices
+                                .first()
                                 .and_then(|c| c.message.content.as_ref())
                                 .map(|s| !s.is_empty())
                                 .unwrap_or(false);
@@ -1182,11 +1261,19 @@ Your final answer must be plain text that directly answers the task question, no
                                 resp = Some(r);
                                 break;
                             }
-                            tracing::warn!("  [codemode] empty completion on attempt {}", attempt + 1);
+                            tracing::warn!(
+                                "  [codemode] empty completion on attempt {}",
+                                attempt + 1
+                            );
                             resp = Some(r);
                         }
-                        Err(e) => {
+                        Ok(Err(e)) => {
                             last_err = format!("Agent LLM call failed: {e}");
+                            tracing::warn!("  [codemode] {last_err} (attempt {})", attempt + 1);
+                        }
+                        Err(_) => {
+                            last_err =
+                                format!("LLM call timed out after {RLM_LLM_CALL_TIMEOUT_SECS}s");
                             tracing::warn!("  [codemode] {last_err} (attempt {})", attempt + 1);
                         }
                     }
@@ -1253,7 +1340,10 @@ Your final answer must be plain text that directly answers the task question, no
                 content.contains("codemode."),
             );
             // Debug: log the full LLM response
-            tracing::warn!("  [codemode] LLM content:\n{}", &content[..content.len().min(600)]);
+            tracing::warn!(
+                "  [codemode] LLM content:\n{}",
+                &content[..content.len().min(600)]
+            );
 
             // Check if response contains code block
             if let Some(code) = extract_code_block(&content) {
@@ -1355,12 +1445,51 @@ Your final answer must be plain text that directly answers the task question, no
         let start = Instant::now();
         let setup_t = Instant::now();
 
-        // 1. Create budget manager and LM handler for sub-LLM calls
+        // 1. Create RLM infrastructure
         let rlm_config = RlmConfig::default();
         let budget = Arc::new(BudgetManager::new(&rlm_config));
 
         let api_key = std::env::var("EVAL_API_KEY").unwrap_or_default();
-        let base_url = std::env::var("EVAL_BASE_URL").ok().filter(|s| !s.is_empty());
+        let base_url = std::env::var("EVAL_BASE_URL")
+            .ok()
+            .filter(|s| !s.is_empty());
+
+        // Create corpus + router so RLM can bound tool result growth.
+        let temp_dir = match tempfile::TempDir::new() {
+            Ok(d) => d,
+            Err(e) => {
+                return error_result(
+                    task,
+                    "RLM",
+                    start,
+                    &format!("Temp dir creation failed: {e}"),
+                );
+            }
+        };
+        let corpus =
+            match crate::rlm::RlmCorpus::new(temp_dir.path().to_path_buf(), rlm_config.clone())
+                .await
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    return error_result(
+                        task,
+                        "RLM",
+                        start,
+                        &format!("Corpus creation failed: {e}"),
+                    );
+                }
+            };
+        if let Err(e) = corpus.ingest_prompt(&task.prompt).await {
+            return error_result(task, "RLM", start, &format!("Corpus ingest failed: {e}"));
+        }
+        let corpus_arc = Arc::new(RwLock::new(Some(corpus)));
+        let evidence_store = Arc::new(RwLock::new(EvidenceStore::new()));
+        let router = Arc::new(GatewayResultRouter::new(
+            corpus_arc,
+            evidence_store,
+            rlm_config.clone(),
+        ));
 
         let lm_config = LmHandlerConfig {
             root_model: self.agent_model.clone(),
@@ -1368,19 +1497,14 @@ Your final answer must be plain text that directly answers the task question, no
             api_key,
             base_url,
             mcp_client: Some(Arc::clone(&self.mcp_client)),
-            rlm_router: None,
+            rlm_router: Some(Arc::clone(&router)),
             tool_lookup: self.build_tool_lookup_map(),
         };
 
         let lm_handler = match LmHandler::start(lm_config, budget).await {
             Ok(h) => h,
             Err(e) => {
-                return error_result(
-                    task,
-                    "RLM",
-                    start,
-                    &format!("LM handler start failed: {e}"),
-                );
+                return error_result(task, "RLM", start, &format!("LM handler start failed: {e}"));
             }
         };
 
@@ -1409,27 +1533,34 @@ Your final answer must be plain text that directly answers the task question, no
 
         // Inject available tools into the system prompt so the LLM knows what to call
         let tool_list_section = self.format_tool_list_for_prompt();
-        let system_prompt = format!("{}{}", build_rlm_system_prompt(&metadata), tool_list_section);
+        let system_prompt = format!(
+            "{}{}",
+            build_rlm_system_prompt(&metadata),
+            tool_list_section
+        );
         let setup_ms = setup_t.elapsed().as_millis() as u64;
         let mut total_context_tokens: i64 = 0;
         let mut total_llm_tokens: i64 = 0;
         let mut tool_calls = Vec::new();
         let mut last_assistant_content = String::new();
+        let mut last_repl_stdout = String::new();
         let mut llm_time_ms: u64 = 0;
         let mut tool_time_ms: u64 = 0;
         let mut llm_total_calls: u32 = 0;
         let mut llm_input_tokens: u64 = 0;
         let mut llm_output_tokens: u64 = 0;
+        let mut last_stdout_hash: u64 = 0;
+        let mut consecutive_same_output: u32 = 0;
+        let mut consecutive_empty: u32 = 0;
 
         // 5. Build conversation messages
-        let mut messages: Vec<ChatCompletionRequestMessage> = vec![
-            ChatCompletionRequestMessage::System(
+        let mut messages: Vec<ChatCompletionRequestMessage> =
+            vec![ChatCompletionRequestMessage::System(
                 ChatCompletionRequestSystemMessageArgs::default()
                     .content(system_prompt.clone())
                     .build()
                     .unwrap(),
-            ),
-        ];
+            )];
 
         // 6. Iterative REPL loop
         for iteration in 0..self.max_turns {
@@ -1452,12 +1583,7 @@ Your final answer must be plain text that directly answers the task question, no
                 Err(e) => {
                     repl.cleanup().await;
                     lm_handler.stop().await;
-                    return error_result(
-                        task,
-                        "RLM",
-                        start,
-                        &format!("Request build failed: {e}"),
-                    );
+                    return error_result(task, "RLM", start, &format!("Request build failed: {e}"));
                 }
             };
 
@@ -1471,9 +1597,16 @@ Your final answer must be plain text that directly answers the task question, no
                         tokio::time::sleep(delay).await;
                         tracing::warn!("  [rlm] retrying LLM call (attempt {}/3)...", attempt + 1);
                     }
-                    match self.llm_client.chat().create(request.clone()).await {
-                        Ok(r) => {
-                            let has_content = r.choices.first()
+                    match tokio::time::timeout(
+                        Duration::from_secs(RLM_LLM_CALL_TIMEOUT_SECS),
+                        self.chat_create(request.clone()),
+                    )
+                    .await
+                    {
+                        Ok(Ok(r)) => {
+                            let has_content = r
+                                .choices
+                                .first()
                                 .and_then(|c| c.message.content.as_ref())
                                 .map(|s| !s.is_empty())
                                 .unwrap_or(false);
@@ -1484,8 +1617,13 @@ Your final answer must be plain text that directly answers the task question, no
                             tracing::warn!("  [rlm] empty completion on attempt {}", attempt + 1);
                             resp = Some(r);
                         }
-                        Err(e) => {
+                        Ok(Err(e)) => {
                             last_err = format!("LLM call failed: {e}");
+                            tracing::warn!("  [rlm] {last_err} (attempt {})", attempt + 1);
+                        }
+                        Err(_) => {
+                            last_err =
+                                format!("LLM call timed out after {RLM_LLM_CALL_TIMEOUT_SECS}s");
                             tracing::warn!("  [rlm] {last_err} (attempt {})", attempt + 1);
                         }
                     }
@@ -1531,19 +1669,20 @@ Your final answer must be plain text that directly answers the task question, no
 
             // Check for FINAL answer
             if let Some(final_answer) = find_final_answer(&content) {
-                let answer = match final_answer {
-                    FinalAnswer::Direct(text) => text,
-                    FinalAnswer::Variable(name) => {
-                        repl.resolve_var(&name).await.unwrap_or_else(|e| {
-                            format!("Failed to resolve variable '{}': {}", name, e)
-                        })
-                    }
-                };
+                let answer = resolve_final_answer_text(&mut repl, final_answer).await;
+                if answer.trim().is_empty() {
+                    messages.push(ChatCompletionRequestMessage::User(
+                        ChatCompletionRequestUserMessageArgs::default()
+                            .content("Your FINAL(...) was empty. Provide a non-empty final answer based on your computed results. If needed, run one more ```repl block to print the final values, then call FINAL(...) with actual content.".to_string())
+                            .build()
+                            .unwrap(),
+                    ));
+                    continue;
+                }
 
                 let sub_usage = lm_handler.usage().await;
-                let total_llm_tokens_final = total_llm_tokens
-                    + sub_usage.total_input_tokens
-                    + sub_usage.total_output_tokens;
+                let total_llm_tokens_final =
+                    total_llm_tokens + sub_usage.total_input_tokens + sub_usage.total_output_tokens;
                 let sub_input = sub_usage.total_input_tokens as u64;
                 let sub_output = sub_usage.total_output_tokens as u64;
                 repl.cleanup().await;
@@ -1570,31 +1709,20 @@ Your final answer must be plain text that directly answers the task question, no
             // Extract and execute code blocks
             let code_blocks = find_code_blocks(&content);
             if code_blocks.is_empty() && iteration > 0 {
-                // No code blocks and no FINAL — use content as answer
-                let sub_usage = lm_handler.usage().await;
-                let total_llm_tokens_final = total_llm_tokens
-                    + sub_usage.total_input_tokens
-                    + sub_usage.total_output_tokens;
-                let sub_input = sub_usage.total_input_tokens as u64;
-                let sub_output = sub_usage.total_output_tokens as u64;
-                repl.cleanup().await;
-                lm_handler.stop().await;
-                return TaskResult {
-                    task_id: task.task_id.clone(),
-                    final_answer: content,
-                    tool_calls,
-                    mode_name: "RLM".to_string(),
-                    context_tokens: total_context_tokens,
-                    total_llm_tokens: total_llm_tokens_final,
-                    latency_ms: start.elapsed().as_millis() as u64,
-                    llm_time_ms,
-                    tool_time_ms,
-                    setup_ms,
-                    llm_total_calls,
-                    llm_input_tokens: llm_input_tokens + sub_input,
-                    llm_output_tokens: llm_output_tokens + sub_output,
-                    error: None,
-                };
+                // No code blocks and no FINAL — if content is substantive, use it and break
+                // to let force-final run; otherwise nudge the model to keep going
+                if content.len() > 80 {
+                    last_assistant_content = content;
+                    break;
+                }
+                // Ask the model to print its stored variables and wrap with FINAL()
+                messages.push(ChatCompletionRequestMessage::User(
+                    ChatCompletionRequestUserMessageArgs::default()
+                        .content("Your response had no code block and no FINAL(). You must either write a ```repl code block to continue working, or wrap your final answer with FINAL(your answer). If you have already computed the answer in a variable, write a ```repl block with print(your_variable) and then use FINAL().".to_string())
+                        .build()
+                        .unwrap(),
+                ));
+                continue;
             }
 
             // Execute each code block
@@ -1611,6 +1739,30 @@ Your final answer must be plain text that directly answers the task question, no
                 };
                 let tool_latency = tool_t.elapsed().as_millis() as u64;
                 tool_time_ms += tool_latency;
+
+                if !result.stdout.trim().is_empty() {
+                    last_repl_stdout = result.stdout.clone();
+                }
+
+                // Track consecutive identical output (Fix 5)
+                {
+                    let mut hasher = std::hash::DefaultHasher::new();
+                    result.stdout.hash(&mut hasher);
+                    let stdout_hash = hasher.finish();
+                    if stdout_hash == last_stdout_hash && !result.stdout.trim().is_empty() {
+                        consecutive_same_output += 1;
+                    } else {
+                        consecutive_same_output = 0;
+                        last_stdout_hash = stdout_hash;
+                    }
+                }
+
+                // Track consecutive empty output (Fix 6)
+                if result.stdout.trim().is_empty() && result.stderr.trim().is_empty() {
+                    consecutive_empty += 1;
+                } else {
+                    consecutive_empty = 0;
+                }
 
                 tool_calls.push(ToolCallRecord {
                     name: "repl_execute".to_string(),
@@ -1637,22 +1789,106 @@ Your final answer must be plain text that directly answers the task question, no
                         .unwrap(),
                 ));
             }
+
+            // Fix 5: Break if same output repeats too many times
+            if consecutive_same_output >= 3 {
+                tracing::warn!(
+                    "  [rlm] identical output {} consecutive times, breaking to force-final",
+                    consecutive_same_output + 1
+                );
+                break;
+            }
+
+            // Fix 6: Nudge if too many consecutive empty outputs
+            if consecutive_empty >= 5 {
+                messages.push(ChatCompletionRequestMessage::User(
+                    ChatCompletionRequestUserMessageArgs::default()
+                        .content("WARNING: Your last 5 code executions produced no output. Your code may have silent errors. Try adding print() statements to debug, or simplify your approach. Check that variable names are correct and that execute_tool() results are being captured properly.".to_string())
+                        .build()
+                        .unwrap(),
+                ));
+                consecutive_empty = 0;
+            }
+
+            // Fix 4: Detect final_answer variable assignment
+            if code_blocks
+                .iter()
+                .any(|c| c.contains("final_answer =") || c.contains("final_answer="))
+            {
+                messages.push(ChatCompletionRequestMessage::User(
+                    ChatCompletionRequestUserMessageArgs::default()
+                        .content("Note: You assigned to a Python variable `final_answer` but did NOT call FINAL(). To submit your answer, write FINAL(your_answer) as plain text (outside a code block), or use FINAL_VAR(final_answer) to return the variable's value.".to_string())
+                        .build()
+                        .unwrap(),
+                ));
+            }
         }
 
-        // Max iterations reached — the last iteration prompt already forced
-        // FINAL(...), so use the last assistant response as the answer.
+        // Max iterations reached — force one more LLM call for final answer
+        {
+            let force_prompt = "You have reached the maximum number of iterations. Based on ALL the data and analysis from your previous steps, provide your final answer NOW. Use FINAL(your answer) to wrap it.".to_string();
+            messages.push(ChatCompletionRequestMessage::User(
+                ChatCompletionRequestUserMessageArgs::default()
+                    .content(force_prompt)
+                    .build()
+                    .unwrap(),
+            ));
+
+            if let Ok(request) = CreateChatCompletionRequestArgs::default()
+                .model(&self.agent_model)
+                .messages(messages.clone())
+                .build()
+            {
+                let llm_t = Instant::now();
+                if let Ok(response) = self.chat_create(request).await {
+                    llm_time_ms += llm_t.elapsed().as_millis() as u64;
+                    llm_total_calls += 1;
+                    if let Some(usage) = &response.usage {
+                        total_context_tokens = usage.total_tokens as i64;
+                        total_llm_tokens += usage.total_tokens as i64;
+                        llm_input_tokens += usage.prompt_tokens as u64;
+                        llm_output_tokens += usage.completion_tokens as u64;
+                    }
+                    if let Some(content) = response
+                        .choices
+                        .first()
+                        .and_then(|c| c.message.content.clone())
+                    {
+                        if !content.trim().is_empty() {
+                            last_assistant_content = content;
+                        }
+                    }
+                }
+            }
+        }
+
+        // If force-final produced a useful answer, prefer it over stale REPL stdout.
+        if !last_assistant_content.trim().is_empty() {
+            last_repl_stdout.clear();
+        }
+
         let sub_usage = lm_handler.usage().await;
-        let total_llm_tokens_final = total_llm_tokens
-            + sub_usage.total_input_tokens
-            + sub_usage.total_output_tokens;
+        let total_llm_tokens_final =
+            total_llm_tokens + sub_usage.total_input_tokens + sub_usage.total_output_tokens;
         let sub_input = sub_usage.total_input_tokens as u64;
         let sub_output = sub_usage.total_output_tokens as u64;
         repl.cleanup().await;
         lm_handler.stop().await;
 
+        let final_answer = if !last_repl_stdout.trim().is_empty() {
+            last_repl_stdout
+        } else {
+            last_assistant_content
+        };
+        let final_error = if final_answer.trim().is_empty() {
+            Some("No final answer produced (empty completion)".to_string())
+        } else {
+            None
+        };
+
         TaskResult {
             task_id: task.task_id.clone(),
-            final_answer: last_assistant_content,
+            final_answer,
             tool_calls,
             mode_name: "RLM".to_string(),
             context_tokens: total_context_tokens,
@@ -1664,7 +1900,7 @@ Your final answer must be plain text that directly answers the task question, no
             llm_total_calls,
             llm_input_tokens: llm_input_tokens + sub_input,
             llm_output_tokens: llm_output_tokens + sub_output,
-            error: None,
+            error: final_error,
         }
     }
 
@@ -1684,7 +1920,9 @@ Your final answer must be plain text that directly answers the task question, no
         let budget = Arc::new(BudgetManager::new(&rlm_config));
 
         let api_key = std::env::var("EVAL_API_KEY").unwrap_or_default();
-        let base_url = std::env::var("EVAL_BASE_URL").ok().filter(|s| !s.is_empty());
+        let base_url = std::env::var("EVAL_BASE_URL")
+            .ok()
+            .filter(|s| !s.is_empty());
 
         // Create corpus + router for large result storage
         let temp_dir = match tempfile::TempDir::new() {
@@ -1698,22 +1936,20 @@ Your final answer must be plain text that directly answers the task question, no
                 );
             }
         };
-        let corpus = match crate::rlm::RlmCorpus::new(
-            temp_dir.path().to_path_buf(),
-            rlm_config.clone(),
-        )
-        .await
-        {
-            Ok(c) => c,
-            Err(e) => {
-                return error_result(
-                    task,
-                    "CodeMode+RLM",
-                    start,
-                    &format!("Corpus creation failed: {e}"),
-                );
-            }
-        };
+        let corpus =
+            match crate::rlm::RlmCorpus::new(temp_dir.path().to_path_buf(), rlm_config.clone())
+                .await
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    return error_result(
+                        task,
+                        "CodeMode+RLM",
+                        start,
+                        &format!("Corpus creation failed: {e}"),
+                    );
+                }
+            };
         if let Err(e) = corpus.ingest_prompt(&task.prompt).await {
             return error_result(
                 task,
@@ -1788,7 +2024,11 @@ Your final answer must be plain text that directly answers the task question, no
         };
 
         let tool_list_section = self.format_tool_list_for_codemode_prompt();
-        let system_prompt = format!("{}{}", build_rlm_codemode_system_prompt(&metadata), tool_list_section);
+        let system_prompt = format!(
+            "{}{}",
+            build_rlm_codemode_system_prompt(&metadata),
+            tool_list_section
+        );
         let setup_ms = setup_t.elapsed().as_millis() as u64;
         let mut total_context_tokens: i64 = 0;
         let mut total_llm_tokens: i64 = 0;
@@ -1801,14 +2041,17 @@ Your final answer must be plain text that directly answers the task question, no
         let mut llm_input_tokens: u64 = 0;
         let mut llm_output_tokens: u64 = 0;
 
-        let mut messages: Vec<ChatCompletionRequestMessage> = vec![
-            ChatCompletionRequestMessage::System(
+        let mut messages: Vec<ChatCompletionRequestMessage> =
+            vec![ChatCompletionRequestMessage::System(
                 ChatCompletionRequestSystemMessageArgs::default()
                     .content(system_prompt.clone())
                     .build()
                     .unwrap(),
-            ),
-        ];
+            )];
+
+        let mut last_stdout_hash: u64 = 0;
+        let mut consecutive_same_output: u32 = 0;
+        let mut consecutive_empty: u32 = 0;
 
         // 6. Iterative REPL loop (same structure as run_task_rlm)
         for iteration in 0..self.max_turns {
@@ -1847,11 +2090,21 @@ Your final answer must be plain text that directly answers the task question, no
                     if attempt > 0 {
                         let delay = Duration::from_millis(1000 * 2u64.pow(attempt - 1));
                         tokio::time::sleep(delay).await;
-                        tracing::warn!("  [rlm-code] retrying LLM call (attempt {}/3)...", attempt + 1);
+                        tracing::warn!(
+                            "  [rlm-code] retrying LLM call (attempt {}/3)...",
+                            attempt + 1
+                        );
                     }
-                    match self.llm_client.chat().create(request.clone()).await {
-                        Ok(r) => {
-                            let has_content = r.choices.first()
+                    match tokio::time::timeout(
+                        Duration::from_secs(RLM_LLM_CALL_TIMEOUT_SECS),
+                        self.chat_create(request.clone()),
+                    )
+                    .await
+                    {
+                        Ok(Ok(r)) => {
+                            let has_content = r
+                                .choices
+                                .first()
                                 .and_then(|c| c.message.content.as_ref())
                                 .map(|s| !s.is_empty())
                                 .unwrap_or(false);
@@ -1859,11 +2112,19 @@ Your final answer must be plain text that directly answers the task question, no
                                 resp = Some(r);
                                 break;
                             }
-                            tracing::warn!("  [rlm-code] empty completion on attempt {}", attempt + 1);
+                            tracing::warn!(
+                                "  [rlm-code] empty completion on attempt {}",
+                                attempt + 1
+                            );
                             resp = Some(r);
                         }
-                        Err(e) => {
+                        Ok(Err(e)) => {
                             last_err = format!("LLM call failed: {e}");
+                            tracing::warn!("  [rlm-code] {last_err} (attempt {})", attempt + 1);
+                        }
+                        Err(_) => {
+                            last_err =
+                                format!("LLM call timed out after {RLM_LLM_CALL_TIMEOUT_SECS}s");
                             tracing::warn!("  [rlm-code] {last_err} (attempt {})", attempt + 1);
                         }
                     }
@@ -1908,19 +2169,20 @@ Your final answer must be plain text that directly answers the task question, no
 
             // Check for FINAL answer
             if let Some(final_answer) = find_final_answer(&content) {
-                let answer = match final_answer {
-                    FinalAnswer::Direct(text) => text,
-                    FinalAnswer::Variable(name) => {
-                        repl.resolve_var(&name).await.unwrap_or_else(|e| {
-                            format!("Failed to resolve variable '{}': {}", name, e)
-                        })
-                    }
-                };
+                let answer = resolve_final_answer_text(&mut repl, final_answer).await;
+                if answer.trim().is_empty() {
+                    messages.push(ChatCompletionRequestMessage::User(
+                        ChatCompletionRequestUserMessageArgs::default()
+                            .content("Your FINAL(...) was empty. Provide a non-empty final answer based on your computed results. If needed, run one more ```repl block to print the final values, then call FINAL(...) with actual content.".to_string())
+                            .build()
+                            .unwrap(),
+                    ));
+                    continue;
+                }
 
                 let sub_usage = lm_handler.usage().await;
-                let total_llm_tokens_final = total_llm_tokens
-                    + sub_usage.total_input_tokens
-                    + sub_usage.total_output_tokens;
+                let total_llm_tokens_final =
+                    total_llm_tokens + sub_usage.total_input_tokens + sub_usage.total_output_tokens;
                 let sub_input = sub_usage.total_input_tokens as u64;
                 let sub_output = sub_usage.total_output_tokens as u64;
                 repl.cleanup().await;
@@ -1947,30 +2209,19 @@ Your final answer must be plain text that directly answers the task question, no
             // Extract and execute code blocks
             let code_blocks = find_code_blocks(&content);
             if code_blocks.is_empty() && iteration > 0 {
-                let sub_usage = lm_handler.usage().await;
-                let total_llm_tokens_final = total_llm_tokens
-                    + sub_usage.total_input_tokens
-                    + sub_usage.total_output_tokens;
-                let sub_input = sub_usage.total_input_tokens as u64;
-                let sub_output = sub_usage.total_output_tokens as u64;
-                repl.cleanup().await;
-                lm_handler.stop().await;
-                return TaskResult {
-                    task_id: task.task_id.clone(),
-                    final_answer: content,
-                    tool_calls,
-                    mode_name: "CodeMode+RLM".to_string(),
-                    context_tokens: total_context_tokens,
-                    total_llm_tokens: total_llm_tokens_final,
-                    latency_ms: start.elapsed().as_millis() as u64,
-                    llm_time_ms,
-                    tool_time_ms,
-                    setup_ms,
-                    llm_total_calls,
-                    llm_input_tokens: llm_input_tokens + sub_input,
-                    llm_output_tokens: llm_output_tokens + sub_output,
-                    error: None,
-                };
+                // No code blocks and no FINAL — if content is substantive, use it and break
+                // to let force-final run; otherwise nudge the model to keep going
+                if content.len() > 80 {
+                    last_assistant_content = content;
+                    break;
+                }
+                messages.push(ChatCompletionRequestMessage::User(
+                    ChatCompletionRequestUserMessageArgs::default()
+                        .content("Your response had no code block and no FINAL(). You must either write a ```repl code block to continue working, or wrap your final answer with FINAL(your answer). If you have already computed the answer in a variable, write a ```repl block with print(your_variable) and then use FINAL().".to_string())
+                        .build()
+                        .unwrap(),
+                ));
+                continue;
             }
 
             for code in &code_blocks {
@@ -1990,6 +2241,26 @@ Your final answer must be plain text that directly answers the task question, no
                 // Track last non-empty REPL stdout for fallback answer
                 if !result.stdout.trim().is_empty() {
                     last_repl_stdout = result.stdout.clone();
+                }
+
+                // Track consecutive identical output (Fix 5)
+                {
+                    let mut hasher = std::hash::DefaultHasher::new();
+                    result.stdout.hash(&mut hasher);
+                    let stdout_hash = hasher.finish();
+                    if stdout_hash == last_stdout_hash && !result.stdout.trim().is_empty() {
+                        consecutive_same_output += 1;
+                    } else {
+                        consecutive_same_output = 0;
+                        last_stdout_hash = stdout_hash;
+                    }
+                }
+
+                // Track consecutive empty output (Fix 6)
+                if result.stdout.trim().is_empty() && result.stderr.trim().is_empty() {
+                    consecutive_empty += 1;
+                } else {
+                    consecutive_empty = 0;
                 }
 
                 tool_calls.push(ToolCallRecord {
@@ -2016,15 +2287,87 @@ Your final answer must be plain text that directly answers the task question, no
                         .unwrap(),
                 ));
             }
+
+            // Fix 5: Break if same output repeats too many times
+            if consecutive_same_output >= 3 {
+                tracing::warn!(
+                    "  [rlm-code] identical output {} consecutive times, breaking to force-final",
+                    consecutive_same_output + 1
+                );
+                break;
+            }
+
+            // Fix 6: Nudge if too many consecutive empty outputs
+            if consecutive_empty >= 5 {
+                messages.push(ChatCompletionRequestMessage::User(
+                    ChatCompletionRequestUserMessageArgs::default()
+                        .content("WARNING: Your last 5 code executions produced no output. Your code may have silent errors. Try adding print() statements to debug, or simplify your approach. Check that variable names are correct and that execute_tool() results are being captured properly.".to_string())
+                        .build()
+                        .unwrap(),
+                ));
+                consecutive_empty = 0;
+            }
+
+            // Fix 4: Detect final_answer variable assignment
+            if code_blocks
+                .iter()
+                .any(|c| c.contains("final_answer =") || c.contains("final_answer="))
+            {
+                messages.push(ChatCompletionRequestMessage::User(
+                    ChatCompletionRequestUserMessageArgs::default()
+                        .content("Note: You assigned to a Python variable `final_answer` but did NOT call FINAL(). To submit your answer, write FINAL(your_answer) as plain text (outside a code block), or use FINAL_VAR(final_answer) to return the variable's value.".to_string())
+                        .build()
+                        .unwrap(),
+                ));
+            }
         }
 
-        // Max iterations reached without FINAL(). Prefer last REPL stdout
-        // (the model likely printed its answer) over last_assistant_content
-        // (which may just be code blocks).
+        // Max iterations reached — force one more LLM call for final answer
+        {
+            let force_prompt = "You have reached the maximum number of iterations. Based on ALL the data and analysis from your previous steps, provide your final answer NOW. Use FINAL(your answer) to wrap it.".to_string();
+            messages.push(ChatCompletionRequestMessage::User(
+                ChatCompletionRequestUserMessageArgs::default()
+                    .content(force_prompt)
+                    .build()
+                    .unwrap(),
+            ));
+
+            if let Ok(request) = CreateChatCompletionRequestArgs::default()
+                .model(&self.agent_model)
+                .messages(messages.clone())
+                .build()
+            {
+                let llm_t = Instant::now();
+                if let Ok(response) = self.chat_create(request).await {
+                    llm_time_ms += llm_t.elapsed().as_millis() as u64;
+                    llm_total_calls += 1;
+                    if let Some(usage) = &response.usage {
+                        total_context_tokens = usage.total_tokens as i64;
+                        total_llm_tokens += usage.total_tokens as i64;
+                        llm_input_tokens += usage.prompt_tokens as u64;
+                        llm_output_tokens += usage.completion_tokens as u64;
+                    }
+                    if let Some(content) = response
+                        .choices
+                        .first()
+                        .and_then(|c| c.message.content.clone())
+                    {
+                        if !content.trim().is_empty() {
+                            last_assistant_content = content;
+                        }
+                    }
+                }
+            }
+        }
+
+        // If force-final produced a useful answer, prefer it over stale REPL stdout
+        if !last_assistant_content.trim().is_empty() {
+            last_repl_stdout.clear();
+        }
+
         let sub_usage = lm_handler.usage().await;
-        let total_llm_tokens_final = total_llm_tokens
-            + sub_usage.total_input_tokens
-            + sub_usage.total_output_tokens;
+        let total_llm_tokens_final =
+            total_llm_tokens + sub_usage.total_input_tokens + sub_usage.total_output_tokens;
         let sub_input = sub_usage.total_input_tokens as u64;
         let sub_output = sub_usage.total_output_tokens as u64;
         repl.cleanup().await;
@@ -2049,6 +2392,521 @@ Your final answer must be plain text that directly answers the task question, no
             llm_input_tokens: llm_input_tokens + sub_input,
             llm_output_tokens: llm_output_tokens + sub_output,
             error: None,
+        }
+    }
+
+    /// RLM+Native mode: Python REPL with native tool wrappers and field projection.
+    ///
+    /// Combines RLM's iterative REPL with CodeMode's token efficiency by exposing
+    /// Gateway tools as `tools.Server.method(fields=[...])` Python methods. The LLM
+    /// stays in Python the entire time — no TypeScript embedding.
+    pub async fn run_task_rlm_native(&self, task: &McpAtlasTask) -> TaskResult {
+        let start = Instant::now();
+        let setup_t = Instant::now();
+
+        // 1. Create RLM infrastructure (same as RlmCodeMode)
+        let rlm_config = RlmConfig::default();
+        let budget = Arc::new(BudgetManager::new(&rlm_config));
+
+        let api_key = std::env::var("EVAL_API_KEY").unwrap_or_default();
+        let base_url = std::env::var("EVAL_BASE_URL")
+            .ok()
+            .filter(|s| !s.is_empty());
+
+        // Create corpus + router so native mode shares the same bounded-runtime
+        // guarantees as generic RLM.
+        let temp_dir = match tempfile::TempDir::new() {
+            Ok(d) => d,
+            Err(e) => {
+                return error_result(
+                    task,
+                    "RLM+Native",
+                    start,
+                    &format!("Temp dir creation failed: {e}"),
+                );
+            }
+        };
+        let corpus =
+            match crate::rlm::RlmCorpus::new(temp_dir.path().to_path_buf(), rlm_config.clone())
+                .await
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    return error_result(
+                        task,
+                        "RLM+Native",
+                        start,
+                        &format!("Corpus creation failed: {e}"),
+                    );
+                }
+            };
+        if let Err(e) = corpus.ingest_prompt(&task.prompt).await {
+            return error_result(
+                task,
+                "RLM+Native",
+                start,
+                &format!("Corpus ingest failed: {e}"),
+            );
+        }
+        let corpus_arc = Arc::new(RwLock::new(Some(corpus)));
+        let evidence_store = Arc::new(RwLock::new(EvidenceStore::new()));
+        let router = Arc::new(GatewayResultRouter::new(
+            corpus_arc,
+            evidence_store,
+            rlm_config.clone(),
+        ));
+
+        // 2. Create LM handler with Gateway proxy and RLM router.
+        let lm_config = LmHandlerConfig {
+            root_model: self.agent_model.clone(),
+            sub_model: None,
+            api_key,
+            base_url,
+            mcp_client: Some(Arc::clone(&self.mcp_client)),
+            rlm_router: Some(Arc::clone(&router)),
+            tool_lookup: self.build_tool_lookup_map(),
+        };
+
+        let lm_handler = match LmHandler::start(lm_config, budget).await {
+            Ok(h) => h,
+            Err(e) => {
+                return error_result(
+                    task,
+                    "RLM+Native",
+                    start,
+                    &format!("LM handler start failed: {e}"),
+                );
+            }
+        };
+
+        // 3. Create REPL
+        let mut repl = match LocalRepl::new(lm_handler.port()).await {
+            Ok(r) => r,
+            Err(e) => {
+                lm_handler.stop().await;
+                return error_result(
+                    task,
+                    "RLM+Native",
+                    start,
+                    &format!("REPL start failed: {e}"),
+                );
+            }
+        };
+
+        // 4. Generate and inject Python tool wrappers into REPL
+        let wrapper_code =
+            super::pythonic_tools::generate_pythonic_tool_wrappers(&self.gateway_tools);
+        if let Err(e) = repl.execute(&wrapper_code).await {
+            repl.cleanup().await;
+            lm_handler.stop().await;
+            return error_result(
+                task,
+                "RLM+Native",
+                start,
+                &format!("Tool wrapper injection failed: {e}"),
+            );
+        }
+
+        // 5. Inject context
+        if let Err(e) = repl.set_context(&task.prompt).await {
+            repl.cleanup().await;
+            lm_handler.stop().await;
+            return error_result(
+                task,
+                "RLM+Native",
+                start,
+                &format!("Set context failed: {e}"),
+            );
+        }
+
+        // 6. Build system prompt with tool list
+        let metadata = ContextMetadata {
+            context_type: "str".to_string(),
+            context_total_length: task.prompt.len(),
+            context_lengths: vec![task.prompt.len()],
+        };
+
+        let tool_list_section =
+            super::pythonic_tools::format_tool_list_for_native_prompt(&self.gateway_tools);
+        let tools_dir_summary =
+            super::pythonic_tools::generate_tools_dir_summary(&self.gateway_tools);
+        let system_prompt = format!(
+            "{}{}{}",
+            build_rlm_native_system_prompt(&metadata),
+            tool_list_section,
+            tools_dir_summary
+        );
+        let setup_ms = setup_t.elapsed().as_millis() as u64;
+        let mut total_context_tokens: i64 = 0;
+        let mut total_llm_tokens: i64 = 0;
+        let mut tool_calls = Vec::new();
+        let mut last_assistant_content = String::new();
+        let mut last_repl_stdout = String::new();
+        let mut llm_time_ms: u64 = 0;
+        let mut tool_time_ms: u64 = 0;
+        let mut llm_total_calls: u32 = 0;
+        let mut llm_input_tokens: u64 = 0;
+        let mut llm_output_tokens: u64 = 0;
+
+        let mut messages: Vec<ChatCompletionRequestMessage> =
+            vec![ChatCompletionRequestMessage::System(
+                ChatCompletionRequestSystemMessageArgs::default()
+                    .content(system_prompt.clone())
+                    .build()
+                    .unwrap(),
+            )];
+
+        let mut last_stdout_hash: u64 = 0;
+        let mut consecutive_same_output: u32 = 0;
+        let mut consecutive_empty: u32 = 0;
+
+        // 7. Iterative REPL loop (same structure as RlmCodeMode)
+        for iteration in 0..self.max_turns {
+            let user_prompt = build_rlm_user_prompt(iteration, self.max_turns, &task.prompt);
+            messages.push(ChatCompletionRequestMessage::User(
+                ChatCompletionRequestUserMessageArgs::default()
+                    .content(user_prompt.clone())
+                    .build()
+                    .unwrap(),
+            ));
+
+            // Call LLM (NO tools — free-form text with ```repl blocks)
+            let request = match CreateChatCompletionRequestArgs::default()
+                .model(&self.agent_model)
+                .messages(messages.clone())
+                .build()
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    repl.cleanup().await;
+                    lm_handler.stop().await;
+                    return error_result(
+                        task,
+                        "RLM+Native",
+                        start,
+                        &format!("Request build failed: {e}"),
+                    );
+                }
+            };
+
+            let llm_t = Instant::now();
+            let response = {
+                let mut last_err = String::new();
+                let mut resp = None;
+                for attempt in 0..3u32 {
+                    if attempt > 0 {
+                        let delay = Duration::from_millis(1000 * 2u64.pow(attempt - 1));
+                        tokio::time::sleep(delay).await;
+                        tracing::warn!(
+                            "  [rlm-native] retrying LLM call (attempt {}/3)...",
+                            attempt + 1
+                        );
+                    }
+                    match tokio::time::timeout(
+                        Duration::from_secs(RLM_LLM_CALL_TIMEOUT_SECS),
+                        self.chat_create(request.clone()),
+                    )
+                    .await
+                    {
+                        Ok(Ok(r)) => {
+                            let has_content = r
+                                .choices
+                                .first()
+                                .and_then(|c| c.message.content.as_ref())
+                                .map(|s| !s.is_empty())
+                                .unwrap_or(false);
+                            if has_content || attempt == 2 {
+                                resp = Some(r);
+                                break;
+                            }
+                            tracing::warn!(
+                                "  [rlm-native] empty completion on attempt {}",
+                                attempt + 1
+                            );
+                            resp = Some(r);
+                        }
+                        Ok(Err(e)) => {
+                            last_err = format!("LLM call failed: {e}");
+                            tracing::warn!("  [rlm-native] {last_err} (attempt {})", attempt + 1);
+                        }
+                        Err(_) => {
+                            last_err =
+                                format!("LLM call timed out after {RLM_LLM_CALL_TIMEOUT_SECS}s");
+                            tracing::warn!("  [rlm-native] {last_err} (attempt {})", attempt + 1);
+                        }
+                    }
+                }
+                match resp {
+                    Some(r) => r,
+                    None => {
+                        repl.cleanup().await;
+                        lm_handler.stop().await;
+                        return error_result(task, "RLM+Native", start, &last_err);
+                    }
+                }
+            };
+            llm_time_ms += llm_t.elapsed().as_millis() as u64;
+            llm_total_calls += 1;
+
+            if let Some(usage) = &response.usage {
+                total_context_tokens = usage.total_tokens as i64;
+                total_llm_tokens += usage.total_tokens as i64;
+                llm_input_tokens += usage.prompt_tokens as u64;
+                llm_output_tokens += usage.completion_tokens as u64;
+            }
+
+            let content = response
+                .choices
+                .first()
+                .and_then(|c| c.message.content.clone())
+                .unwrap_or_default();
+            last_assistant_content = content.clone();
+
+            if content.is_empty() {
+                tracing::warn!(
+                    "  [rlm-native] empty LLM response on iteration {}",
+                    iteration
+                );
+                continue;
+            }
+
+            messages.push(ChatCompletionRequestMessage::Assistant(
+                ChatCompletionRequestAssistantMessageArgs::default()
+                    .content(content.clone())
+                    .build()
+                    .unwrap(),
+            ));
+
+            // Check for FINAL answer
+            if let Some(final_answer) = find_final_answer(&content) {
+                let answer = resolve_final_answer_text(&mut repl, final_answer).await;
+                if answer.trim().is_empty() {
+                    messages.push(ChatCompletionRequestMessage::User(
+                        ChatCompletionRequestUserMessageArgs::default()
+                            .content("Your FINAL(...) was empty. Provide a non-empty final answer based on your computed results. If needed, run one more ```repl block to print the final values, then call FINAL(...) with actual content.".to_string())
+                            .build()
+                            .unwrap(),
+                    ));
+                    continue;
+                }
+
+                let sub_usage = lm_handler.usage().await;
+                let total_llm_tokens_final =
+                    total_llm_tokens + sub_usage.total_input_tokens + sub_usage.total_output_tokens;
+                let sub_input = sub_usage.total_input_tokens as u64;
+                let sub_output = sub_usage.total_output_tokens as u64;
+                repl.cleanup().await;
+                lm_handler.stop().await;
+
+                return TaskResult {
+                    task_id: task.task_id.clone(),
+                    final_answer: answer,
+                    tool_calls,
+                    mode_name: "RLM+Native".to_string(),
+                    context_tokens: total_context_tokens,
+                    total_llm_tokens: total_llm_tokens_final,
+                    latency_ms: start.elapsed().as_millis() as u64,
+                    llm_time_ms,
+                    tool_time_ms,
+                    setup_ms,
+                    llm_total_calls,
+                    llm_input_tokens: llm_input_tokens + sub_input,
+                    llm_output_tokens: llm_output_tokens + sub_output,
+                    error: None,
+                };
+            }
+
+            // Extract and execute code blocks
+            let code_blocks = find_code_blocks(&content);
+            if code_blocks.is_empty() && iteration > 0 {
+                if content.len() > 80 {
+                    last_assistant_content = content;
+                    break;
+                }
+                messages.push(ChatCompletionRequestMessage::User(
+                    ChatCompletionRequestUserMessageArgs::default()
+                        .content("Your response had no code block and no FINAL(). You must either write a ```repl code block to continue working, or wrap your final answer with FINAL(your answer). If you have already computed the answer in a variable, write a ```repl block with print(your_variable) and then use FINAL().".to_string())
+                        .build()
+                        .unwrap(),
+                ));
+                continue;
+            }
+
+            for code in &code_blocks {
+                let tool_t = Instant::now();
+                let result = match repl.execute(code).await {
+                    Ok(r) => r,
+                    Err(e) => ReplResult {
+                        stdout: String::new(),
+                        stderr: format!("REPL execution error: {e}"),
+                        locals_summary: String::new(),
+                        execution_time_ms: 0,
+                    },
+                };
+                let tool_latency = tool_t.elapsed().as_millis() as u64;
+                tool_time_ms += tool_latency;
+
+                if !result.stdout.trim().is_empty() {
+                    last_repl_stdout = result.stdout.clone();
+                }
+
+                // Track consecutive identical output (Fix 5)
+                {
+                    let mut hasher = std::hash::DefaultHasher::new();
+                    result.stdout.hash(&mut hasher);
+                    let stdout_hash = hasher.finish();
+                    if stdout_hash == last_stdout_hash && !result.stdout.trim().is_empty() {
+                        consecutive_same_output += 1;
+                    } else {
+                        consecutive_same_output = 0;
+                        last_stdout_hash = stdout_hash;
+                    }
+                }
+
+                // Track consecutive empty output (Fix 6)
+                if result.stdout.trim().is_empty() && result.stderr.trim().is_empty() {
+                    consecutive_empty += 1;
+                } else {
+                    consecutive_empty = 0;
+                }
+
+                tool_calls.push(ToolCallRecord {
+                    name: "repl_execute".to_string(),
+                    arguments: json!({ "code": code }),
+                    result: result.stdout.clone(),
+                    result_tokens: estimate_tokens(&result.stdout),
+                    stored_in_corpus: false,
+                    latency_ms: tool_latency,
+                });
+
+                let feedback = format_repl_feedback(
+                    code,
+                    &result.stdout,
+                    &result.stderr,
+                    &result.locals_summary,
+                    20_000,
+                );
+
+                messages.push(ChatCompletionRequestMessage::User(
+                    ChatCompletionRequestUserMessageArgs::default()
+                        .content(feedback.clone())
+                        .build()
+                        .unwrap(),
+                ));
+            }
+
+            // Fix 5: Break if same output repeats too many times
+            if consecutive_same_output >= 3 {
+                tracing::warn!(
+                    "  [rlm-native] identical output {} consecutive times, breaking to force-final",
+                    consecutive_same_output + 1
+                );
+                break;
+            }
+
+            // Fix 6: Nudge if too many consecutive empty outputs
+            if consecutive_empty >= 5 {
+                messages.push(ChatCompletionRequestMessage::User(
+                    ChatCompletionRequestUserMessageArgs::default()
+                        .content("WARNING: Your last 5 code executions produced no output. Your code may have silent errors. Try adding print() statements to debug, or simplify your approach. Check that variable names are correct and that execute_tool() results are being captured properly.".to_string())
+                        .build()
+                        .unwrap(),
+                ));
+                consecutive_empty = 0;
+            }
+
+            // Fix 4: Detect final_answer variable assignment
+            if code_blocks
+                .iter()
+                .any(|c| c.contains("final_answer =") || c.contains("final_answer="))
+            {
+                messages.push(ChatCompletionRequestMessage::User(
+                    ChatCompletionRequestUserMessageArgs::default()
+                        .content("Note: You assigned to a Python variable `final_answer` but did NOT call FINAL(). To submit your answer, write FINAL(your_answer) as plain text (outside a code block), or use FINAL_VAR(final_answer) to return the variable's value.".to_string())
+                        .build()
+                        .unwrap(),
+                ));
+            }
+        }
+
+        // Max iterations reached — force one more LLM call for final answer
+        {
+            let force_prompt = "You have reached the maximum number of iterations. Based on ALL the data and analysis from your previous steps, provide your final answer NOW. Use FINAL(your answer) to wrap it.".to_string();
+            messages.push(ChatCompletionRequestMessage::User(
+                ChatCompletionRequestUserMessageArgs::default()
+                    .content(force_prompt)
+                    .build()
+                    .unwrap(),
+            ));
+
+            if let Ok(request) = CreateChatCompletionRequestArgs::default()
+                .model(&self.agent_model)
+                .messages(messages.clone())
+                .build()
+            {
+                let llm_t = Instant::now();
+                if let Ok(response) = self.chat_create(request).await {
+                    llm_time_ms += llm_t.elapsed().as_millis() as u64;
+                    llm_total_calls += 1;
+                    if let Some(usage) = &response.usage {
+                        total_context_tokens = usage.total_tokens as i64;
+                        total_llm_tokens += usage.total_tokens as i64;
+                        llm_input_tokens += usage.prompt_tokens as u64;
+                        llm_output_tokens += usage.completion_tokens as u64;
+                    }
+                    if let Some(content) = response
+                        .choices
+                        .first()
+                        .and_then(|c| c.message.content.clone())
+                    {
+                        if !content.trim().is_empty() {
+                            last_assistant_content = content;
+                        }
+                    }
+                }
+            }
+        }
+
+        // If force-final produced a useful answer, prefer it over stale REPL stdout
+        if !last_assistant_content.trim().is_empty() {
+            last_repl_stdout.clear();
+        }
+
+        // Max iterations reached without FINAL()
+        let sub_usage = lm_handler.usage().await;
+        let total_llm_tokens_final =
+            total_llm_tokens + sub_usage.total_input_tokens + sub_usage.total_output_tokens;
+        let sub_input = sub_usage.total_input_tokens as u64;
+        let sub_output = sub_usage.total_output_tokens as u64;
+        repl.cleanup().await;
+        lm_handler.stop().await;
+
+        let final_answer = if !last_repl_stdout.trim().is_empty() {
+            last_repl_stdout
+        } else {
+            last_assistant_content
+        };
+        let final_error = if final_answer.trim().is_empty() {
+            Some("No final answer produced (empty completion)".to_string())
+        } else {
+            None
+        };
+
+        TaskResult {
+            task_id: task.task_id.clone(),
+            final_answer,
+            tool_calls,
+            mode_name: "RLM+Native".to_string(),
+            context_tokens: total_context_tokens,
+            total_llm_tokens: total_llm_tokens_final,
+            latency_ms: start.elapsed().as_millis() as u64,
+            llm_time_ms,
+            tool_time_ms,
+            setup_ms,
+            llm_total_calls,
+            llm_input_tokens: llm_input_tokens + sub_input,
+            llm_output_tokens: llm_output_tokens + sub_output,
+            error: final_error,
         }
     }
 
@@ -2138,6 +2996,34 @@ struct ToolCallResult {
     content: String,
     tokens: i64,
     stored_in_corpus: bool,
+}
+
+fn is_bare_identifier(value: &str) -> bool {
+    let mut chars = value.chars();
+    match chars.next() {
+        Some(c) if c == '_' || c.is_ascii_alphabetic() => {}
+        _ => return false,
+    }
+    chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
+}
+
+async fn resolve_final_answer_text(repl: &mut LocalRepl, final_answer: FinalAnswer) -> String {
+    match final_answer {
+        FinalAnswer::Variable(name) => repl
+            .resolve_var(&name)
+            .await
+            .unwrap_or_else(|e| format!("Failed to resolve variable '{}': {}", name, e)),
+        FinalAnswer::Direct(text) => {
+            let trimmed = text.trim();
+            // Robustness for common model slip: FINAL(report) instead of FINAL_VAR(report).
+            if is_bare_identifier(trimmed) {
+                if let Ok(value) = repl.resolve_var(trimmed).await {
+                    return value;
+                }
+            }
+            text
+        }
+    }
 }
 
 /// Build an error TaskResult for early-exit paths in run_task_rlm.
@@ -2287,7 +3173,8 @@ fn normalize_code_for_async_fn(code: &str) -> String {
     let unwrapped = unwrap_async_arrow(code);
 
     // Strip TypeScript type annotations: `: Type` after identifiers (but not in strings)
-    let re_type_ann = Regex::new(r"(?m)(const|let|var)\s+(\w+)\s*:\s*[\w\[\]<>,\s|&]+\s*=").unwrap();
+    let re_type_ann =
+        Regex::new(r"(?m)(const|let|var)\s+(\w+)\s*:\s*[\w\[\]<>,\s|&]+\s*=").unwrap();
     let stripped = re_type_ann.replace_all(&unwrapped, "$1 $2 =");
 
     // Strip `as Type` casts
@@ -2330,8 +3217,14 @@ async fn discover_gateway_tools(client: &RmcpClient) -> Result<Vec<GatewayTool>>
     // Surface servers that need OAuth re-auth
     if let Some(errors) = tools_value.get("errors").and_then(|v| v.as_array()) {
         for err in errors {
-            let server = err.get("serverName").and_then(|v| v.as_str()).unwrap_or("unknown");
-            let reason = err.get("reason").and_then(|v| v.as_str()).unwrap_or("unknown");
+            let server = err
+                .get("serverName")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            let reason = err
+                .get("reason")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
             tracing::warn!("Gateway: server {server} not available ({reason})");
         }
     }
@@ -2421,6 +3314,7 @@ mod tests {
         assert_eq!(format!("{}", ToolCallingMode::BaselineRlm), "Baseline+RLM");
         assert_eq!(format!("{}", ToolCallingMode::Rlm), "RLM");
         assert_eq!(format!("{}", ToolCallingMode::RlmCodeMode), "CodeMode+RLM");
+        assert_eq!(format!("{}", ToolCallingMode::RlmNative), "RLM+Native");
     }
 
     #[test]
@@ -2428,6 +3322,15 @@ mod tests {
         assert_eq!(estimate_tokens("1234"), 1);
         assert_eq!(estimate_tokens("12345678"), 2);
         assert_eq!(estimate_tokens(""), 0);
+    }
+
+    #[test]
+    fn test_is_bare_identifier() {
+        assert!(is_bare_identifier("report"));
+        assert!(is_bare_identifier("_final_answer_2"));
+        assert!(!is_bare_identifier("final answer"));
+        assert!(!is_bare_identifier("42"));
+        assert!(!is_bare_identifier("'report'"));
     }
 
     #[test]
@@ -2479,7 +3382,8 @@ return { count: projects.length };"#;
 
     #[test]
     fn test_normalize_strips_ts_type_annotations() {
-        let code = "const projects: any[] = await codemode.Linear_list_projects({});\nreturn projects;";
+        let code =
+            "const projects: any[] = await codemode.Linear_list_projects({});\nreturn projects;";
         let result = normalize_code_for_async_fn(code);
         // Should not contain type annotation
         assert!(!result.contains(": any[]"));
@@ -2496,7 +3400,8 @@ return { count: projects.length };"#;
 
     #[test]
     fn test_extract_code_block_javascript() {
-        let content = "Here is the code:\n```javascript\nasync () => {\n  return 42;\n}\n```\nDone.";
+        let content =
+            "Here is the code:\n```javascript\nasync () => {\n  return 42;\n}\n```\nDone.";
         let block = extract_code_block(content);
         assert!(block.is_some());
         assert!(block.unwrap().contains("return 42"));

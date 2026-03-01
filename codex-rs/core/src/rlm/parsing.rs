@@ -29,9 +29,12 @@ pub enum FinalAnswer {
 ///
 /// Returns the inner code content of each block, in order of appearance.
 pub fn find_code_blocks(response: &str) -> Vec<String> {
-    let re = Regex::new(r"```repl\s*\n([\s\S]*?)\n```").unwrap();
+    // Accept `repl`, `python`, `py`, and unlabeled fenced blocks to be robust
+    // against provider-specific markdown formatting drift.
+    let re = Regex::new(r"```(?:\s*(?:repl|python|py))?\s*\n([\s\S]*?)```").unwrap();
     re.captures_iter(response)
-        .filter_map(|cap| cap.get(1).map(|m| m.as_str().to_string()))
+        .filter_map(|cap| cap.get(1).map(|m| m.as_str().trim().to_string()))
+        .filter(|s| !s.is_empty())
         .collect()
 }
 
@@ -52,6 +55,9 @@ pub fn find_final_answer(response: &str) -> Option<FinalAnswer> {
     let direct_re = Regex::new(r"(?m)^\s*FINAL\(([\s\S]*)\)\s*$").unwrap();
     if let Some(cap) = direct_re.captures(response) {
         let content = cap.get(1).unwrap().as_str().trim().to_string();
+        if content.is_empty() {
+            return None;
+        }
         return Some(FinalAnswer::Direct(content));
     }
 
@@ -160,15 +166,30 @@ x = 1
 "#;
 
         let blocks = find_code_blocks(response);
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0], r#"print("hello")"#);
+        assert_eq!(blocks[1], "x = 1");
+    }
+
+    #[test]
+    fn test_unlabeled_fence_is_accepted() {
+        let response = r#"``` 
+a = 1
+print(a)
+```"#;
+        let blocks = find_code_blocks(response);
         assert_eq!(blocks.len(), 1);
-        assert_eq!(blocks[0], "x = 1");
+        assert_eq!(blocks[0], "a = 1\nprint(a)");
     }
 
     #[test]
     fn test_final_direct() {
         let response = "After analysis:\n\nFINAL(The answer is 42)";
         let result = find_final_answer(response);
-        assert_eq!(result, Some(FinalAnswer::Direct("The answer is 42".to_string())));
+        assert_eq!(
+            result,
+            Some(FinalAnswer::Direct("The answer is 42".to_string()))
+        );
     }
 
     #[test]
@@ -193,12 +214,28 @@ x = 1
     }
 
     #[test]
+    fn test_final_empty_returns_none() {
+        let response = "FINAL()";
+        let result = find_final_answer(response);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_final_whitespace_only_returns_none() {
+        let response = "FINAL(   )";
+        let result = find_final_answer(response);
+        assert!(result.is_none());
+    }
+
+    #[test]
     fn test_final_multiline() {
         let response = "FINAL(line one\nline two\nline three)";
         let result = find_final_answer(response);
         assert_eq!(
             result,
-            Some(FinalAnswer::Direct("line one\nline two\nline three".to_string()))
+            Some(FinalAnswer::Direct(
+                "line one\nline two\nline three".to_string()
+            ))
         );
     }
 

@@ -72,10 +72,7 @@ pub async fn exchange_token_for_mcp(
     let client = reqwest::Client::new();
     client
         .post(token_url)
-        .basic_auth(
-            &config.client_id,
-            config.client_secret.as_deref(),
-        )
+        .basic_auth(&config.client_id, config.client_secret.as_deref())
         .form(&[
             (
                 "grant_type",

@@ -610,15 +610,25 @@ async fn benchmark_rlm_infrastructure_overhead() {
 
         tracing::debug!(
             "| {} tokens | 2000 | {:10} | {:.3}ms | {:.3}ms | {:.3}ms |",
-            size, routed_to, min, avg, max
+            size,
+            routed_to,
+            min,
+            avg,
+            max
         );
 
         // Assertions for routing performance
         if size == 500 {
-            assert!(avg < 1.0, "RLM passthrough routing should take <1ms, took {avg:.3}ms");
+            assert!(
+                avg < 1.0,
+                "RLM passthrough routing should take <1ms, took {avg:.3}ms"
+            );
         }
         if size == 20000 {
-            assert!(avg < 100.0, "RLM corpus storage should take <100ms, took {avg:.3}ms");
+            assert!(
+                avg < 100.0,
+                "RLM corpus storage should take <100ms, took {avg:.3}ms"
+            );
         }
     }
 }
@@ -674,7 +684,10 @@ async fn benchmark_evidence_summary_generation() {
     tracing::debug!("|-----------|------------|-----|-----|-----|");
     tracing::debug!(
         "| generate_evidence_summary (10 items) | {} | {:.3}ms | {:.3}ms | {:.3}ms |",
-        iterations, min, avg, max
+        iterations,
+        min,
+        avg,
+        max
     );
 
     // Print sample summary

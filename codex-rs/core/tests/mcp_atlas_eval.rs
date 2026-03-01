@@ -84,6 +84,8 @@ const GATEWAY_TASKS_V1_DATASET_PATH: &str = "../mcp-atlas/services/mcp_eval/gate
 const GATEWAY_TASKS_V2_DATASET_PATH: &str = "../mcp-atlas/services/mcp_eval/gateway_tasks_v2.csv";
 const GATEWAY_TASKS_V3_DATASET_PATH: &str = "../mcp-atlas/services/mcp_eval/gateway_tasks_v3.csv";
 const GATEWAY_TASKS_V4_DATASET_PATH: &str = "../mcp-atlas/services/mcp_eval/gateway_tasks_v4.csv";
+const GATEWAY_TASKS_V4_HIGHCTX_DATASET_PATH: &str =
+    "../mcp-atlas/services/mcp_eval/gateway_tasks_v4_highctx.csv";
 
 /// Default dataset path (v4) can be overridden with `EVAL_GATEWAY_TASK_CSV` or
 /// the legacy `EVAL_DATASET_PATH`.
@@ -154,6 +156,9 @@ fn resolve_gateway_dataset_path(manifest_dir: &str, selector: &str) -> PathBuf {
         "" | "v4" | "gateway_tasks_v4" | "gateway_tasks_v4.csv" => {
             PathBuf::from(manifest_dir).join(GATEWAY_TASKS_V4_DATASET_PATH)
         }
+        "v4_highctx" | "gateway_tasks_v4_highctx" | "gateway_tasks_v4_highctx.csv" => {
+            PathBuf::from(manifest_dir).join(GATEWAY_TASKS_V4_HIGHCTX_DATASET_PATH)
+        }
         "v3" | "gateway_tasks_v3" | "gateway_tasks_v3.csv" => {
             PathBuf::from(manifest_dir).join(GATEWAY_TASKS_V3_DATASET_PATH)
         }
@@ -218,8 +223,7 @@ async fn create_gateway_session(
     rlm_router: Option<Arc<GatewayResultRouter>>,
 ) -> anyhow::Result<(Arc<RmcpClient>, ToolCallingRunner, Instant)> {
     let token = gateway_auth::authenticate(config).await?;
-    let mcp_url = build_mcp_url(config, &token.access_token)
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let mcp_url = build_mcp_url(config, &token.access_token).map_err(|e| anyhow::anyhow!("{e}"))?;
 
     let client = Arc::new(
         RmcpClient::new_streamable_http_client(
@@ -251,6 +255,28 @@ async fn create_gateway_session(
 
     tracing::debug!("Gateway session created");
     Ok((client, runner, Instant::now()))
+}
+
+/// Detect common gateway stale-session failures so we can reconnect and retry.
+fn looks_like_stale_gateway_session(message: &str) -> bool {
+    let m = message.to_ascii_lowercase();
+    (m.contains("session") && m.contains("not found"))
+        || m.contains("session expired")
+        || m.contains("token has expired")
+        || (m.contains("bad request") && m.contains("session"))
+}
+
+/// True when task-level signals indicate the MCP gateway session became stale.
+fn task_hit_stale_gateway_session(task_result: &TaskResult) -> bool {
+    if let Some(err) = &task_result.error
+        && looks_like_stale_gateway_session(err)
+    {
+        return true;
+    }
+    task_result
+        .tool_calls
+        .iter()
+        .any(|call| looks_like_stale_gateway_session(&call.result))
 }
 
 // =============================================================================
@@ -285,10 +311,7 @@ async fn test_dataset_loads() {
                     "Tools: {:?}",
                     &task.enabled_tools[..task.enabled_tools.len().min(5)]
                 );
-                tracing::debug!(
-                    "Prompt: {}...",
-                    &task.prompt[..task.prompt.len().min(100)]
-                );
+                tracing::debug!("Prompt: {}...", &task.prompt[..task.prompt.len().min(100)]);
                 tracing::debug!("Claims: {} total", task.claims.len());
             }
         }
@@ -768,9 +791,7 @@ async fn run_mcp_atlas_three_way_evaluation() {
         tracing::trace!("KONTEXT_TOKEN_URL=http://localhost:4000/oauth2/token");
         tracing::trace!("EVAL_API_KEY=<your-api-key>    # Any OpenAI-compatible provider");
         tracing::trace!("Agent / Judge LLM configuration:");
-        tracing::trace!(
-            "EVAL_API_KEY=<key>             # API key for agent LLM (required)"
-        );
+        tracing::trace!("EVAL_API_KEY=<key>             # API key for agent LLM (required)");
         tracing::trace!(
             "EVAL_BASE_URL=<url>            # Base URL for agent LLM (OpenAI-compatible)"
         );
@@ -917,17 +938,17 @@ async fn run_mcp_atlas_three_way_evaluation() {
         tasks.len()
     );
 
-    assert!(!eval_tasks.is_empty(), "eval_tasks should not be empty -- tool resolution may have regressed");
+    assert!(
+        !eval_tasks.is_empty(),
+        "eval_tasks should not be empty -- tool resolution may have regressed"
+    );
 
     // Show the solvable tasks with their coverage
     tracing::debug!("Solvable tasks:");
     for task in eval_tasks.iter().take(20) {
         let coverage = runner.get_tool_coverage(task);
         let matches = runner.get_matching_tools(task);
-        tracing::debug!(
-            "Task: {}",
-            &task.task_id[..task.task_id.len().min(15)]
-        );
+        tracing::debug!("Task: {}", &task.task_id[..task.task_id.len().min(15)]);
         tracing::debug!(
             "Coverage: {:.0}% ({} tools matched)",
             coverage * 100.0,
@@ -956,7 +977,9 @@ async fn run_mcp_atlas_three_way_evaluation() {
         for (dataset_tool, gateway_tool) in matches.iter().take(3) {
             tracing::debug!(
                 "{} -> {} ({})",
-                dataset_tool, gateway_tool.name, gateway_tool.server
+                dataset_tool,
+                gateway_tool.name,
+                gateway_tool.server
             );
         }
         if matches.len() > 3 {
@@ -1018,7 +1041,7 @@ async fn run_mcp_atlas_three_way_evaluation() {
     }
 
     // Step 7: Parse tool-calling modes from EVAL_TOOL_MODES (comma-separated)
-    // Options: baseline, codemode, rlm, rlmcodemode, baselinerlm. Default: baseline,codemode,rlm,rlmcodemode
+    // Options: baseline, codemode, rlm, rlmcodemode, rlmnative, baselinerlm. Default: baseline,codemode,rlm,rlmcodemode
     let tool_modes: Vec<ToolCallingMode> = env::var("EVAL_TOOL_MODES")
         .ok()
         .filter(|s| !s.trim().is_empty())
@@ -1029,7 +1052,11 @@ async fn run_mcp_atlas_three_way_evaluation() {
             "codemode" | "code" => Some(ToolCallingMode::CodeMode),
             "baselinerlm" | "baseline+rlm" => Some(ToolCallingMode::BaselineRlm),
             "rlm" | "repl" => Some(ToolCallingMode::Rlm),
-            "rlmcodemode" | "rlm+codemode" | "rlm_codemode" | "codemoderlm" | "code+rlm" | "coderlm" | "codemode+rlm" => Some(ToolCallingMode::RlmCodeMode),
+            "rlmcodemode" | "rlm+codemode" | "rlm_codemode" | "codemoderlm" | "code+rlm"
+            | "coderlm" | "codemode+rlm" => Some(ToolCallingMode::RlmCodeMode),
+            "rlmnative" | "rlm+native" | "rlm_native" | "native" => {
+                Some(ToolCallingMode::RlmNative)
+            }
             "all" => None, // Handle "all" separately
             _ => None,
         })
@@ -1046,12 +1073,16 @@ async fn run_mcp_atlas_three_way_evaluation() {
             ToolCallingMode::BaselineRlm,
             ToolCallingMode::Rlm,
             ToolCallingMode::RlmCodeMode,
+            ToolCallingMode::RlmNative,
         ]
     } else {
         tool_modes
     };
 
-    assert!(!tool_modes.is_empty(), "At least one tool mode should be configured");
+    assert!(
+        !tool_modes.is_empty(),
+        "At least one tool mode should be configured"
+    );
 
     // Step 7b: Parse codex flag from EVAL_USE_CODEX (boolean)
     let use_codex = env::var("EVAL_USE_CODEX")
@@ -1115,7 +1146,35 @@ async fn run_mcp_atlas_three_way_evaluation() {
             );
 
             // Execute task using tool-calling runner
-            let task_result = runner.run_task(task, *mode).await;
+            let mut task_result = runner.run_task(task, *mode).await;
+
+            // Handle explicit stale-session signals by reconnecting and retrying once.
+            if task_hit_stale_gateway_session(&task_result) {
+                tracing::warn!(
+                    "Detected stale Gateway session on task {} in {} mode; reconnecting and retrying once...",
+                    task.task_id,
+                    mode_name
+                );
+                match create_gateway_session(&config, rlm_router.clone()).await {
+                    Ok((_new_client, new_runner, created_at)) => {
+                        runner = new_runner.with_model(&agent_model);
+                        session_created_at = created_at;
+                        task_result = runner.run_task(task, *mode).await;
+                        if task_hit_stale_gateway_session(&task_result) {
+                            tracing::error!(
+                                "Retry after Gateway reconnect still shows stale-session signals for task {}",
+                                task.task_id
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            "Failed to reconnect Gateway after stale-session signal on task {}: {e}",
+                            task.task_id
+                        );
+                    }
+                }
+            }
 
             // Print tool calls made
             if !task_result.tool_calls.is_empty() {
@@ -1138,7 +1197,12 @@ async fn run_mcp_atlas_three_way_evaluation() {
 
             // Judge the answer
             let verification = match judge
-                .verify_claims(&task.prompt, &task_result.final_answer, &task.claims, &tool_results_summary)
+                .verify_claims(
+                    &task.prompt,
+                    &task_result.final_answer,
+                    &task.claims,
+                    &tool_results_summary,
+                )
                 .await
             {
                 Ok(v) => v,
@@ -1157,7 +1221,10 @@ async fn run_mcp_atlas_three_way_evaluation() {
             let status = if verification.passed { "PASS" } else { "FAIL" };
             tracing::warn!(
                 "  {} | coverage={:.2} | ctx_tokens={} | total_llm_tokens={}",
-                status, verification.coverage, task_result.context_tokens, task_result.total_llm_tokens,
+                status,
+                verification.coverage,
+                task_result.context_tokens,
+                task_result.total_llm_tokens,
             );
             tracing::warn!(
                 "  wall={}ms llm={}ms tool={}ms setup={}ms judge={}ms",
@@ -1205,9 +1272,9 @@ async fn run_mcp_atlas_three_way_evaluation() {
         );
     }
     // Assert at least one mode has pass_rate > 0%
-    let any_passes = all_results.values().any(|results| {
-        results.iter().any(|r| r.verification.passed)
-    });
+    let any_passes = all_results
+        .values()
+        .any(|results| results.iter().any(|r| r.verification.passed));
     if !any_passes {
         tracing::warn!("No mode achieved any passes -- possible systemic failure");
     }
@@ -1239,6 +1306,7 @@ fn print_comparison(results: &HashMap<String, Vec<EvalResult>>) {
         "Baseline+RLM",
         "RLM",
         "CodeMode+RLM",
+        "RLM+Native",
         "Codex",
     ];
 
@@ -1283,8 +1351,12 @@ fn print_comparison(results: &HashMap<String, Vec<EvalResult>>) {
 
     // Comparative table
     tracing::info!("## Comparison");
-    tracing::info!("| Mode | Pass Rate | Avg Coverage | Avg Tokens | Token Reduction | Avg Latency |");
-    tracing::info!("|------|-----------|--------------|------------|-----------------|-------------|");
+    tracing::info!(
+        "| Mode | Pass Rate | Avg Coverage | Avg Tokens | Token Reduction | Avg Latency |"
+    );
+    tracing::info!(
+        "|------|-----------|--------------|------------|-----------------|-------------|"
+    );
 
     let baseline_tokens = results
         .get("Baseline")
@@ -1343,7 +1415,8 @@ fn print_comparison(results: &HashMap<String, Vec<EvalResult>>) {
     // Per-task comparison
     tracing::info!("## Per-Task Comparison");
     // Dynamic per-task comparison table using whatever modes are present
-    let present_modes: Vec<&str> = mode_order.iter()
+    let present_modes: Vec<&str> = mode_order
+        .iter()
         .filter(|m| results.contains_key(**m))
         .copied()
         .collect();
@@ -1355,11 +1428,15 @@ fn print_comparison(results: &HashMap<String, Vec<EvalResult>>) {
         // Get any available results for iteration
         let first_results = results.get(present_modes[0]).unwrap();
         for (i, result) in first_results.iter().enumerate() {
-            let coverages: Vec<f64> = present_modes.iter()
-                .map(|m| results.get(*m)
-                    .and_then(|r| r.get(i))
-                    .map(|r| r.verification.coverage)
-                    .unwrap_or(0.0))
+            let coverages: Vec<f64> = present_modes
+                .iter()
+                .map(|m| {
+                    results
+                        .get(*m)
+                        .and_then(|r| r.get(i))
+                        .map(|r| r.verification.coverage)
+                        .unwrap_or(0.0)
+                })
                 .collect();
 
             let max_cov = coverages.iter().cloned().fold(0.0f64, f64::max);
@@ -1368,13 +1445,16 @@ fn print_comparison(results: &HashMap<String, Vec<EvalResult>>) {
             } else if coverages.iter().all(|c| *c == max_cov) {
                 "tie (all)".to_string()
             } else {
-                present_modes.iter().zip(coverages.iter())
+                present_modes
+                    .iter()
+                    .zip(coverages.iter())
                     .find(|(_, c)| **c == max_cov)
                     .map(|(m, _)| m.to_string())
                     .unwrap_or_else(|| "?".to_string())
             };
 
-            let cols: Vec<String> = coverages.iter()
+            let cols: Vec<String> = coverages
+                .iter()
                 .map(|c| {
                     let status = if *c >= PASS_THRESHOLD { "PASS" } else { "FAIL" };
                     format!(" {:.2} {} ", c, status)
@@ -1391,8 +1471,12 @@ fn print_comparison(results: &HashMap<String, Vec<EvalResult>>) {
     }
 
     tracing::info!("Key Insight");
-    tracing::info!("RLM modes aim to achieve significant token reduction while maintaining quality.");
-    tracing::info!("CodeMode+RLM combines RLM REPL with Gateway tool execution for best of both worlds.");
+    tracing::info!(
+        "RLM modes aim to achieve significant token reduction while maintaining quality."
+    );
+    tracing::info!(
+        "CodeMode+RLM combines RLM REPL with Gateway tool execution for best of both worlds."
+    );
     tracing::info!("Codex client uses the full Codex system prompts and agent loop.");
 }
 
@@ -1600,6 +1684,7 @@ fn save_results(
         "Baseline+RLM",
         "RLM",
         "CodeMode+RLM",
+        "RLM+Native",
         "Codex",
     ];
 
@@ -1612,8 +1697,11 @@ fn save_results(
                 .iter()
                 .filter(|r| r.verification.passed)
                 .count();
-            let avg_coverage: f64 =
-                mode_results.iter().map(|r| r.verification.coverage).sum::<f64>() / total as f64;
+            let avg_coverage: f64 = mode_results
+                .iter()
+                .map(|r| r.verification.coverage)
+                .sum::<f64>()
+                / total as f64;
             let avg_tokens: i64 = mode_results
                 .iter()
                 .map(|r| r.task_result.context_tokens)
@@ -1768,7 +1856,9 @@ async fn run_full_mcp_atlas_evaluation() {
     // Same as above but without the .take(10)
     // This would run all 500 tasks
     tracing::info!("Full evaluation would run here...");
-    tracing::info!("This is a placeholder - implement the same logic as test mode but with all tasks.");
+    tracing::info!(
+        "This is a placeholder - implement the same logic as test mode but with all tasks."
+    );
 }
 
 /// Analyze dataset to find tasks solvable with available Gateway tools
@@ -2265,7 +2355,9 @@ async fn run_verbose_debug_evaluation() {
             if let Some(gateway_tool) = runner.resolve_tool(tool_name) {
                 tracing::debug!(
                     "{} -> {} ({})",
-                    tool_name, gateway_tool.name, gateway_tool.server
+                    tool_name,
+                    gateway_tool.name,
+                    gateway_tool.server
                 );
             } else {
                 tracing::debug!("{} -> NOT FOUND", tool_name);
@@ -2303,8 +2395,7 @@ async fn run_verbose_debug_evaluation() {
                 tracing::trace!("Tool: {}", call.name);
                 tracing::trace!(
                     "Arguments: {}",
-                    serde_json::to_string_pretty(&call.arguments)
-                        .unwrap_or_default()
+                    serde_json::to_string_pretty(&call.arguments).unwrap_or_default()
                 );
                 tracing::trace!("Result tokens: {}", call.result_tokens);
                 tracing::trace!("Stored in corpus: {}", call.stored_in_corpus);
@@ -2359,7 +2450,12 @@ async fn run_verbose_debug_evaluation() {
             .join("\n\n");
         let verify_start = Instant::now();
         let verification = match judge
-            .verify_claims(&task.prompt, &task_result.final_answer, &task.claims, &tool_results_summary)
+            .verify_claims(
+                &task.prompt,
+                &task_result.final_answer,
+                &task.claims,
+                &tool_results_summary,
+            )
             .await
         {
             Ok(v) => {
@@ -2385,21 +2481,13 @@ async fn run_verbose_debug_evaluation() {
                 ClaimScore::PartiallyFulfilled => "PARTIAL",
                 ClaimScore::NotFulfilled => "NOT_MET",
             };
-            tracing::debug!(
-                "{} {}",
-                score_str,
-                &claim[..claim.len().min(60)]
-            );
+            tracing::debug!("{} {}", score_str, &claim[..claim.len().min(60)]);
         }
         tracing::info!("Coverage: {:.2}", verification.coverage);
         tracing::debug!("Threshold: {}", PASS_THRESHOLD);
         tracing::info!(
             "Status: {}",
-            if verification.passed {
-                "PASS"
-            } else {
-                "FAIL"
-            }
+            if verification.passed { "PASS" } else { "FAIL" }
         );
 
         // Show raw judge response for debugging
@@ -2423,11 +2511,7 @@ async fn run_verbose_debug_evaluation() {
         tracing::debug!("Coverage: {:.2}", verification.coverage);
         tracing::debug!(
             "Result: {}",
-            if verification.passed {
-                "PASS"
-            } else {
-                "FAIL"
-            }
+            if verification.passed { "PASS" } else { "FAIL" }
         );
 
         // Diagnosis
@@ -2459,11 +2543,14 @@ async fn run_verbose_debug_evaluation() {
         let expected_tools: Vec<_> = task.trajectory.iter().map(|s| &s.tool).collect();
         let actual_tools: Vec<_> = task_result.tool_calls.iter().map(|c| &c.name).collect();
         let tools_match = expected_tools.len() == actual_tools.len()
-            && expected_tools.iter().zip(actual_tools.iter()).all(|(expected, actual)| {
-                let e = expected.to_lowercase();
-                let a = actual.to_lowercase();
-                e == a || e.contains(&a) || a.contains(&e)
-            });
+            && expected_tools
+                .iter()
+                .zip(actual_tools.iter())
+                .all(|(expected, actual)| {
+                    let e = expected.to_lowercase();
+                    let a = actual.to_lowercase();
+                    e == a || e.contains(&a) || a.contains(&e)
+                });
         if !tools_match {
             tracing::debug!("Tool sequence mismatch:");
             tracing::debug!("Expected: {:?}", expected_tools);

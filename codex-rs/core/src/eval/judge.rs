@@ -213,17 +213,12 @@ impl ClaimJudge {
             })
             .build()?;
 
-        let response = self
-            .client
-            .chat()
-            .create(request)
-            .await
-            .with_context(|| {
-                format!(
-                    "Failed to call LLM for claim verification (model={})",
-                    self.model
-                )
-            })?;
+        let response = self.client.chat().create(request).await.with_context(|| {
+            format!(
+                "Failed to call LLM for claim verification (model={})",
+                self.model
+            )
+        })?;
 
         let raw = response
             .choices

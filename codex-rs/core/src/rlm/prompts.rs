@@ -15,93 +15,89 @@ pub struct ContextMetadata {
 }
 
 /// The core RLM system prompt that instructs the LLM how to use the REPL.
-pub const RLM_SYSTEM_PROMPT: &str = r#"You are tasked with answering a query with associated context. You can access, transform, and analyze this context interactively in a REPL environment that can recursively query sub-LLMs and call external tools, which you are strongly encouraged to use as much as possible.
+pub const RLM_SYSTEM_PROMPT: &str = r#"You are tasked with answering a query using a Python REPL with access to external tools and sub-LLM reasoning.
 
-Your REPL environment is initialized with the following:
-1. `context` — a variable that contains extremely important information about your query. It may be a string, dictionary, or list depending on the data.
-2. `llm_query(prompt: str, model: str = None) -> str` — query a sub-LLM that can handle around 500K characters. Use this to analyze chunks of the context.
-3. `llm_query_batched(prompts: list[str], model: str = None) -> list[str]` — query multiple prompts concurrently for parallel analysis.
-4. `execute_tool(tool_id: str, args: dict = None) -> str` — call a Gateway tool directly. Tool IDs use the format `"Server:tool_name"` (e.g., `execute_tool("Linear:list_projects")` or `execute_tool("GitHub:get_repo", {"owner": "facebook", "repo": "react"})`). Returns the full tool result as JSON. See the "Available Gateway Tools" section below for exact tool IDs.
-5. `SHOW_VARS()` — returns all variables you have created in the REPL.
-6. `print()` statements to view the output of your REPL code.
+Your REPL environment provides:
+1. `context` — the task description (you already see it in the user prompt, so do NOT waste a step printing it).
+2. `execute_tool_json(tool_id: str, args: dict = None, fields: list[str] = None) -> Any` — preferred tool call helper. Returns parsed Python objects (dict/list) when possible. If a large result is stored in corpus, returns metadata: `{"_stored_in_corpus": true, "summary": "...", "chunk_ids": [...], "tool_id": "..."}`.
+3. `execute_tool(tool_id: str, args: dict = None, fields: list[str] = None) -> str` — legacy helper that returns a JSON string.
+4. `llm_query(prompt: str, model: str = None) -> str` — query a sub-LLM. Use ONLY when you need to reason over large content (>2000 chars). Never use it just to reformat data you already have.
+5. `llm_query_batched(prompts: list[str], model: str = None) -> list[str]` — query multiple prompts concurrently.
+6. `corpus_search(query: str, max_results: int = 5) -> list[dict]` — search stored results for relevant chunks.
+7. `corpus_get_chunk(chunk_id: str) -> str` — retrieve full content for a stored chunk.
+8. `SHOW_VARS()` — list all REPL variables.
+9. `print()` — standard output (captured and returned to you).
 
-IMPORTANT:
-- Use `execute_tool()` to retrieve live data from external tools (Linear, GitHub, DeepWiki, Context7, etc.).
-- Use `llm_query()` for reasoning, synthesis, and analysis of data you've collected.
-- You will only be able to see truncated outputs from the REPL environment, so you should use the llm_query function on variables you want to analyze in detail.
-- Make sure to explicitly look through the entire context in REPL before answering your query.
+WORKFLOW:
+- Start by calling the tools you need. You can fetch data across multiple steps.
+- Inspect results with print(), then continue with the next step.
+- When you have all the data, compute the answer in Python and print it.
+- Prefer fewer turns, but correctness matters more than minimizing turns.
+
+KEY RULES:
+- Use `execute_tool_json()` for ALL data retrieval from external tools (Linear, GitHub, DeepWiki, Context7, etc.).
+- Use `execute_tool()` only if you explicitly need the raw JSON string.
+- Do computations (counting, filtering, matching, sorting, aggregation) in Python directly — do NOT delegate simple data processing to llm_query.
+- Use `llm_query()` ONLY for reasoning over large content that you cannot process directly. Never call it in a loop over many items.
+- If a tool result has `_stored_in_corpus == True`, use `chunk_ids` and `corpus_get_chunk()` (or `corpus_search()`) to retrieve needed content.
 - All code MUST be wrapped in triple backticks with the `repl` language identifier.
+- IMPORTANT: Only `print()` output is returned to you as feedback. Data stored in variables is NOT visible between turns. You MUST print() any results you want to inspect or verify. Tool calls auto-print a one-line status (e.g. `-> tool_id: 1234 chars`), but you must print() the actual data you need.
 
-Here are some example strategies you can use:
-
-**Strategy 1 — Examine the context and call tools:**
+Example — multi-tool task:
 ```repl
-# Read the task
-print(context)
-
-# Call a tool to get live data (use exact tool_id from Available Gateway Tools)
-projects = execute_tool("Linear:list_projects")
-print(projects[:500])
+# Fetch data
+projects = execute_tool_json("Linear:list_projects")
+print(f"Got {len(projects)} projects")
+# Process in Python
+names = [p["name"] for p in projects]
+print(names[:10])
 ```
 
-**Strategy 2 — Analyze tool results with llm_query:**
+Example — analysis requiring sub-LLM:
 ```repl
-# Get detailed data
-import json
-data = json.loads(projects)
-summary = llm_query(f"Summarize these projects:\n{projects}")
+wiki = execute_tool("DeepWiki:read_wiki_contents", {"repoName": "facebook/react"})
+summary = llm_query(f"Count the top-level topics in this structure:\n{wiki}")
 print(summary)
 ```
 
-**Strategy 3 — Batch processing with llm_query_batched:**
-```repl
-# Process multiple items in parallel
-prompts = [f"Extract key facts from:\n{chunk}" for chunk in chunks]
-results = llm_query_batched(prompts)
-combined = "\n".join(results)
-print(f"Got {len(results)} chunk summaries")
-```
-
-**Strategy 4 — Aggregation and final synthesis:**
-```repl
-# Final aggregation
-final_answer = llm_query(f"Based on these summaries, answer the original question:\n{combined}")
-answer = final_answer
-```
-
-To provide your final answer, use one of these formats:
+To provide your final answer:
 - `FINAL(your final answer here)` — for direct text answers
 - `FINAL_VAR(variable_name)` — to return the value of a REPL variable
 
-WARNING: FINAL_VAR retrieves an EXISTING variable. You MUST create and assign the variable in a ```repl block FIRST, then call FINAL_VAR in a SEPARATE step.
-
-Think step by step carefully, plan, and execute this plan immediately in your response — do not just say "I will do this". Output to the REPL environment and recursive LLMs as much as possible."#;
+WARNING: FINAL_VAR retrieves an EXISTING variable. You MUST create and assign the variable in a ```repl block FIRST, then call FINAL_VAR in a SEPARATE step."#;
 
 /// System prompt for RLM+CodeMode: RLM REPL with Gateway tool execution.
 ///
 /// This extends the base RLM prompt with `execute_code()`, `corpus_search()`,
 /// and `corpus_get_chunk()` functions that allow the REPL to call Gateway
 /// tools (Linear, GitHub, etc.) via server-side code execution.
-pub const RLM_CODEMODE_SYSTEM_PROMPT: &str = r#"You are tasked with answering a query using a Python REPL that can execute Gateway tools via TypeScript and call sub-LLMs for reasoning.
+pub const RLM_CODEMODE_SYSTEM_PROMPT: &str = r#"You are tasked with answering a query using a Python REPL with Gateway tool execution via TypeScript and sub-LLM reasoning.
 
 Your REPL environment provides:
 1. `context` — the task description (you already see it in the user prompt, so do NOT waste a step printing it).
-2. `execute_code(ts_code: str) -> str` — execute TypeScript on the Gateway. Use `codemode.*` methods to call tools (Linear, GitHub, DeepWiki, etc.). In your JS, extract only the fields you need using `.map()` — do NOT return raw tool results.
-3. `llm_query(prompt: str, model: str = None) -> str` — query a sub-LLM. Use ONLY when you need to reason over large content (>2000 chars) that cannot be processed in JS. Never use it just to reformat data you already have.
-4. `llm_query_batched(prompts: list[str], model: str = None) -> list[str]` — query multiple prompts concurrently for parallel analysis.
-5. `corpus_search(query: str, max_results: int = 5) -> list[dict]` — search stored results. Only use if you see "stored in corpus" in a result. Do not speculatively search the corpus.
-6. `corpus_get_chunk(chunk_id: str) -> str` — retrieve full content of a stored chunk.
+2. `execute_code(ts_code: str) -> str` — execute TypeScript on the Gateway. Use `codemode.*` methods to call tools (Linear, GitHub, DeepWiki, etc.). In your JS, extract only the fields you need using `.map()`, `.filter()`, or direct property access.
+3. `llm_query(prompt: str, model: str = None) -> str` — query a sub-LLM. Use ONLY when you need to reason over large content (>2000 chars). Never use it just to reformat data you already have.
+4. `llm_query_batched(prompts: list[str], model: str = None) -> list[str]` — query multiple prompts concurrently.
+5. `corpus_search(query: str, max_results: int = 5) -> list[dict]` — search stored results for relevant chunks.
+6. `corpus_get_chunk(chunk_id: str) -> str` — retrieve full content for a stored chunk.
 7. `SHOW_VARS()` — list all REPL variables.
 8. `print()` — standard output (captured and returned to you).
 
-KEY RULES:
-- For tasks answerable with a single tool call, call `execute_code()` once, read the result, and answer directly with `FINAL()` — do NOT use `llm_query()` for simple formatting or extraction.
-- In your `execute_code()` TypeScript, extract only the fields you need using `.map()`, `.filter()`, or direct property access. Do NOT return full JSON payloads.
-- Use `llm_query()` ONLY when you need to reason over large content (>2000 chars) that cannot be processed in JS. Never use it just to reformat data you already have.
-- Large results are auto-stored in corpus. Only use `corpus_search()`/`corpus_get_chunk()` if you see "stored in corpus" in the result.
-- All code MUST be wrapped in triple backticks with the `repl` language identifier.
+WORKFLOW:
+- Start by calling tools to fetch data. You can fetch data across multiple steps.
+- Inspect results with print(), then continue with the next step.
+- When you have all the data, compute the answer in Python and print it.
+- Prefer fewer turns, but correctness matters more than minimizing turns.
 
-Example — single tool call task:
+KEY RULES:
+- Use `execute_code()` for ALL data retrieval from external tools via `codemode.*`.
+- Do computations (counting, filtering, matching, sorting, aggregation) in Python directly — do NOT delegate simple data processing to llm_query.
+- Use `llm_query()` ONLY for reasoning over large content that you cannot process directly. Never call it in a loop over many items.
+- Large results may be stored in corpus. If you see "stored in corpus" in a result, use `corpus_search()` and `corpus_get_chunk()` to inspect full content.
+- All code MUST be wrapped in triple backticks with the `repl` language identifier.
+- IMPORTANT: Only `print()` output is returned to you as feedback. Data stored in variables is NOT visible between turns. You MUST print() any results you want to inspect or verify. Tool calls auto-print a one-line status, but you must print() the actual data you need.
+
+Example — fetch and process:
 ```repl
 result = execute_code('''
 const projects = await codemode.Linear_list_projects({});
@@ -109,33 +105,113 @@ return { names: projects.map(p => p.name).slice(0, 20) };
 ''')
 print(result)
 ```
-FINAL(Based on the result, the projects are: ...)
 
-Example — multi-step analysis:
+Example — analysis requiring sub-LLM:
 ```repl
-result = execute_code('''
-const issues = await codemode.Linear_list_issues({
-  filter: { state: { name: { eq: "In Progress" } } },
-  first: 10
-});
-return { issues: issues.map(i => ({ title: i.title, assignee: i.assignee?.name })) };
-''')
-print(result)
-```
-```repl
-# Only if result was too large and stored in corpus
-analysis = llm_query(f"Summarize the key themes from these issues:\n{result}")
+chunk = corpus_get_chunk(hits[0]["chunk_id"])
+analysis = llm_query(f"Summarize key findings and risks:\n{chunk}")
 print(analysis)
 ```
-FINAL(Here is the summary: ...)
 
 To provide your final answer:
 - `FINAL(your final answer here)` — for direct text answers
 - `FINAL_VAR(variable_name)` — to return the value of a REPL variable
 
-WARNING: FINAL_VAR retrieves an EXISTING variable. You MUST create and assign the variable in a ```repl block FIRST, then call FINAL_VAR in a SEPARATE step.
+WARNING: FINAL_VAR retrieves an EXISTING variable. You MUST create and assign the variable in a ```repl block FIRST, then call FINAL_VAR in a SEPARATE step."#;
 
-Think step by step carefully, plan, and execute immediately — do not just say "I will do this"."#;
+/// System prompt for RLM+Native: Python-native tool wrappers with field projection.
+///
+/// The LLM stays in Python the entire time. Tools are accessed via `tools.Server.method()`,
+/// with an optional `fields` parameter for projection. No TypeScript, no `execute_code()`.
+pub const RLM_NATIVE_SYSTEM_PROMPT: &str = r#"You are tasked with answering a query using a Python REPL with direct access to Gateway tools and sub-LLM reasoning.
+
+Your REPL environment provides:
+1. `context` — the task description (you already see it in the user prompt, so do NOT waste a step printing it).
+2. `tools` — a namespace with methods for each available Gateway tool. Call them directly:
+   - `tools.Linear.list_projects()` — returns a Python list/dict
+   - `tools.GitHub.get_repo(owner="facebook", repo="react")` — with typed arguments
+   - `tools.Linear.list_projects(fields=["name", "issueCount"])` — returns ONLY those fields (much smaller output)
+3. `llm_query(prompt: str, model: str = None) -> str` — query a sub-LLM. Use ONLY when you need to reason over large content (>2000 chars). Never use it just to reformat data you already have.
+4. `llm_query_batched(prompts: list[str], model: str = None) -> list[str]` — query multiple prompts concurrently.
+5. `corpus_search(query: str, max_results: int = 5) -> list[dict]` — search stored results for relevant chunks.
+6. `corpus_get_chunk(chunk_id: str) -> str` — retrieve full content for a stored chunk.
+7. `SHOW_VARS()` — list all REPL variables.
+8. `print()` — standard output (captured and returned to you).
+
+WORKFLOW:
+- Start by calling the tools you need. You can fetch data across multiple steps.
+- Inspect results with print(), then continue with the next step.
+- When you have all the data, print your final answer.
+- Prefer fewer turns, but correctness matters more than minimizing turns.
+
+KEY RULES:
+- Use `tools.*` for ALL data retrieval. Call tool methods directly — they return parsed Python objects (dicts/lists), not raw JSON strings.
+- Use `fields=[...]` whenever you only need specific fields from a result. This keeps output small and focused.
+- Use `llm_query()` ONLY for reasoning over large content that you cannot process directly.
+- If a result is stored in corpus, call `corpus_search()` / `corpus_get_chunk()` to retrieve what you need.
+- All code MUST be wrapped in triple backticks with the `repl` language identifier.
+- IMPORTANT: Only `print()` output is returned to you as feedback. Data stored in variables is NOT visible between turns. You MUST print() any results you want to inspect or verify. Tool calls auto-print a one-line status (e.g. `-> tool_id: list, 5 items`), but you must print() the actual data you need.
+
+Example — multi-tool task (ONE block):
+```repl
+# Fetch all data in one block
+projects = tools.Linear.list_projects(fields=["name", "issueCount"])
+first_name = projects["projects"][0]["name"]
+repos = tools.GitHub.search_repositories(query=first_name, perPage=1)
+repo = repos["items"][0] if repos["items"] else None
+if repo:
+    wiki = tools.DeepWiki.read_wiki_structure(repoName=repo["full_name"])
+else:
+    wiki = "No matching repo found"
+print(f"Project: {first_name}")
+print(f"Repo: {repo['full_name'] if repo else 'None'}, Stars: {repo['stargazers_count'] if repo else 'N/A'}")
+print(f"Wiki: {wiki}")
+```
+FINAL(The first project is ... with repo ... having N stars and M wiki topics.)
+
+Example — analysis requiring sub-LLM (ONE block):
+```repl
+wiki = tools.DeepWiki.read_wiki_structure(repoName="facebook/react")
+summary = llm_query(f"Count the top-level topics in this structure:\n{wiki}")
+print(summary)
+```
+FINAL(The wiki has N top-level topics.)
+
+To provide your final answer:
+- `FINAL(your final answer here)` — for direct text answers
+- `FINAL_VAR(variable_name)` — to return the value of a REPL variable
+
+WARNING: FINAL_VAR retrieves an EXISTING variable. You MUST create and assign the variable in a ```repl block FIRST, then call FINAL_VAR in a SEPARATE step."#;
+
+/// Build the complete RLM+Native system prompt with context metadata appended.
+pub fn build_rlm_native_system_prompt(metadata: &ContextMetadata) -> String {
+    let lengths_display = if metadata.context_lengths.len() > 100 {
+        let shown: Vec<String> = metadata.context_lengths[..100]
+            .iter()
+            .map(|l| l.to_string())
+            .collect();
+        format!(
+            "[{}, ... ({} more)]",
+            shown.join(", "),
+            metadata.context_lengths.len() - 100
+        )
+    } else {
+        let shown: Vec<String> = metadata
+            .context_lengths
+            .iter()
+            .map(|l| l.to_string())
+            .collect();
+        format!("[{}]", shown.join(", "))
+    };
+
+    format!(
+        "{}\n\nCONTEXT METADATA:\n- Type: {}\n- Total length: {} characters\n- Chunk lengths: {}",
+        RLM_NATIVE_SYSTEM_PROMPT,
+        metadata.context_type,
+        metadata.context_total_length,
+        lengths_display,
+    )
+}
 
 /// Build the complete RLM+CodeMode system prompt with context metadata appended.
 pub fn build_rlm_codemode_system_prompt(metadata: &ContextMetadata) -> String {
@@ -150,7 +226,11 @@ pub fn build_rlm_codemode_system_prompt(metadata: &ContextMetadata) -> String {
             metadata.context_lengths.len() - 100
         )
     } else {
-        let shown: Vec<String> = metadata.context_lengths.iter().map(|l| l.to_string()).collect();
+        let shown: Vec<String> = metadata
+            .context_lengths
+            .iter()
+            .map(|l| l.to_string())
+            .collect();
         format!("[{}]", shown.join(", "))
     };
 
@@ -170,18 +250,23 @@ pub fn build_rlm_system_prompt(metadata: &ContextMetadata) -> String {
             .iter()
             .map(|l| l.to_string())
             .collect();
-        format!("[{}, ... ({} more)]", shown.join(", "), metadata.context_lengths.len() - 100)
+        format!(
+            "[{}, ... ({} more)]",
+            shown.join(", "),
+            metadata.context_lengths.len() - 100
+        )
     } else {
-        let shown: Vec<String> = metadata.context_lengths.iter().map(|l| l.to_string()).collect();
+        let shown: Vec<String> = metadata
+            .context_lengths
+            .iter()
+            .map(|l| l.to_string())
+            .collect();
         format!("[{}]", shown.join(", "))
     };
 
     format!(
         "{}\n\nCONTEXT METADATA:\n- Type: {}\n- Total length: {} characters\n- Chunk lengths: {}",
-        RLM_SYSTEM_PROMPT,
-        metadata.context_type,
-        metadata.context_total_length,
-        lengths_display,
+        RLM_SYSTEM_PROMPT, metadata.context_type, metadata.context_total_length, lengths_display,
     )
 }
 
@@ -233,7 +318,7 @@ pub fn format_repl_feedback(
     max_chars: usize,
 ) -> String {
     let mut output = format!(
-        "Code executed:\n```python\n{}\n```\n\nREPL Output:\n{}",
+        "Code executed:\n```repl\n{}\n```\n\nREPL Output:\n{}",
         code, stdout,
     );
 
@@ -258,14 +343,16 @@ mod tests {
 
     #[test]
     fn test_rlm_system_prompt_contains_key_sections() {
-        assert!(RLM_SYSTEM_PROMPT.contains("REPL environment"));
+        assert!(RLM_SYSTEM_PROMPT.contains("REPL"));
         assert!(RLM_SYSTEM_PROMPT.contains("llm_query"));
         assert!(RLM_SYSTEM_PROMPT.contains("llm_query_batched"));
         assert!(RLM_SYSTEM_PROMPT.contains("SHOW_VARS()"));
         assert!(RLM_SYSTEM_PROMPT.contains("FINAL("));
         assert!(RLM_SYSTEM_PROMPT.contains("FINAL_VAR("));
         assert!(RLM_SYSTEM_PROMPT.contains("```repl"));
-        assert!(RLM_SYSTEM_PROMPT.contains("Think step by step"));
+        // Should discourage excessive llm_query usage
+        assert!(RLM_SYSTEM_PROMPT.contains("ONLY"));
+        assert!(RLM_SYSTEM_PROMPT.contains("do NOT delegate simple data processing"));
     }
 
     #[test]
@@ -282,24 +369,59 @@ mod tests {
         assert!(RLM_CODEMODE_SYSTEM_PROMPT.contains("FINAL("));
         assert!(RLM_CODEMODE_SYSTEM_PROMPT.contains("FINAL_VAR("));
 
-        // Must contain direct-answer guidance
-        assert!(RLM_CODEMODE_SYSTEM_PROMPT.contains("single tool call"));
-        assert!(RLM_CODEMODE_SYSTEM_PROMPT.contains("answer directly with `FINAL()`"));
-
         // Must contain corpus guidance
         assert!(RLM_CODEMODE_SYSTEM_PROMPT.contains("stored in corpus"));
-        assert!(RLM_CODEMODE_SYSTEM_PROMPT.contains("Do not speculatively search the corpus"));
+        assert!(RLM_CODEMODE_SYSTEM_PROMPT.contains("corpus_search()"));
 
-        // Must contain llm_query restriction
-        assert!(RLM_CODEMODE_SYSTEM_PROMPT.contains("ONLY when you need to reason over large content"));
-
-        // Must NOT contain wasteful print(context) step
-        assert!(!RLM_CODEMODE_SYSTEM_PROMPT.contains("print(context)"));
+        // Should discourage excessive llm_query usage
+        assert!(RLM_CODEMODE_SYSTEM_PROMPT.contains("ONLY"));
+        assert!(RLM_CODEMODE_SYSTEM_PROMPT.contains("do NOT delegate simple data processing"));
 
         // Must contain REPL basics
         assert!(RLM_CODEMODE_SYSTEM_PROMPT.contains("execute_code"));
         assert!(RLM_CODEMODE_SYSTEM_PROMPT.contains("llm_query"));
         assert!(RLM_CODEMODE_SYSTEM_PROMPT.contains("```repl"));
+    }
+
+    #[test]
+    fn test_rlm_native_system_prompt_contains_key_sections() {
+        // Must use tools.* Python API
+        assert!(RLM_NATIVE_SYSTEM_PROMPT.contains("tools.Linear.list_projects"));
+        assert!(RLM_NATIVE_SYSTEM_PROMPT.contains("tools.GitHub.get_repo"));
+
+        // Must contain fields parameter guidance
+        assert!(RLM_NATIVE_SYSTEM_PROMPT.contains("fields="));
+        assert!(RLM_NATIVE_SYSTEM_PROMPT.contains("fields=[\"name\""));
+
+        // Must NOT contain TypeScript/CodeMode concepts
+        assert!(!RLM_NATIVE_SYSTEM_PROMPT.contains("execute_code"));
+        assert!(!RLM_NATIVE_SYSTEM_PROMPT.contains("codemode."));
+        assert!(!RLM_NATIVE_SYSTEM_PROMPT.contains("TypeScript"));
+        assert!(RLM_NATIVE_SYSTEM_PROMPT.contains("corpus_search"));
+        assert!(RLM_NATIVE_SYSTEM_PROMPT.contains("corpus_get_chunk"));
+
+        // Must contain FINAL/FINAL_VAR
+        assert!(RLM_NATIVE_SYSTEM_PROMPT.contains("FINAL("));
+        assert!(RLM_NATIVE_SYSTEM_PROMPT.contains("FINAL_VAR("));
+
+        // Must contain llm_query
+        assert!(RLM_NATIVE_SYSTEM_PROMPT.contains("llm_query"));
+        assert!(RLM_NATIVE_SYSTEM_PROMPT.contains("```repl"));
+    }
+
+    #[test]
+    fn test_build_rlm_native_system_prompt_appends_metadata() {
+        let metadata = ContextMetadata {
+            context_type: "str".to_string(),
+            context_total_length: 50_000,
+            context_lengths: vec![50_000],
+        };
+
+        let prompt = build_rlm_native_system_prompt(&metadata);
+        assert!(prompt.starts_with(RLM_NATIVE_SYSTEM_PROMPT));
+        assert!(prompt.contains("CONTEXT METADATA:"));
+        assert!(prompt.contains("Type: str"));
+        assert!(prompt.contains("Total length: 50000 characters"));
     }
 
     #[test]

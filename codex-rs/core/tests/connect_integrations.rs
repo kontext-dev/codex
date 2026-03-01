@@ -25,7 +25,10 @@ async fn open_connect_page() {
     if config.integration_ui_url.is_none() {
         let ui_url = std::env::var("KONTEXT_UI_URL").unwrap_or_else(|_| {
             // Derive from gateway URL: if localhost, use port 3000 for the web app
-            let mcp = config.mcp_url.as_deref().unwrap_or("http://localhost:4000/mcp");
+            let mcp = config
+                .mcp_url
+                .as_deref()
+                .unwrap_or("http://localhost:4000/mcp");
             if mcp.contains("localhost") || mcp.contains("127.0.0.1") {
                 "http://localhost:3000".to_string()
             } else if mcp.contains("api.kontext.dev") {
@@ -65,7 +68,10 @@ async fn open_connect_page() {
         Err(e) => {
             // Fall back to printing the URL manually
             eprintln!("Could not open browser automatically: {e}");
-            if let Ok(url) = client.create_integration_connect_url(&token.access_token).await {
+            if let Ok(url) = client
+                .create_integration_connect_url(&token.access_token)
+                .await
+            {
                 eprintln!("Open this URL manually:");
                 eprintln!("  {url}");
             }

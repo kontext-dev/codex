@@ -18,18 +18,23 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
-use async_openai::config::OpenAIConfig;
-use async_openai::types::{
-    ChatCompletionRequestMessage, ChatCompletionRequestUserMessageArgs,
-    CreateChatCompletionRequestArgs,
-};
+use anyhow::Context;
+use anyhow::Result;
 use async_openai::Client;
+use async_openai::config::Config;
+use async_openai::config::OpenAIConfig;
+use async_openai::types::ChatCompletionRequestMessage;
+use async_openai::types::ChatCompletionRequestUserMessageArgs;
+use async_openai::types::CreateChatCompletionRequestArgs;
+use async_openai::types::CreateChatCompletionResponse;
 use codex_rmcp_client::RmcpClient;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 use serde_json::json;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::io::AsyncReadExt;
+use tokio::io::AsyncWriteExt;
+use tokio::net::TcpListener;
+use tokio::net::TcpStream;
 use tokio::sync::RwLock;
 
 use super::BudgetManager;
@@ -67,8 +72,14 @@ impl std::fmt::Debug for LmHandlerConfig {
             .field("root_model", &self.root_model)
             .field("sub_model", &self.sub_model)
             .field("base_url", &self.base_url)
-            .field("mcp_client", &self.mcp_client.as_ref().map(|_| "<RmcpClient>"))
-            .field("rlm_router", &self.rlm_router.as_ref().map(|_| "<GatewayResultRouter>"))
+            .field(
+                "mcp_client",
+                &self.mcp_client.as_ref().map(|_| "<RmcpClient>"),
+            )
+            .field(
+                "rlm_router",
+                &self.rlm_router.as_ref().map(|_| "<GatewayResultRouter>"),
+            )
             .finish()
     }
 }
@@ -160,11 +171,16 @@ struct ExecuteToolRequest {
     tool_id: String,
     #[serde(default)]
     args: serde_json::Value,
+    #[serde(default)]
+    fields: Option<Vec<String>>,
 }
 
 #[derive(Serialize)]
 struct ExecuteToolResponse {
-    result: Option<String>,
+    result: Option<serde_json::Value>,
+    stored_in_corpus: bool,
+    summary: Option<String>,
+    chunk_ids: Option<Vec<String>>,
     error: Option<String>,
 }
 
@@ -353,10 +369,13 @@ async fn handle_query(state: &SharedState, req: QueryRequest) -> QueryResponse {
             response: Some(text),
             error: None,
         },
-        Err(e) => QueryResponse {
-            response: None,
-            error: Some(format!("{e:#}")),
-        },
+        Err(e) => {
+            let err_msg = format!("{e:#}");
+            QueryResponse {
+                response: Some(format!("[llm_query error: {}]", err_msg)),
+                error: Some(err_msg),
+            }
+        }
     }
 }
 
@@ -373,21 +392,24 @@ async fn handle_batched(state: &SharedState, req: BatchedRequest) -> BatchedResp
     let results = futures::future::join_all(futures).await;
 
     let mut responses = Vec::with_capacity(results.len());
+    let mut had_errors = false;
     for r in &results {
         match r {
             Ok(text) => responses.push(text.clone()),
             Err(e) => {
-                return BatchedResponse {
-                    responses: None,
-                    error: Some(format!("{e:#}")),
-                };
+                had_errors = true;
+                responses.push(format!("[llm_query error: {e:#}]"));
             }
         }
     }
 
     BatchedResponse {
         responses: Some(responses),
-        error: None,
+        error: if had_errors {
+            Some("One or more prompts failed (see individual responses)".to_string())
+        } else {
+            None
+        },
     }
 }
 
@@ -406,10 +428,7 @@ async fn handle_execute_code(state: &SharedState, req: ExecuteCodeRequest) -> Ex
         };
     };
 
-    tracing::debug!(
-        "LmHandler /execute_code: code_len={}",
-        req.code.len()
-    );
+    tracing::debug!("LmHandler /execute_code: code_len={}", req.code.len());
 
     // Call Gateway's EXECUTE_CODE
     let raw = match mcp
@@ -463,10 +482,7 @@ async fn handle_execute_code(state: &SharedState, req: ExecuteCodeRequest) -> Ex
 }
 
 /// Search the RLM corpus for chunks matching a query.
-async fn handle_corpus_search(
-    state: &SharedState,
-    req: CorpusSearchRequest,
-) -> serde_json::Value {
+async fn handle_corpus_search(state: &SharedState, req: CorpusSearchRequest) -> serde_json::Value {
     let Some(ref router) = state.rlm_router else {
         return json!({ "error": "Corpus not configured (no rlm_router)", "results": [] });
     };
@@ -490,8 +506,11 @@ async fn handle_corpus_get_chunk(
     }
 }
 
-/// Execute a Gateway tool directly via EXECUTE_TOOL (like Baseline mode).
-/// Returns the full result without corpus routing.
+/// Execute a Gateway tool directly via EXECUTE_TOOL.
+///
+/// When `rlm_router` is configured, large results are automatically routed
+/// through the corpus (same as `handle_execute_code`). Otherwise, returns
+/// the full result directly.
 ///
 /// Performs fuzzy tool name resolution: the LLM may guess tool names like
 /// `linear_list_projects` or `list_projects` which need to be resolved to
@@ -500,6 +519,9 @@ async fn handle_execute_tool(state: &SharedState, req: ExecuteToolRequest) -> Ex
     let Some(ref mcp) = state.mcp_client else {
         return ExecuteToolResponse {
             result: None,
+            stored_in_corpus: false,
+            summary: None,
+            chunk_ids: None,
             error: Some("Gateway not configured (no mcp_client)".to_string()),
         };
     };
@@ -519,7 +541,7 @@ async fn handle_execute_tool(state: &SharedState, req: ExecuteToolRequest) -> Ex
         "tool_arguments": req.args,
     });
 
-    match mcp
+    let raw = match mcp
         .call_tool(
             "EXECUTE_TOOL".to_string(),
             Some(execute_args),
@@ -527,14 +549,147 @@ async fn handle_execute_tool(state: &SharedState, req: ExecuteToolRequest) -> Ex
         )
         .await
     {
-        Ok(r) => ExecuteToolResponse {
-            result: Some(unwrap_mcp_envelope(&r)),
+        Ok(r) => unwrap_mcp_envelope(&r),
+        Err(e) => {
+            return ExecuteToolResponse {
+                result: None,
+                stored_in_corpus: false,
+                summary: None,
+                chunk_ids: None,
+                error: Some(format!("EXECUTE_TOOL failed: {e}")),
+            };
+        }
+    };
+
+    // Parse the raw payload into a JSON value when possible.
+    let parsed = parse_json_or_string(&raw);
+    // Apply projection before any corpus-routing decision so we can keep small,
+    // shape-preserving payloads in-band for native wrappers.
+    let projected = match req.fields.as_deref() {
+        Some(fields) => project_value(&parsed, fields),
+        None => parsed,
+    };
+
+    // Route through corpus if router is available (RlmNative / RlmCodeMode)
+    if let Some(ref router) = state.rlm_router {
+        let call_id = format!("tool_{}", uuid::Uuid::new_v4());
+        let routing_content = value_to_routing_string(&projected);
+        match router
+            .process_result(&call_id, &resolved_id, "EXECUTE_TOOL", &routing_content)
+            .await
+        {
+            Ok(ProcessedResult::StoredInCorpus {
+                summary, chunk_ids, ..
+            }) => ExecuteToolResponse {
+                result: None,
+                stored_in_corpus: true,
+                summary: Some(summary),
+                chunk_ids: Some(chunk_ids),
+                error: None,
+            },
+            Ok(ProcessedResult::PassThrough { content }) => ExecuteToolResponse {
+                result: Some(parse_json_or_string(&content)),
+                stored_in_corpus: false,
+                summary: None,
+                chunk_ids: None,
+                error: None,
+            },
+            Err(e) => ExecuteToolResponse {
+                result: Some(projected),
+                stored_in_corpus: false,
+                summary: None,
+                chunk_ids: None,
+                error: Some(format!("Corpus routing failed (returning raw): {e}")),
+            },
+        }
+    } else {
+        ExecuteToolResponse {
+            result: Some(projected),
+            stored_in_corpus: false,
+            summary: None,
+            chunk_ids: None,
             error: None,
-        },
-        Err(e) => ExecuteToolResponse {
-            result: None,
-            error: Some(format!("EXECUTE_TOOL failed: {e}")),
-        },
+        }
+    }
+}
+
+fn parse_json_or_string(content: &str) -> serde_json::Value {
+    serde_json::from_str::<serde_json::Value>(content)
+        .unwrap_or_else(|_| serde_json::Value::String(content.to_string()))
+}
+
+fn value_to_routing_string(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(s) => s.clone(),
+        _ => serde_json::to_string(value).unwrap_or_else(|_| value.to_string()),
+    }
+}
+
+fn project_value(value: &serde_json::Value, fields: &[String]) -> serde_json::Value {
+    use serde_json::Value;
+
+    if fields.is_empty() {
+        return value.clone();
+    }
+
+    match value {
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .map(|item| match item {
+                    Value::Object(map) => Value::Object(
+                        fields
+                            .iter()
+                            .map(|k| (k.clone(), map.get(k).cloned().unwrap_or(Value::Null)))
+                            .collect(),
+                    ),
+                    _ => Value::Null,
+                })
+                .collect(),
+        ),
+        Value::Object(map) => {
+            // If requested fields exist at the root, return only those.
+            if fields.iter().any(|f| map.contains_key(f)) {
+                return Value::Object(
+                    fields
+                        .iter()
+                        .map(|k| (k.clone(), map.get(k).cloned().unwrap_or(Value::Null)))
+                        .collect(),
+                );
+            }
+
+            // Otherwise, find the first list field and project its item objects.
+            for (key, v) in map {
+                if let Value::Array(list) = v {
+                    let projected_list = list
+                        .iter()
+                        .map(|item| match item {
+                            Value::Object(item_map) => Value::Object(
+                                fields
+                                    .iter()
+                                    .map(|f| {
+                                        (f.clone(), item_map.get(f).cloned().unwrap_or(Value::Null))
+                                    })
+                                    .collect(),
+                            ),
+                            _ => Value::Null,
+                        })
+                        .collect::<Vec<_>>();
+
+                    let mut out = map.clone();
+                    out.insert(key.clone(), Value::Array(projected_list));
+                    return Value::Object(out);
+                }
+            }
+
+            Value::Object(
+                fields
+                    .iter()
+                    .map(|k| (k.clone(), map.get(k).cloned().unwrap_or(Value::Null)))
+                    .collect(),
+            )
+        }
+        _ => value.clone(),
     }
 }
 
@@ -621,6 +776,10 @@ fn resolve_tool_id(requested: &str, lookup: &HashMap<String, String>) -> String 
 // ---------------------------------------------------------------------------
 
 /// Execute a single LLM chat completion with budget checks.
+///
+/// Uses raw reqwest instead of async_openai's client to properly handle
+/// Gemini-style error responses (array-wrapped `[{"error": {...}}]`) and
+/// to support retry with exponential backoff on transient failures.
 async fn do_llm_call(
     state: &SharedState,
     prompt: &str,
@@ -660,45 +819,152 @@ async fn do_llm_call(
         .temperature(0.0_f32)
         .build()?;
 
-    let response = state
-        .client
-        .chat()
-        .create(request)
-        .await
-        .context("OpenAI chat completion failed")?;
+    // Build the raw HTTP request using the same config as the async_openai client.
+    let oai_config = state.client.config();
+    let url = oai_config.url("/chat/completions");
+    let headers = oai_config.headers();
+    let http_client = reqwest::Client::new();
 
-    // Extract usage information.
-    let (input_tokens, output_tokens) = if let Some(u) = &response.usage {
-        (u.prompt_tokens as i64, u.completion_tokens as i64)
-    } else {
-        (0, 0)
-    };
+    // Retry loop: up to 3 attempts with exponential backoff (1s, 2s).
+    let max_attempts = 3u32;
+    let mut last_err = String::new();
 
-    // Record in budget manager.
-    let total_tokens = input_tokens + output_tokens;
-    state.budget.record_usage(total_tokens).await;
+    for attempt in 0..max_attempts {
+        if attempt > 0 {
+            let delay = Duration::from_secs(1 << (attempt - 1)); // 1s, 2s
+            tracing::debug!(
+                "LmHandler: retry attempt {}/{} after {}s",
+                attempt + 1,
+                max_attempts,
+                delay.as_secs()
+            );
+            tokio::time::sleep(delay).await;
+        }
 
-    // Record in handler-level usage summary.
-    {
-        let mut usage = state.usage.write().await;
-        usage.total_calls += 1;
-        usage.total_input_tokens += input_tokens;
-        usage.total_output_tokens += output_tokens;
+        let mut req_builder = http_client.post(&url).json(&request);
+        for (k, v) in headers.iter() {
+            if let Ok(s) = v.to_str() {
+                req_builder = req_builder.header(k.as_str(), s);
+            }
+        }
+
+        let http_response = match req_builder.send().await {
+            Ok(r) => r,
+            Err(e) => {
+                last_err = format!("HTTP request failed: {e}");
+                tracing::debug!(
+                    "LmHandler: attempt {} send error: {}",
+                    attempt + 1,
+                    last_err
+                );
+                continue;
+            }
+        };
+
+        let status = http_response.status();
+        let bytes = match http_response.bytes().await {
+            Ok(b) => b,
+            Err(e) => {
+                last_err = format!("Failed to read response body: {e}");
+                tracing::debug!(
+                    "LmHandler: attempt {} body read error: {}",
+                    attempt + 1,
+                    last_err
+                );
+                continue;
+            }
+        };
+
+        if !status.is_success() {
+            // Parse error response, handling both OpenAI and Gemini formats.
+            if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                // OpenAI format: {"error": {"message": "..."}}
+                let err_obj = v
+                    .get("error")
+                    // Gemini format: [{"error": {"message": "..."}}]
+                    .or_else(|| v.get(0).and_then(|item| item.get("error")));
+                if let Some(err) = err_obj {
+                    if let Some(msg) = err.get("message").and_then(|m| m.as_str()) {
+                        last_err = format!("API error ({status}): {msg}");
+                        // Retry on 5xx / 429 (rate limit), bail on 4xx client errors.
+                        if status.is_server_error() || status.as_u16() == 429 {
+                            tracing::debug!(
+                                "LmHandler: attempt {} retryable API error: {}",
+                                attempt + 1,
+                                last_err
+                            );
+                            continue;
+                        }
+                        anyhow::bail!("{}", last_err);
+                    }
+                }
+            }
+            let body_str = String::from_utf8_lossy(&bytes);
+            last_err = format!(
+                "API error ({status}): {}",
+                &body_str[..body_str.len().min(500)]
+            );
+            if status.is_server_error() || status.as_u16() == 429 {
+                tracing::debug!(
+                    "LmHandler: attempt {} retryable error: {}",
+                    attempt + 1,
+                    last_err
+                );
+                continue;
+            }
+            anyhow::bail!("{}", last_err);
+        }
+
+        // Deserialize the successful response.
+        let response: CreateChatCompletionResponse = serde_json::from_slice(&bytes)
+            .context("Failed to deserialize chat completion response")?;
+
+        // Extract response text.
+        let text = response
+            .choices
+            .first()
+            .and_then(|c| c.message.content.clone())
+            .unwrap_or_default();
+
+        // Retry on empty response (no choices or empty content).
+        if text.is_empty() {
+            last_err = "Empty response from API (no choices or empty content)".to_string();
+            tracing::debug!(
+                "LmHandler: attempt {} empty response, retrying",
+                attempt + 1
+            );
+            continue;
+        }
+
+        // Extract usage information.
+        let (input_tokens, output_tokens) = if let Some(u) = &response.usage {
+            (u.prompt_tokens as i64, u.completion_tokens as i64)
+        } else {
+            (0, 0)
+        };
+
+        // Record in budget manager.
+        let total_tokens = input_tokens + output_tokens;
+        state.budget.record_usage(total_tokens).await;
+
+        // Record in handler-level usage summary.
+        {
+            let mut usage = state.usage.write().await;
+            usage.total_calls += 1;
+            usage.total_input_tokens += input_tokens;
+            usage.total_output_tokens += output_tokens;
+        }
+
+        tracing::debug!(
+            "LmHandler: response len={} input_tokens={input_tokens} output_tokens={output_tokens}",
+            text.len()
+        );
+
+        return Ok(text);
     }
 
-    // Extract response text.
-    let text = response
-        .choices
-        .first()
-        .and_then(|c| c.message.content.clone())
-        .unwrap_or_default();
-
-    tracing::debug!(
-        "LmHandler: response len={} input_tokens={input_tokens} output_tokens={output_tokens}",
-        text.len()
-    );
-
-    Ok(text)
+    // All attempts exhausted.
+    anyhow::bail!("LLM call failed after {max_attempts} attempts: {last_err}");
 }
 
 // ---------------------------------------------------------------------------

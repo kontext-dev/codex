@@ -75,8 +75,14 @@ async fn test_gateway_authentication() {
 
     let config = gateway_auth::build_kontext_config().expect("Config should be valid");
 
-    tracing::debug!("MCP URL: {}", config.mcp_url.as_deref().unwrap_or("(not set)"));
-    tracing::debug!("Token URL: {}", config.token_url.as_deref().unwrap_or("(not set)"));
+    tracing::debug!(
+        "MCP URL: {}",
+        config.mcp_url.as_deref().unwrap_or("(not set)")
+    );
+    tracing::debug!(
+        "Token URL: {}",
+        config.token_url.as_deref().unwrap_or("(not set)")
+    );
     tracing::debug!("Client ID: {}...", &config.client_id[..8]);
 
     let start = Instant::now();
@@ -254,7 +260,10 @@ async fn benchmark_gateway_with_rlm() {
 
     let config = gateway_auth::build_kontext_config().expect("Config should be valid");
 
-    tracing::debug!("Connecting to: {}", config.token_url.as_deref().unwrap_or("(not set)"));
+    tracing::debug!(
+        "Connecting to: {}",
+        config.token_url.as_deref().unwrap_or("(not set)")
+    );
 
     // Try to authenticate - if server is not running, skip gracefully
     let token = match gateway_auth::authenticate(&config).await {
@@ -283,7 +292,10 @@ async fn benchmark_gateway_with_rlm() {
         times
     };
 
-    assert!(!auth_times.is_empty(), "Should have auth timing measurements");
+    assert!(
+        !auth_times.is_empty(),
+        "Should have auth timing measurements"
+    );
 
     let auth_avg = auth_times
         .iter()
@@ -849,7 +861,10 @@ async fn benchmark_real_mcp_with_rlm() {
         all_latencies.extend(&latencies);
     }
 
-    assert!(!all_latencies.is_empty(), "At least one tool call should succeed");
+    assert!(
+        !all_latencies.is_empty(),
+        "At least one tool call should succeed"
+    );
 
     // Summary
     let summary = router.generate_evidence_summary().await;
@@ -998,7 +1013,11 @@ async fn benchmark_three_execution_modes() {
         // Mode 1: EXECUTE_TOOL (Baseline)
         let baseline = execute_tool_baseline(&client, scenario).await;
 
-        assert!(baseline.error.is_none(), "Baseline should not error: {:?}", baseline.error);
+        assert!(
+            baseline.error.is_none(),
+            "Baseline should not error: {:?}",
+            baseline.error
+        );
 
         // Mode 2: EXECUTE_CODE
         let codemode = execute_code_mode(&client, scenario).await;
@@ -1042,11 +1061,21 @@ async fn benchmark_three_execution_modes() {
     tracing::info!("SUMMARY");
     tracing::trace!("===================================================================");
     tracing::trace!("| Metric                | EXECUTE_TOOL | EXECUTE_CODE | EXECUTE_TOOL + RLM |");
-    tracing::trace!("|-----------------------|--------------|--------------|---------------------|");
-    tracing::trace!("| Full data in context  | Yes          | Summarized   | No (in corpus)      |");
-    tracing::trace!("| Quality preserved     | 100%         | ~30-50%      | 100%                |");
-    tracing::trace!("| Context overflow risk | HIGH         | LOW          | NONE                |");
-    tracing::trace!("| Best for              | Small data   | Speed        | Large data          |");
+    tracing::trace!(
+        "|-----------------------|--------------|--------------|---------------------|"
+    );
+    tracing::trace!(
+        "| Full data in context  | Yes          | Summarized   | No (in corpus)      |"
+    );
+    tracing::trace!(
+        "| Quality preserved     | 100%         | ~30-50%      | 100%                |"
+    );
+    tracing::trace!(
+        "| Context overflow risk | HIGH         | LOW          | NONE                |"
+    );
+    tracing::trace!(
+        "| Best for              | Small data   | Speed        | Large data          |"
+    );
 
     // Evidence summary
     let summary = router.generate_evidence_summary().await;
