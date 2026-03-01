@@ -86,19 +86,28 @@ def resolve_release_workflow(version: str) -> dict:
             "--branch",
             f"rust-v{version}",
             "--json",
-            "workflowName,url,headSha",
+            "databaseId,workflowName,url,headSha,status,conclusion",
             "--workflow",
             WORKFLOW_NAME,
-            "--jq",
-            "first(.[])",
         ],
         cwd=REPO_ROOT,
         text=True,
     )
-    workflow = json.loads(stdout or "null")
-    if not workflow:
+    runs = json.loads(stdout or "[]")
+    if not runs:
         raise RuntimeError(f"Unable to find rust-release workflow for version {version}.")
-    return workflow
+    for run in runs:
+        if run.get("status") == "completed" and run.get("conclusion") == "success":
+            return run
+    latest = runs[0]
+    latest_id = latest.get("databaseId")
+    latest_status = latest.get("status")
+    latest_conclusion = latest.get("conclusion")
+    raise RuntimeError(
+        "Unable to find a successful rust-release workflow "
+        f"for version {version}. Latest run {latest_id} is "
+        f"{latest_status}/{latest_conclusion}."
+    )
 
 
 def resolve_workflow_url(version: str, override: str | None) -> tuple[str, str | None]:
