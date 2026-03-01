@@ -172,6 +172,7 @@ use crate::file_watcher::FileWatcher;
 use crate::file_watcher::FileWatcherEvent;
 use crate::git_info::get_git_repo_root;
 use crate::instructions::UserInstructions;
+use crate::kontext_dev;
 use crate::mcp::CODEX_APPS_MCP_SERVER_NAME;
 use crate::mcp::auth::compute_auth_statuses;
 use crate::mcp::effective_mcp_servers;
@@ -1425,6 +1426,9 @@ impl Session {
             } else {
                 (None, None)
             };
+        let kontext_dev_runtime = kontext_dev::initialize_kontext_dev_runtime(config.as_ref())
+            .await
+            .map_err(|err| anyhow::anyhow!("failed to initialize Kontext-Dev runtime: {err:#}"))?;
 
         let services = SessionServices {
             // Initialize the MCP connection manager with an uninitialized
@@ -1438,6 +1442,7 @@ impl Session {
                 &config.permissions.approval_policy,
             ))),
             mcp_startup_cancellation_token: Mutex::new(CancellationToken::new()),
+            kontext_dev_runtime,
             unified_exec_manager: UnifiedExecProcessManager::new(
                 config.background_terminal_max_timeout,
             ),
@@ -5472,6 +5477,15 @@ async fn built_tools(
     skills_outcome: Option<&SkillLoadOutcome>,
     cancellation_token: &CancellationToken,
 ) -> CodexResult<Arc<ToolRouter>> {
+    let kontext_tools = if let Some(runtime) = sess.services.kontext_dev_runtime.clone() {
+        runtime
+            .list_tool_specs()
+            .await
+            .map_err(|err| CodexErr::Fatal(format!("failed to refresh Kontext tools: {err:#}")))?
+    } else {
+        Vec::new()
+    };
+
     let mcp_connection_manager = sess.services.mcp_connection_manager.read().await;
     let has_mcp_servers = mcp_connection_manager.has_servers();
     let mut mcp_tools = mcp_connection_manager
@@ -5533,6 +5547,7 @@ async fn built_tools(
         }),
         app_tools,
         turn_context.dynamic_tools.as_slice(),
+        kontext_tools.as_slice(),
     )))
 }
 
@@ -8160,6 +8175,7 @@ mod tests {
                 ),
             )),
             mcp_startup_cancellation_token: Mutex::new(CancellationToken::new()),
+            kontext_dev_runtime: None,
             unified_exec_manager: UnifiedExecProcessManager::new(
                 config.background_terminal_max_timeout,
             ),
@@ -8320,6 +8336,7 @@ mod tests {
                 ),
             )),
             mcp_startup_cancellation_token: Mutex::new(CancellationToken::new()),
+            kontext_dev_runtime: None,
             unified_exec_manager: UnifiedExecProcessManager::new(
                 config.background_terminal_max_timeout,
             ),
@@ -9174,6 +9191,7 @@ mod tests {
             ),
             app_tools,
             turn_context.dynamic_tools.as_slice(),
+            &[],
         );
         let item = ResponseItem::CustomToolCall {
             id: None,

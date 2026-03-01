@@ -2,6 +2,7 @@ use crate::client_common::tools::ToolSpec;
 use crate::codex::Session;
 use crate::codex::TurnContext;
 use crate::function_tool::FunctionCallError;
+use crate::kontext_dev::InjectedKontextToolSpec;
 use crate::mcp_connection_manager::ToolInfo;
 use crate::sandboxing::SandboxPermissions;
 use crate::tools::context::SharedTurnDiffTracker;
@@ -10,7 +11,7 @@ use crate::tools::context::ToolPayload;
 use crate::tools::registry::ConfiguredToolSpec;
 use crate::tools::registry::ToolRegistry;
 use crate::tools::spec::ToolsConfig;
-use crate::tools::spec::build_specs;
+use crate::tools::spec::build_specs_with_kontext;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::LocalShellAction;
@@ -42,8 +43,10 @@ impl ToolRouter {
         mcp_tools: Option<HashMap<String, Tool>>,
         app_tools: Option<HashMap<String, ToolInfo>>,
         dynamic_tools: &[DynamicToolSpec],
+        kontext_tools: &[InjectedKontextToolSpec],
     ) -> Self {
-        let builder = build_specs(config, mcp_tools, app_tools, dynamic_tools);
+        let builder =
+            build_specs_with_kontext(config, mcp_tools, app_tools, dynamic_tools, kontext_tools);
         let (specs, registry) = builder.build();
 
         Self { registry, specs }
@@ -251,6 +254,7 @@ mod tests {
             ),
             app_tools,
             turn.dynamic_tools.as_slice(),
+            &[],
         );
 
         let call = ToolCall {
@@ -304,6 +308,7 @@ mod tests {
             ),
             app_tools,
             turn.dynamic_tools.as_slice(),
+            &[],
         );
 
         let call = ToolCall {
