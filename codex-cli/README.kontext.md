@@ -2,6 +2,9 @@
 
 `@kontext-dev/codex` is the Kontext-maintained Codex CLI fork.
 
+This package installs the `codex-kontext` binary so it can coexist with
+`@openai/codex` on the same machine.
+
 ## 1. Install
 
 Create a GitHub Personal Access Token (classic) with `read:packages`.
