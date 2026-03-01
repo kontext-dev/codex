@@ -11,7 +11,7 @@ jobs:
     name: Identify potential duplicates
     # Prevent runs on forks (requires OpenAI API key, wastes Actions minutes)
     if: github.repository == 'openai/codex' && (github.event.action == 'opened' || (github.event.action == 'labeled' && github.event.label.name == 'codex-deduplicate'))
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions:
       contents: read
     outputs:
@@ -291,7 +291,7 @@ jobs:
     name: Comment with potential duplicates
     needs: gather-duplicates
     if: ${{ needs.gather-duplicates.result != 'skipped' }}
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions:
       contents: read
       issues: write

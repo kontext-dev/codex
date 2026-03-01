@@ -14,7 +14,7 @@ jobs:
   close-stale-contributor-prs:
     # Prevent scheduled runs on forks
     if: github.repository == 'openai/codex'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - name: Close inactive PRs from contributors
         uses: actions/github-script@v8

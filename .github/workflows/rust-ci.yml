@@ -12,7 +12,7 @@ jobs:
   # --- Detect what changed to detect which tests to run (always runs) -------------------------------------
   changed:
     name: Detect changed areas
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
       codex: ${{ steps.detect.outputs.codex }}
       workflows: ${{ steps.detect.outputs.workflows }}
@@ -51,7 +51,7 @@ jobs:
   # --- CI that doesn't need specific targets ---------------------------------
   general:
     name: Format / etc
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: changed
     if: ${{ needs.changed.outputs.codex == 'true' || needs.changed.outputs.workflows == 'true' || github.event_name == 'push' }}
     defaults:
@@ -67,7 +67,7 @@ jobs:
 
   cargo_shear:
     name: cargo shear
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: changed
     if: ${{ needs.changed.outputs.codex == 'true' || needs.changed.outputs.workflows == 'true' || github.event_name == 'push' }}
     defaults:
@@ -127,7 +127,7 @@ jobs:
               group: codex-runners
               labels: codex-linux-x64
           - runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-musl
+            target: blacksmith-4vcpu-ubuntu-2404-arm
             profile: dev
             fallback_runs_on: ubuntu-24.04-arm
             runs_on:
@@ -170,7 +170,7 @@ jobs:
               group: codex-runners
               labels: codex-linux-x64
           - runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-musl
+            target: blacksmith-4vcpu-ubuntu-2404-arm
             profile: release
             fallback_runs_on: ubuntu-24.04-arm
             runs_on:
@@ -490,7 +490,7 @@ jobs:
               group: codex-runners
               labels: codex-linux-x64
           - runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
+            target: blacksmith-4vcpu-ubuntu-2404-arm
             profile: dev
             fallback_runs_on: ubuntu-24.04-arm
             runs_on:
@@ -673,7 +673,7 @@ jobs:
     name: CI results (required)
     needs: [changed, general, cargo_shear, lint_build, tests]
     if: always()
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - name: Summarize
         shell: bash

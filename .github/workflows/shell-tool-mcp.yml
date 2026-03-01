@@ -22,7 +22,7 @@ env:
 
 jobs:
   metadata:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
       version: ${{ steps.compute.outputs.version }}
       release_tag: ${{ steps.compute.outputs.release_tag }}
@@ -99,27 +99,27 @@ jobs:
             variant: centos-9
             image: quay.io/centos/centos:stream9
           - runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-musl
+            target: blacksmith-4vcpu-ubuntu-2404-arm
             variant: ubuntu-24.04
             image: arm64v8/ubuntu:24.04
           - runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-musl
+            target: blacksmith-4vcpu-ubuntu-2404-arm
             variant: ubuntu-22.04
             image: arm64v8/ubuntu:22.04
           - runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-musl
+            target: blacksmith-4vcpu-ubuntu-2404-arm
             variant: ubuntu-20.04
             image: arm64v8/ubuntu:20.04
           - runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-musl
+            target: blacksmith-4vcpu-ubuntu-2404-arm
             variant: debian-12
             image: arm64v8/debian:12
           - runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-musl
+            target: blacksmith-4vcpu-ubuntu-2404-arm
             variant: debian-11
             image: arm64v8/debian:11
           - runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-musl
+            target: blacksmith-4vcpu-ubuntu-2404-arm
             variant: centos-9
             image: quay.io/centos/centos:stream9
     steps:
@@ -239,27 +239,27 @@ jobs:
             variant: centos-9
             image: quay.io/centos/centos:stream9
           - runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-musl
+            target: blacksmith-4vcpu-ubuntu-2404-arm
             variant: ubuntu-24.04
             image: arm64v8/ubuntu:24.04
           - runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-musl
+            target: blacksmith-4vcpu-ubuntu-2404-arm
             variant: ubuntu-22.04
             image: arm64v8/ubuntu:22.04
           - runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-musl
+            target: blacksmith-4vcpu-ubuntu-2404-arm
             variant: ubuntu-20.04
             image: arm64v8/ubuntu:20.04
           - runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-musl
+            target: blacksmith-4vcpu-ubuntu-2404-arm
             variant: debian-12
             image: arm64v8/debian:12
           - runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-musl
+            target: blacksmith-4vcpu-ubuntu-2404-arm
             variant: debian-11
             image: arm64v8/debian:11
           - runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-musl
+            target: blacksmith-4vcpu-ubuntu-2404-arm
             variant: centos-9
             image: quay.io/centos/centos:stream9
     steps:
@@ -419,7 +419,7 @@ jobs:
       - bash-darwin
       - zsh-linux
       - zsh-darwin
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     env:
       PACKAGE_VERSION: ${{ needs.metadata.outputs.version }}
     steps:
@@ -514,7 +514,7 @@ jobs:
       - metadata
       - package
     if: ${{ inputs.publish && needs.metadata.outputs.should_publish == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions:
       id-token: write
       contents: read
