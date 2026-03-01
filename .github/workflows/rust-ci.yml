@@ -86,7 +86,7 @@ jobs:
   # --- CI to validate on different os/targets --------------------------------
   lint_build:
     name: Lint/Build — ${{ matrix.runner }} - ${{ matrix.target }}${{ matrix.profile == 'release' && ' (release)' || '' }}
-    runs-on: ${{ github.repository == 'openai/codex' && matrix.runs_on || matrix.blacksmith_runs_on || matrix.fallback_runs_on || matrix.runner }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     needs: changed
     # Keep job-level if to avoid spinning up runners when not needed
@@ -109,95 +109,12 @@ jobs:
           - runner: macos-15-xlarge
             target: aarch64-apple-darwin
             profile: dev
-          - runner: macos-15-xlarge
-            target: x86_64-apple-darwin
-            profile: dev
-          - runner: ubuntu-24.04
-            target: x86_64-unknown-linux-musl
-            profile: dev
-            blacksmith_runs_on: blacksmith-8vcpu-ubuntu-2404
-            fallback_runs_on: ubuntu-24.04
-            runs_on:
-              group: codex-runners
-              labels: codex-linux-x64
-          - runner: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-            profile: dev
-            blacksmith_runs_on: blacksmith-8vcpu-ubuntu-2404
-            fallback_runs_on: ubuntu-24.04
-            runs_on:
-              group: codex-runners
-              labels: codex-linux-x64
-          - runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-musl
-            profile: dev
-            blacksmith_runs_on: blacksmith-8vcpu-ubuntu-2404-arm
-            fallback_runs_on: ubuntu-24.04-arm
-            runs_on:
-              group: codex-runners
-              labels: codex-linux-arm64
-          - runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-            profile: dev
-            blacksmith_runs_on: blacksmith-8vcpu-ubuntu-2404-arm
-            fallback_runs_on: ubuntu-24.04-arm
-            runs_on:
-              group: codex-runners
-              labels: codex-linux-arm64
-          - runner: windows-x64
-            target: x86_64-pc-windows-msvc
-            profile: dev
-            blacksmith_runs_on: blacksmith-8vcpu-windows-2025
-            fallback_runs_on: windows-2022
-            runs_on:
-              group: codex-runners
-              labels: codex-windows-x64
-          - runner: windows-arm64
-            target: aarch64-pc-windows-msvc
-            profile: dev
-            fallback_runs_on: windows-11-arm
-            runs_on:
-              group: codex-runners
-              labels: codex-windows-arm64
 
-          # Also run representative release builds on Mac and Linux because
+          # Also run a representative release build on Apple Silicon because
           # there could be release-only build errors we want to catch.
-          # Hopefully this also pre-populates the build cache to speed up
-          # releases.
           - runner: macos-15-xlarge
             target: aarch64-apple-darwin
             profile: release
-          - runner: ubuntu-24.04
-            target: x86_64-unknown-linux-musl
-            profile: release
-            blacksmith_runs_on: blacksmith-8vcpu-ubuntu-2404
-            fallback_runs_on: ubuntu-24.04
-            runs_on:
-              group: codex-runners
-              labels: codex-linux-x64
-          - runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-musl
-            profile: release
-            blacksmith_runs_on: blacksmith-8vcpu-ubuntu-2404-arm
-            fallback_runs_on: ubuntu-24.04-arm
-            runs_on:
-              group: codex-runners
-              labels: codex-linux-arm64
-          - runner: windows-x64
-            target: x86_64-pc-windows-msvc
-            profile: release
-            blacksmith_runs_on: blacksmith-8vcpu-windows-2025
-            fallback_runs_on: windows-2022
-            runs_on:
-              group: codex-runners
-              labels: codex-windows-x64
-          - runner: windows-arm64
-            target: aarch64-pc-windows-msvc
-            profile: release
-            fallback_runs_on: windows-11-arm
-            runs_on:
-              group: codex-runners
-              labels: codex-windows-arm64
 
     steps:
       - uses: actions/checkout@v6
@@ -470,7 +387,7 @@ jobs:
 
   tests:
     name: Tests — ${{ matrix.runner }} - ${{ matrix.target }}
-    runs-on: ${{ github.repository == 'openai/codex' && matrix.runs_on || matrix.blacksmith_runs_on || matrix.fallback_runs_on || matrix.runner }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     needs: changed
     if: ${{ needs.changed.outputs.codex == 'true' || needs.changed.outputs.workflows == 'true' || github.event_name == 'push' }}
@@ -490,37 +407,6 @@ jobs:
           - runner: macos-15-xlarge
             target: aarch64-apple-darwin
             profile: dev
-          - runner: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-            profile: dev
-            blacksmith_runs_on: blacksmith-8vcpu-ubuntu-2404
-            fallback_runs_on: ubuntu-24.04
-            runs_on:
-              group: codex-runners
-              labels: codex-linux-x64
-          - runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-            profile: dev
-            blacksmith_runs_on: blacksmith-8vcpu-ubuntu-2404-arm
-            fallback_runs_on: ubuntu-24.04-arm
-            runs_on:
-              group: codex-runners
-              labels: codex-linux-arm64
-          - runner: windows-x64
-            target: x86_64-pc-windows-msvc
-            profile: dev
-            blacksmith_runs_on: blacksmith-8vcpu-windows-2025
-            fallback_runs_on: windows-2022
-            runs_on:
-              group: codex-runners
-              labels: codex-windows-x64
-          - runner: windows-arm64
-            target: aarch64-pc-windows-msvc
-            profile: dev
-            fallback_runs_on: windows-11-arm
-            runs_on:
-              group: codex-runners
-              labels: codex-windows-arm64
 
     steps:
       - uses: actions/checkout@v6
