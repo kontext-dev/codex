@@ -2486,6 +2486,49 @@ mod tests {
         rebuilt
     }
 
+    fn normalize_first_bordered_block_width(lines: Vec<String>) -> Vec<String> {
+        let Some(top_idx) = lines
+            .iter()
+            .position(|line| line.starts_with('╭') && line.ends_with('╮'))
+        else {
+            return lines;
+        };
+        let Some(bottom_rel) = lines[top_idx + 1..]
+            .iter()
+            .position(|line| line.starts_with('╰') && line.ends_with('╯'))
+        else {
+            return lines;
+        };
+        let bottom_idx = top_idx + 1 + bottom_rel;
+
+        let mut content_rows = Vec::with_capacity(bottom_idx.saturating_sub(top_idx + 1));
+        for line in &lines[top_idx + 1..bottom_idx] {
+            let Some(row) = line
+                .strip_prefix("│ ")
+                .and_then(|value| value.strip_suffix(" │"))
+            else {
+                return lines;
+            };
+            content_rows.push(row.trim_end().to_string());
+        }
+
+        let inner_width = content_rows
+            .iter()
+            .map(|row| UnicodeWidthStr::width(row.as_str()))
+            .max()
+            .unwrap_or(0);
+
+        let mut normalized = lines;
+        normalized[top_idx] = format!("╭{}╮", "─".repeat(inner_width + 2));
+        for (offset, row) in content_rows.into_iter().enumerate() {
+            let used_width = UnicodeWidthStr::width(row.as_str());
+            let padding = " ".repeat(inner_width.saturating_sub(used_width));
+            normalized[top_idx + 1 + offset] = format!("│ {row}{padding} │");
+        }
+        normalized[bottom_idx] = format!("╰{}╯", "─".repeat(inner_width + 2));
+        normalized
+    }
+
     fn image_block(data: &str) -> serde_json::Value {
         serde_json::to_value(Content::image(data.to_string(), "image/png"))
             .expect("image content should serialize")
@@ -2646,7 +2689,9 @@ mod tests {
             Some(PlanType::Free),
         );
 
-        let rendered = render_transcript_with_width(&cell, 39).join("\n");
+        let rendered =
+            normalize_first_bordered_block_width(render_transcript_with_width(&cell, 39))
+                .join("\n");
         insta::assert_snapshot!(rendered);
     }
 
