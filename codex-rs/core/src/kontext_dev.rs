@@ -20,6 +20,7 @@ use tracing::warn;
 use url::Url;
 
 use crate::config::Config;
+use crate::default_client::CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR;
 
 const MAX_TOOL_NAME_LENGTH: usize = 64;
 const TOOL_NAME_PREFIX: &str = "kontext__";
@@ -390,6 +391,14 @@ pub(crate) async fn initialize_kontext_dev_runtime(
         return Ok(None);
     }
 
+    if should_skip_kontext_runtime_for_originator(
+        std::env::var(CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR)
+            .ok()
+            .as_deref(),
+    ) {
+        return Ok(None);
+    }
+
     let settings = baked_kontext_dev_settings();
 
     let client = create_kontext_orchestrator(KontextClientConfig {
@@ -596,6 +605,10 @@ fn should_retry_tool_execution(err: &KontextDevError) -> bool {
     }
 }
 
+fn should_skip_kontext_runtime_for_originator(originator_override: Option<&str>) -> bool {
+    originator_override.is_some_and(|originator| originator.starts_with("codex_sdk_"))
+}
+
 fn unique_tool_name(raw: &str, seen_names: &mut HashSet<String>) -> String {
     let mut candidate = sanitize_responses_api_tool_name(raw);
     if candidate.len() > MAX_TOOL_NAME_LENGTH {
@@ -779,5 +792,22 @@ mod tests {
             .await
             .expect("runtime init should not fail in tests");
         assert!(runtime.is_none());
+    }
+
+    #[test]
+    fn sdk_originator_override_skips_runtime_init() {
+        assert!(should_skip_kontext_runtime_for_originator(Some(
+            "codex_sdk_ts"
+        )));
+        assert!(should_skip_kontext_runtime_for_originator(Some(
+            "codex_sdk_python"
+        )));
+        assert!(!should_skip_kontext_runtime_for_originator(Some(
+            "codex_exec"
+        )));
+        assert!(!should_skip_kontext_runtime_for_originator(Some(
+            "codex-kontext-cli"
+        )));
+        assert!(!should_skip_kontext_runtime_for_originator(None));
     }
 }
