@@ -45,7 +45,7 @@ pub(crate) struct InjectedKontextToolSpec {
 struct DisconnectedCapability {
     id: String,
     name: String,
-    connect_url: String,
+    connect_url: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -104,20 +104,16 @@ impl KontextDevRuntime {
         let disconnected_capabilities = match self.client.integrations_list().await {
             Ok(integrations) => integrations
                 .into_iter()
-                .filter_map(|integration| {
-                    if integration.connected {
-                        return None;
-                    }
-                    integration
-                        .connect_url
-                        .map(|connect_url| DisconnectedCapability {
-                            id: integration.id,
-                            name: integration.name,
-                            connect_url: normalize_connect_url(
-                                connect_url.as_str(),
-                                self.settings.integration_ui_url.as_deref(),
-                            ),
-                        })
+                .filter(|integration| !integration.connected)
+                .map(|integration| DisconnectedCapability {
+                    id: integration.id,
+                    name: integration.name,
+                    connect_url: integration.connect_url.map(|raw_url| {
+                        normalize_connect_url(
+                            raw_url.as_str(),
+                            self.settings.integration_ui_url.as_deref(),
+                        )
+                    }),
                 })
                 .collect::<Vec<_>>(),
             Err(err) if is_url_elicitation_required_error(&err) => {
@@ -143,6 +139,14 @@ impl KontextDevRuntime {
         state.needs_connect_page = needs_connect_page;
 
         Ok(tool_specs)
+    }
+
+    async fn connect_page_url(&self) -> Result<String> {
+        let connect = self.client.get_connect_page_url().await?;
+        Ok(normalize_connect_url(
+            connect.connect_url.as_str(),
+            self.settings.integration_ui_url.as_deref(),
+        ))
     }
 
     pub(crate) async fn execute_tool(
@@ -241,12 +245,8 @@ impl KontextDevRuntime {
             disconnected.as_slice(),
             needs_connect_page,
         ) {
-            match self.client.get_connect_page_url().await {
-                Ok(connect) => {
-                    let connect_url = normalize_connect_url(
-                        connect.connect_url.as_str(),
-                        self.settings.integration_ui_url.as_deref(),
-                    );
+            match self.connect_page_url().await {
+                Ok(connect_url) => {
                     info!(
                         "Kontext integrations are disconnected. Open this URL to connect: {connect_url}"
                     );
@@ -266,10 +266,23 @@ impl KontextDevRuntime {
         }
 
         if let Some(first) = disconnected.first() {
-            warn!(
-                "Kontext integration `{}` is disconnected. Open this URL to connect: {}",
-                first.name, first.connect_url
-            );
+            if let Some(connect_url) = first.connect_url.as_deref() {
+                warn!(
+                    "Kontext integration `{}` is disconnected. Open this URL to connect: {connect_url}",
+                    first.name
+                );
+            } else {
+                match self.connect_page_url().await {
+                    Ok(connect_url) => warn!(
+                        "Kontext integration `{}` is disconnected. Open this URL to connect/manage integrations: {connect_url}",
+                        first.name
+                    ),
+                    Err(err) => warn!(
+                        "Kontext integration `{}` is disconnected and generating a connect URL failed: {err}",
+                        first.name
+                    ),
+                }
+            }
         } else if needs_connect_page {
             warn!(
                 "Kontext requires integration connection before tools are available. Open the connect page to finish setup."
@@ -291,12 +304,8 @@ impl KontextDevRuntime {
         };
 
         if requested.is_empty() {
-            return match self.client.get_connect_page_url().await {
-                Ok(connect) => {
-                    let connect_url = normalize_connect_url(
-                        connect.connect_url.as_str(),
-                        self.settings.integration_ui_url.as_deref(),
-                    );
+            return match self.connect_page_url().await {
+                Ok(connect_url) => {
                     if disconnected.is_empty() {
                         Ok(format!(
                             "All Kontext integrations are currently connected. Open this URL to manage integrations: {connect_url}"
@@ -332,16 +341,10 @@ impl KontextDevRuntime {
         }
 
         if disconnected.is_empty() {
-            return match self.client.get_connect_page_url().await {
-                Ok(connect) => {
-                    let connect_url = normalize_connect_url(
-                        connect.connect_url.as_str(),
-                        self.settings.integration_ui_url.as_deref(),
-                    );
-                    Ok(format!(
-                        "All Kontext integrations are currently connected. Open this URL to manage integrations: {connect_url}"
-                    ))
-                }
+            return match self.connect_page_url().await {
+                Ok(connect_url) => Ok(format!(
+                    "All Kontext integrations are currently connected. Open this URL to manage integrations: {connect_url}"
+                )),
                 Err(err) => Ok(format!(
                     "All Kontext integrations are currently connected, but generating a manage URL failed: {err}"
                 )),
@@ -353,10 +356,23 @@ impl KontextDevRuntime {
             capability.name.to_ascii_lowercase() == requested_lower
                 || capability.id.to_ascii_lowercase() == requested_lower
         }) {
-            return Ok(format!(
-                "{} requires authorization. Connect it here: {}",
-                capability.name, capability.connect_url
-            ));
+            if let Some(connect_url) = capability.connect_url.as_deref() {
+                return Ok(format!(
+                    "{} requires authorization. Connect it here: {connect_url}",
+                    capability.name
+                ));
+            }
+
+            return match self.connect_page_url().await {
+                Ok(connect_url) => Ok(format!(
+                    "{} requires authorization. Open this URL to connect/manage integrations: {connect_url}",
+                    capability.name
+                )),
+                Err(err) => Ok(format!(
+                    "{} requires authorization, but generating a connect URL failed: {err}",
+                    capability.name
+                )),
+            };
         }
 
         let available = disconnected
@@ -691,7 +707,7 @@ mod tests {
         let disconnected = vec![DisconnectedCapability {
             id: "linear".to_string(),
             name: "Linear".to_string(),
-            connect_url: "http://localhost:3000/oauth/connect?session=123".to_string(),
+            connect_url: None,
         }];
 
         assert!(should_auto_open_connect_page(
