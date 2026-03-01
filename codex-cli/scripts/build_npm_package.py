@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Stage and optionally package the @openai/codex npm module."""
+"""Stage and optionally package the Codex npm module."""
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -14,48 +15,71 @@ CODEX_CLI_ROOT = SCRIPT_DIR.parent
 REPO_ROOT = CODEX_CLI_ROOT.parent
 RESPONSES_API_PROXY_NPM_ROOT = REPO_ROOT / "codex-rs" / "responses-api-proxy" / "npm"
 CODEX_SDK_ROOT = REPO_ROOT / "sdk" / "typescript"
-CODEX_NPM_NAME = "@openai/codex"
+DEFAULT_NPM_SCOPE = "openai"
+KONTEXT_NPM_SCOPE = "kontext-dev"
+KONTEXT_CODEX_DESCRIPTION = (
+    "Kontext Codex CLI fork with baked Kontext OAuth and MCP integration defaults."
+)
+
+
+def _normalized_npm_scope() -> str:
+    scope = os.environ.get("CODEX_NPM_SCOPE", DEFAULT_NPM_SCOPE).strip()
+    if scope.startswith("@"):
+        scope = scope[1:]
+    if not scope:
+        raise RuntimeError("CODEX_NPM_SCOPE must not be empty.")
+    return scope
+
+
+NPM_SCOPE = _normalized_npm_scope()
+
+
+def _scoped_package_name(base: str) -> str:
+    return f"@{NPM_SCOPE}/{base}"
+
+
+CODEX_NPM_NAME = _scoped_package_name("codex")
 
 # `npm_name` is the local optional-dependency alias consumed by `bin/codex.js`.
-# The underlying package published to npm is always `@openai/codex`.
+# The underlying package published to npm is always CODEX_NPM_NAME.
 CODEX_PLATFORM_PACKAGES: dict[str, dict[str, str]] = {
     "codex-linux-x64": {
-        "npm_name": "@openai/codex-linux-x64",
+        "npm_name": _scoped_package_name("codex-linux-x64"),
         "npm_tag": "linux-x64",
         "target_triple": "x86_64-unknown-linux-musl",
         "os": "linux",
         "cpu": "x64",
     },
     "codex-linux-arm64": {
-        "npm_name": "@openai/codex-linux-arm64",
+        "npm_name": _scoped_package_name("codex-linux-arm64"),
         "npm_tag": "linux-arm64",
         "target_triple": "aarch64-unknown-linux-musl",
         "os": "linux",
         "cpu": "arm64",
     },
     "codex-darwin-x64": {
-        "npm_name": "@openai/codex-darwin-x64",
+        "npm_name": _scoped_package_name("codex-darwin-x64"),
         "npm_tag": "darwin-x64",
         "target_triple": "x86_64-apple-darwin",
         "os": "darwin",
         "cpu": "x64",
     },
     "codex-darwin-arm64": {
-        "npm_name": "@openai/codex-darwin-arm64",
+        "npm_name": _scoped_package_name("codex-darwin-arm64"),
         "npm_tag": "darwin-arm64",
         "target_triple": "aarch64-apple-darwin",
         "os": "darwin",
         "cpu": "arm64",
     },
     "codex-win32-x64": {
-        "npm_name": "@openai/codex-win32-x64",
+        "npm_name": _scoped_package_name("codex-win32-x64"),
         "npm_tag": "win32-x64",
         "target_triple": "x86_64-pc-windows-msvc",
         "os": "win32",
         "cpu": "x64",
     },
     "codex-win32-arm64": {
-        "npm_name": "@openai/codex-win32-arm64",
+        "npm_name": _scoped_package_name("codex-win32-arm64"),
         "npm_tag": "win32-arm64",
         "target_triple": "aarch64-pc-windows-msvc",
         "os": "win32",
@@ -93,6 +117,39 @@ COMPONENT_DEST_DIR: dict[str, str] = {
     "codex-command-runner": "codex",
     "rg": "path",
 }
+
+
+def _is_kontext_scope() -> bool:
+    return NPM_SCOPE == KONTEXT_NPM_SCOPE
+
+
+def _codex_readme_source() -> Path:
+    if _is_kontext_scope():
+        kontext_readme = CODEX_CLI_ROOT / "README.kontext.md"
+        if kontext_readme.exists():
+            return kontext_readme
+    return REPO_ROOT / "README.md"
+
+
+def _copy_codex_readme(staging_dir: Path) -> None:
+    readme_src = _codex_readme_source()
+    if readme_src.exists():
+        shutil.copy2(readme_src, staging_dir / "README.md")
+
+
+def _apply_kontext_codex_metadata(package_json: dict, package: str) -> None:
+    if not _is_kontext_scope():
+        return
+    if package == "codex":
+        package_json["description"] = KONTEXT_CODEX_DESCRIPTION
+        package_json["repository"] = {
+            "type": "git",
+            "url": "git+https://github.com/kontext-dev/codex.git",
+            "directory": "codex-cli",
+        }
+        return
+    if package in CODEX_PLATFORM_PACKAGES:
+        package_json["description"] = KONTEXT_CODEX_DESCRIPTION
 
 
 def parse_args() -> argparse.Namespace:
@@ -245,9 +302,7 @@ def stage_sources(staging_dir: Path, version: str, package: str) -> None:
         if rg_manifest.exists():
             shutil.copy2(rg_manifest, bin_dir / "rg")
 
-        readme_src = REPO_ROOT / "README.md"
-        if readme_src.exists():
-            shutil.copy2(readme_src, staging_dir / "README.md")
+        _copy_codex_readme(staging_dir)
 
         package_json_path = CODEX_CLI_ROOT / "package.json"
     elif package in CODEX_PLATFORM_PACKAGES:
@@ -255,9 +310,7 @@ def stage_sources(staging_dir: Path, version: str, package: str) -> None:
         platform_npm_tag = platform_package["npm_tag"]
         platform_version = compute_platform_package_version(version, platform_npm_tag)
 
-        readme_src = REPO_ROOT / "README.md"
-        if readme_src.exists():
-            shutil.copy2(readme_src, staging_dir / "README.md")
+        _copy_codex_readme(staging_dir)
 
         with open(CODEX_CLI_ROOT / "package.json", "r", encoding="utf-8") as fh:
             codex_package_json = json.load(fh)
@@ -300,6 +353,14 @@ def stage_sources(staging_dir: Path, version: str, package: str) -> None:
         with open(package_json_path, "r", encoding="utf-8") as fh:
             package_json = json.load(fh)
         package_json["version"] = version
+        if package == "codex":
+            package_json["name"] = CODEX_NPM_NAME
+        elif package == "codex-responses-api-proxy":
+            package_json["name"] = _scoped_package_name("codex-responses-api-proxy")
+        elif package == "codex-sdk":
+            package_json["name"] = _scoped_package_name("codex-sdk")
+
+    _apply_kontext_codex_metadata(package_json, package)
 
     if package == "codex":
         package_json["files"] = ["bin"]

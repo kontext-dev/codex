@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+import time
 import zipfile
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -81,6 +82,8 @@ DEFAULT_RG_TARGETS = [target for target, _ in RG_TARGET_PLATFORM_PAIRS]
 
 # urllib.request.urlopen() defaults to no timeout (can hang indefinitely), which is painful in CI.
 DOWNLOAD_TIMEOUT_SECS = 60
+ARTIFACT_DOWNLOAD_RETRY_SECS = 20
+ARTIFACT_DOWNLOAD_TIMEOUT_SECS = 30 * 60
 
 
 def _gha_enabled() -> bool:
@@ -151,6 +154,22 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _parse_workflow_reference(workflow_url: str) -> tuple[str, str]:
+    parsed = urlparse(workflow_url)
+    path_parts = [part for part in parsed.path.split("/") if part]
+
+    if parsed.netloc != "github.com":
+        raise ValueError(f"Expected a github.com workflow URL, got: {workflow_url}")
+    if len(path_parts) < 5 or path_parts[2] != "actions" or path_parts[3] != "runs":
+        raise ValueError(f"Expected a GitHub Actions run URL, got: {workflow_url}")
+
+    workflow_id = path_parts[4]
+    if not workflow_id.isdigit():
+        raise ValueError(f"Expected numeric workflow id in URL, got: {workflow_url}")
+
+    return f"{path_parts[0]}/{path_parts[1]}", workflow_id
+
+
 def main() -> int:
     args = parse_args()
 
@@ -169,13 +188,13 @@ def main() -> int:
     if not workflow_url:
         workflow_url = DEFAULT_WORKFLOW_URL
 
-    workflow_id = workflow_url.rstrip("/").split("/")[-1]
-    print(f"Downloading native artifacts from workflow {workflow_id}...")
+    workflow_repo, workflow_id = _parse_workflow_reference(workflow_url)
+    print(f"Downloading native artifacts from workflow {workflow_id} in {workflow_repo}...")
 
-    with _gha_group(f"Download native artifacts from workflow {workflow_id}"):
+    with _gha_group(f"Download native artifacts from workflow {workflow_id} in {workflow_repo}"):
         with tempfile.TemporaryDirectory(prefix="codex-native-artifacts-") as artifacts_dir_str:
             artifacts_dir = Path(artifacts_dir_str)
-            _download_artifacts(workflow_id, artifacts_dir)
+            _download_artifacts(workflow_repo, workflow_id, artifacts_dir)
             install_binary_components(
                 artifacts_dir,
                 vendor_dir,
@@ -259,7 +278,7 @@ def fetch_rg(
     return [results[target] for target in targets]
 
 
-def _download_artifacts(workflow_id: str, dest_dir: Path) -> None:
+def _download_artifacts(repo: str, workflow_id: str, dest_dir: Path) -> None:
     cmd = [
         "gh",
         "run",
@@ -267,10 +286,98 @@ def _download_artifacts(workflow_id: str, dest_dir: Path) -> None:
         "--dir",
         str(dest_dir),
         "--repo",
-        "openai/codex",
+        repo,
         workflow_id,
     ]
-    subprocess.check_call(cmd)
+    timeout_secs = int(
+        os.environ.get(
+            "CODEX_ARTIFACT_DOWNLOAD_TIMEOUT_SECS",
+            str(ARTIFACT_DOWNLOAD_TIMEOUT_SECS),
+        )
+    )
+    retry_secs = int(
+        os.environ.get(
+            "CODEX_ARTIFACT_DOWNLOAD_RETRY_SECS",
+            str(ARTIFACT_DOWNLOAD_RETRY_SECS),
+        )
+    )
+    deadline = time.monotonic() + timeout_secs
+    attempt = 1
+
+    while True:
+        result = subprocess.run(cmd, text=True, capture_output=True, check=False)
+        if result.returncode == 0:
+            return
+
+        combined_output = "\n".join(
+            part.strip() for part in (result.stdout, result.stderr) if part and part.strip()
+        )
+        no_artifacts = "no valid artifacts found to download" in combined_output.lower()
+        if not no_artifacts:
+            raise subprocess.CalledProcessError(
+                result.returncode,
+                cmd,
+                output=result.stdout,
+                stderr=result.stderr,
+            )
+
+        run_state = _workflow_run_state(repo, workflow_id)
+        artifacts_count = _workflow_artifact_count(repo, workflow_id)
+
+        remaining = int(deadline - time.monotonic())
+        if remaining <= 0:
+            raise RuntimeError(
+                "Timed out waiting for downloadable workflow artifacts: "
+                f"repo={repo} workflow_id={workflow_id} "
+                f"status={run_state[0]!r} conclusion={run_state[1]!r} "
+                f"artifact_count={artifacts_count!r}"
+            ) from None
+
+        print(
+            "Artifacts are not ready yet; retrying: "
+            f"attempt={attempt} status={run_state[0]!r} conclusion={run_state[1]!r} "
+            f"artifact_count={artifacts_count!r} remaining={remaining}s"
+        )
+        time.sleep(retry_secs)
+        attempt += 1
+
+
+def _workflow_run_state(repo: str, workflow_id: str) -> tuple[str | None, str | None]:
+    cmd = [
+        "gh",
+        "api",
+        f"repos/{repo}/actions/runs/{workflow_id}",
+        "--jq",
+        "[.status, .conclusion] | @tsv",
+    ]
+    result = subprocess.run(cmd, text=True, capture_output=True, check=False)
+    if result.returncode != 0:
+        return None, None
+
+    fields = result.stdout.strip().split("\t")
+    if len(fields) != 2:
+        return None, None
+
+    status, conclusion = fields
+    return status or None, conclusion or None
+
+
+def _workflow_artifact_count(repo: str, workflow_id: str) -> int | None:
+    cmd = [
+        "gh",
+        "api",
+        f"repos/{repo}/actions/runs/{workflow_id}/artifacts",
+        "--jq",
+        ".artifacts | length",
+    ]
+    result = subprocess.run(cmd, text=True, capture_output=True, check=False)
+    if result.returncode != 0:
+        return None
+
+    try:
+        return int(result.stdout.strip())
+    except ValueError:
+        return None
 
 
 def install_binary_components(

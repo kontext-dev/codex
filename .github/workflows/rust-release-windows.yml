@@ -8,17 +8,17 @@ on:
         type: string
     secrets:
       AZURE_TRUSTED_SIGNING_CLIENT_ID:
-        required: true
+        required: false
       AZURE_TRUSTED_SIGNING_TENANT_ID:
-        required: true
+        required: false
       AZURE_TRUSTED_SIGNING_SUBSCRIPTION_ID:
-        required: true
+        required: false
       AZURE_TRUSTED_SIGNING_ENDPOINT:
-        required: true
+        required: false
       AZURE_TRUSTED_SIGNING_ACCOUNT_NAME:
-        required: true
+        required: false
       AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME:
-        required: true
+        required: false
 
 jobs:
   build-windows-binaries:
@@ -41,30 +41,22 @@ jobs:
             target: x86_64-pc-windows-msvc
             bundle: primary
             build_args: --bin codex --bin codex-responses-api-proxy
-            runs_on:
-              group: codex-runners
-              labels: codex-windows-x64
+            runs_on: windows-2022
           - runner: windows-arm64
             target: aarch64-pc-windows-msvc
             bundle: primary
             build_args: --bin codex --bin codex-responses-api-proxy
-            runs_on:
-              group: codex-runners
-              labels: codex-windows-arm64
+            runs_on: windows-2022
           - runner: windows-x64
             target: x86_64-pc-windows-msvc
             bundle: helpers
             build_args: --bin codex-windows-sandbox-setup --bin codex-command-runner
-            runs_on:
-              group: codex-runners
-              labels: codex-windows-x64
+            runs_on: windows-2022
           - runner: windows-arm64
             target: aarch64-pc-windows-msvc
             bundle: helpers
             build_args: --bin codex-windows-sandbox-setup --bin codex-command-runner
-            runs_on:
-              group: codex-runners
-              labels: codex-windows-arm64
+            runs_on: windows-2022
 
     steps:
       - uses: actions/checkout@v6
@@ -137,14 +129,10 @@ jobs:
         include:
           - runner: windows-x64
             target: x86_64-pc-windows-msvc
-            runs_on:
-              group: codex-runners
-              labels: codex-windows-x64
+            runs_on: windows-2022
           - runner: windows-arm64
             target: aarch64-pc-windows-msvc
-            runs_on:
-              group: codex-runners
-              labels: codex-windows-arm64
+            runs_on: windows-2022
 
     steps:
       - uses: actions/checkout@v6
