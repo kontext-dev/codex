@@ -127,7 +127,7 @@ jobs:
               group: codex-runners
               labels: codex-linux-x64
           - runner: ubuntu-24.04-arm
-            target: blacksmith-4vcpu-ubuntu-2404-arm
+            target: aarch64-unknown-linux-musl
             profile: dev
             fallback_runs_on: ubuntu-24.04-arm
             runs_on:
@@ -170,7 +170,7 @@ jobs:
               group: codex-runners
               labels: codex-linux-x64
           - runner: ubuntu-24.04-arm
-            target: blacksmith-4vcpu-ubuntu-2404-arm
+            target: aarch64-unknown-linux-musl
             profile: release
             fallback_runs_on: ubuntu-24.04-arm
             runs_on:
@@ -490,7 +490,7 @@ jobs:
               group: codex-runners
               labels: codex-linux-x64
           - runner: ubuntu-24.04-arm
-            target: blacksmith-4vcpu-ubuntu-2404-arm
+            target: aarch64-unknown-linux-gnu
             profile: dev
             fallback_runs_on: ubuntu-24.04-arm
             runs_on:
