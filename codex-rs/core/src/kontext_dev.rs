@@ -8,9 +8,7 @@ use kontext_dev_sdk::KontextClientConfig;
 use kontext_dev_sdk::KontextDevError;
 use kontext_dev_sdk::create_kontext_orchestrator;
 use kontext_dev_sdk::mcp::KontextTool;
-use kontext_dev_sdk::mcp::KontextToolServer;
 use kontext_dev_sdk::orchestrator::KontextOrchestrator;
-use serde::Deserialize;
 use serde_json::Map;
 use serde_json::Value;
 use serde_json::json;
@@ -26,9 +24,6 @@ use crate::default_client::CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR;
 
 const MAX_TOOL_NAME_LENGTH: usize = 64;
 const TOOL_NAME_PREFIX: &str = "kontext__";
-const META_SEARCH_TOOLS: &str = "SEARCH_TOOLS";
-const META_EXECUTE_TOOL: &str = "EXECUTE_TOOL";
-const META_REQUEST_CAPABILITY: &str = "REQUEST_CAPABILITY";
 const KONTEXT_CLIENT_ID: &str = "app_6736f70c-1c16-421e-b56f-2ae2c8c59950";
 const KONTEXT_REDIRECT_URI: &str = "http://localhost:3333/callback";
 const KONTEXT_SERVER_URL: &str = "https://api.kontext.dev/mcp";
@@ -79,7 +74,7 @@ impl KontextDevRuntime {
         }
 
         let mut needs_connect_page = false;
-        let tools = match self.load_tools_with_gateway_meta_fallback().await {
+        let tools = match self.client.tools_list().await {
             Ok(tools) => tools,
             Err(err) if is_url_elicitation_required_error(&err) => {
                 warn!(
@@ -149,41 +144,6 @@ impl KontextDevRuntime {
             connect.connect_url.as_str(),
             self.settings.integration_ui_url.as_deref(),
         ))
-    }
-
-    async fn load_tools_with_gateway_meta_fallback(&self) -> Result<Vec<KontextTool>> {
-        let tools = self.client.tools_list().await?;
-        let mcp_tools = self.client.mcp().list_tools().await?;
-
-        if !should_force_gateway_search(mcp_tools.as_slice(), tools.as_slice()) {
-            return Ok(tools);
-        }
-
-        match self.gateway_tools_via_meta_search().await {
-            Ok(gateway_tools) => Ok(merge_gateway_tools_with_capability(
-                gateway_tools,
-                tools.as_slice(),
-            )),
-            Err(err) => {
-                warn!(
-                    "Failed to force gateway SEARCH_TOOLS after meta-tool detection mismatch; using SDK-discovered tool list: {err}"
-                );
-                Ok(tools)
-            }
-        }
-    }
-
-    async fn gateway_tools_via_meta_search(&self) -> Result<Vec<KontextTool>> {
-        let mut args = Map::new();
-        args.insert("limit".to_string(), Value::from(200));
-        let result = self
-            .client
-            .mcp()
-            .call_tool(META_SEARCH_TOOLS, Some(args))
-            .await
-            .map_err(|err| anyhow!("meta SEARCH_TOOLS call failed: {err}"))?;
-
-        parse_gateway_tools_from_search_result(&result)
     }
 
     pub(crate) async fn execute_tool(
@@ -497,139 +457,6 @@ fn normalize_connect_url(raw_url: &str, integration_ui_url: Option<&str>) -> Str
     base_url.to_string()
 }
 
-fn has_gateway_meta_tools(mcp_tools: &[KontextTool]) -> bool {
-    let mut has_search = false;
-    let mut has_execute = false;
-
-    for tool in mcp_tools {
-        if tool.name == META_SEARCH_TOOLS {
-            has_search = true;
-        } else if tool.name == META_EXECUTE_TOOL {
-            has_execute = true;
-        }
-    }
-
-    has_search && has_execute
-}
-
-fn should_force_gateway_search(mcp_tools: &[KontextTool], sdk_tools: &[KontextTool]) -> bool {
-    if !has_gateway_meta_tools(mcp_tools) {
-        return false;
-    }
-
-    if sdk_tools.is_empty() {
-        return true;
-    }
-
-    sdk_tools
-        .iter()
-        .all(|tool| tool.name == META_REQUEST_CAPABILITY)
-}
-
-fn merge_gateway_tools_with_capability(
-    mut gateway_tools: Vec<KontextTool>,
-    sdk_tools: &[KontextTool],
-) -> Vec<KontextTool> {
-    if gateway_tools
-        .iter()
-        .any(|tool| tool.name == META_REQUEST_CAPABILITY)
-    {
-        return gateway_tools;
-    }
-
-    if let Some(capability_tool) = sdk_tools
-        .iter()
-        .find(|tool| tool.name == META_REQUEST_CAPABILITY)
-    {
-        gateway_tools.push(capability_tool.clone());
-    }
-
-    gateway_tools
-}
-
-fn parse_gateway_tools_from_search_result(raw: &Value) -> Result<Vec<KontextTool>> {
-    let json_text = extract_json_resource_text(raw)
-        .ok_or_else(|| anyhow!("SEARCH_TOOLS returned no JSON resource content"))?;
-    let parsed = serde_json::from_str::<Value>(json_text)
-        .map_err(|err| anyhow!("SEARCH_TOOLS returned invalid JSON: {err}"))?;
-
-    let tool_items = if let Some(items) = parsed.as_array() {
-        items.clone()
-    } else {
-        parsed
-            .get("items")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default()
-    };
-
-    tool_items
-        .into_iter()
-        .map(|item| {
-            let summary = serde_json::from_value::<GatewayToolSummary>(item)
-                .map_err(|err| anyhow!("SEARCH_TOOLS returned invalid tool entry: {err}"))?;
-            let server = summary.server.and_then(|server| {
-                server.id.map(|id| KontextToolServer {
-                    id,
-                    name: server.name,
-                })
-            });
-
-            Ok(KontextTool {
-                id: summary.id,
-                name: summary.name,
-                description: summary.description,
-                input_schema: summary.input_schema,
-                server,
-            })
-        })
-        .collect::<Result<Vec<_>>>()
-}
-
-fn extract_json_resource_text(result: &Value) -> Option<&str> {
-    let content = result.get("content")?.as_array()?;
-    for item in content {
-        if item.get("type").and_then(Value::as_str) != Some("resource") {
-            continue;
-        }
-
-        let Some(resource) = item.get("resource") else {
-            continue;
-        };
-        if resource.get("mimeType").and_then(Value::as_str) != Some("application/json") {
-            continue;
-        }
-
-        if let Some(text) = resource.get("text").and_then(Value::as_str) {
-            return Some(text);
-        }
-    }
-
-    None
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct GatewayToolSummary {
-    id: String,
-    name: String,
-    #[serde(default)]
-    description: Option<String>,
-    #[serde(default)]
-    input_schema: Option<Value>,
-    #[serde(default)]
-    server: Option<GatewayToolServer>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct GatewayToolServer {
-    #[serde(default)]
-    id: Option<String>,
-    #[serde(default)]
-    name: Option<String>,
-}
-
 fn is_url_elicitation_required_error(err: &KontextDevError) -> bool {
     match err {
         KontextDevError::ConnectSession { message } => {
@@ -798,92 +625,6 @@ mod tests {
         assert!(is_url_elicitation_required_error(&required_error));
         assert!(!is_url_elicitation_required_error(&other_connect_error));
         assert!(!is_url_elicitation_required_error(&other_error));
-    }
-
-    fn test_tool(name: &str) -> KontextTool {
-        KontextTool {
-            id: name.to_string(),
-            name: name.to_string(),
-            description: None,
-            input_schema: None,
-            server: None,
-        }
-    }
-
-    #[test]
-    fn force_gateway_search_when_sdk_only_exposes_request_capability() {
-        let mcp_tools = vec![
-            test_tool(META_SEARCH_TOOLS),
-            test_tool(META_EXECUTE_TOOL),
-            test_tool(META_REQUEST_CAPABILITY),
-        ];
-        let sdk_tools = vec![test_tool(META_REQUEST_CAPABILITY)];
-
-        assert!(should_force_gateway_search(
-            mcp_tools.as_slice(),
-            sdk_tools.as_slice()
-        ));
-    }
-
-    #[test]
-    fn do_not_force_gateway_search_when_non_capability_tools_are_present() {
-        let mcp_tools = vec![
-            test_tool(META_SEARCH_TOOLS),
-            test_tool(META_EXECUTE_TOOL),
-            test_tool(META_REQUEST_CAPABILITY),
-        ];
-        let sdk_tools = vec![test_tool("list_issues"), test_tool(META_REQUEST_CAPABILITY)];
-
-        assert!(!should_force_gateway_search(
-            mcp_tools.as_slice(),
-            sdk_tools.as_slice()
-        ));
-    }
-
-    #[test]
-    fn parse_gateway_tools_reads_items_payload_from_json_resource() {
-        let raw = json!({
-            "content": [
-                {
-                    "type": "resource",
-                    "resource": {
-                        "mimeType": "application/json",
-                        "text": "{\"items\":[{\"id\":\"linear:list_issues\",\"name\":\"list_issues\",\"description\":\"List issues\",\"inputSchema\":{\"type\":\"object\"},\"server\":{\"id\":\"linear\",\"name\":\"Linear\"}}]}"
-                    }
-                }
-            ]
-        });
-
-        let tools = parse_gateway_tools_from_search_result(&raw).expect("tools should parse");
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].id, "linear:list_issues");
-        assert_eq!(tools[0].name, "list_issues");
-        assert_eq!(tools[0].description.as_deref(), Some("List issues"));
-        assert_eq!(tools[0].input_schema, Some(json!({"type":"object"})));
-        assert_eq!(
-            tools[0]
-                .server
-                .as_ref()
-                .and_then(|server| server.name.as_deref()),
-            Some("Linear")
-        );
-    }
-
-    #[test]
-    fn merge_gateway_tools_preserves_single_capability_tool() {
-        let gateway_tools = vec![test_tool("list_issues")];
-        let sdk_tools = vec![test_tool(META_REQUEST_CAPABILITY)];
-        let merged = merge_gateway_tools_with_capability(gateway_tools, sdk_tools.as_slice());
-
-        assert_eq!(merged.len(), 2);
-        assert!(merged.iter().any(|tool| tool.name == "list_issues"));
-        assert_eq!(
-            merged
-                .iter()
-                .filter(|tool| tool.name == META_REQUEST_CAPABILITY)
-                .count(),
-            1
-        );
     }
 
     #[test]
