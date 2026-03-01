@@ -160,7 +160,10 @@ impl KontextDevRuntime {
         }
 
         match self.gateway_tools_via_meta_search().await {
-            Ok(gateway_tools) => Ok(gateway_tools),
+            Ok(gateway_tools) => Ok(merge_gateway_tools_with_capability(
+                gateway_tools,
+                tools.as_slice(),
+            )),
             Err(err) => {
                 warn!(
                     "Failed to force gateway SEARCH_TOOLS after meta-tool detection mismatch; using SDK-discovered tool list: {err}"
@@ -523,6 +526,27 @@ fn should_force_gateway_search(mcp_tools: &[KontextTool], sdk_tools: &[KontextTo
         .all(|tool| tool.name == META_REQUEST_CAPABILITY)
 }
 
+fn merge_gateway_tools_with_capability(
+    mut gateway_tools: Vec<KontextTool>,
+    sdk_tools: &[KontextTool],
+) -> Vec<KontextTool> {
+    if gateway_tools
+        .iter()
+        .any(|tool| tool.name == META_REQUEST_CAPABILITY)
+    {
+        return gateway_tools;
+    }
+
+    if let Some(capability_tool) = sdk_tools
+        .iter()
+        .find(|tool| tool.name == META_REQUEST_CAPABILITY)
+    {
+        gateway_tools.push(capability_tool.clone());
+    }
+
+    gateway_tools
+}
+
 fn parse_gateway_tools_from_search_result(raw: &Value) -> Result<Vec<KontextTool>> {
     let json_text = extract_json_resource_text(raw)
         .ok_or_else(|| anyhow!("SEARCH_TOOLS returned no JSON resource content"))?;
@@ -840,6 +864,23 @@ mod tests {
                 .as_ref()
                 .and_then(|server| server.name.as_deref()),
             Some("Linear")
+        );
+    }
+
+    #[test]
+    fn merge_gateway_tools_preserves_single_capability_tool() {
+        let gateway_tools = vec![test_tool("list_issues")];
+        let sdk_tools = vec![test_tool(META_REQUEST_CAPABILITY)];
+        let merged = merge_gateway_tools_with_capability(gateway_tools, sdk_tools.as_slice());
+
+        assert_eq!(merged.len(), 2);
+        assert!(merged.iter().any(|tool| tool.name == "list_issues"));
+        assert_eq!(
+            merged
+                .iter()
+                .filter(|tool| tool.name == META_REQUEST_CAPABILITY)
+                .count(),
+            1
         );
     }
 
