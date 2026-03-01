@@ -39,6 +39,7 @@ codex-execpolicy = { workspace = true }
 codex-file-search = { workspace = true }
 codex-git = { workspace = true }
 codex-hooks = { workspace = true }
+kontext-dev-sdk = { workspace = true }
 codex-keyring-store = { workspace = true }
 codex-network-proxy = { workspace = true }
 codex-otel = { workspace = true }
@@ -109,6 +110,7 @@ toml_edit = { workspace = true }
 tracing = { workspace = true, features = ["log"] }
 url = { workspace = true }
 uuid = { workspace = true, features = ["serde", "v4", "v5"] }
+webbrowser = { workspace = true }
 which = { workspace = true }
 wildmatch = { workspace = true }
 zip = { workspace = true }

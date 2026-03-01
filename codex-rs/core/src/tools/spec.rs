@@ -5,6 +5,7 @@ use crate::client_common::tools::ToolSpec;
 use crate::config::AgentRoleConfig;
 use crate::features::Feature;
 use crate::features::Features;
+use crate::kontext_dev::InjectedKontextToolSpec;
 use crate::mcp_connection_manager::ToolInfo;
 use crate::models_manager::collaboration_mode_presets::CollaborationModesConfig;
 use crate::tools::handlers::PLAN_TOOL;
@@ -1648,11 +1649,23 @@ pub(crate) fn build_specs(
     app_tools: Option<HashMap<String, ToolInfo>>,
     dynamic_tools: &[DynamicToolSpec],
 ) -> ToolRegistryBuilder {
+    build_specs_with_kontext(config, mcp_tools, app_tools, dynamic_tools, &[])
+}
+
+/// Builds the tool registry builder while collecting tool specs for later serialization.
+pub(crate) fn build_specs_with_kontext(
+    config: &ToolsConfig,
+    mcp_tools: Option<HashMap<String, rmcp::model::Tool>>,
+    app_tools: Option<HashMap<String, ToolInfo>>,
+    dynamic_tools: &[DynamicToolSpec],
+    kontext_tools: &[InjectedKontextToolSpec],
+) -> ToolRegistryBuilder {
     use crate::tools::handlers::ApplyPatchHandler;
     use crate::tools::handlers::DynamicToolHandler;
     use crate::tools::handlers::GrepFilesHandler;
     use crate::tools::handlers::JsReplHandler;
     use crate::tools::handlers::JsReplResetHandler;
+    use crate::tools::handlers::KontextDevHandler;
     use crate::tools::handlers::ListDirHandler;
     use crate::tools::handlers::McpHandler;
     use crate::tools::handlers::McpResourceHandler;
@@ -1685,6 +1698,7 @@ pub(crate) fn build_specs(
     let search_tool_handler = Arc::new(SearchToolBm25Handler);
     let js_repl_handler = Arc::new(JsReplHandler);
     let js_repl_reset_handler = Arc::new(JsReplResetHandler);
+    let kontext_dev_handler = Arc::new(KontextDevHandler);
     let request_permission_enabled = config.request_permission_enabled;
 
     match &config.shell_type {
@@ -1858,6 +1872,31 @@ pub(crate) fn build_specs(
                 }
                 Err(e) => {
                     tracing::error!("Failed to convert {name:?} MCP tool to OpenAI tool: {e:?}");
+                }
+            }
+        }
+    }
+
+    if !kontext_tools.is_empty() {
+        let mut entries = kontext_tools.to_vec();
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
+
+        for tool in entries {
+            match parse_tool_input_schema(&tool.input_schema) {
+                Ok(parameters) => {
+                    builder.push_spec(ToolSpec::Function(ResponsesApiTool {
+                        name: tool.name.clone(),
+                        description: tool.description,
+                        strict: false,
+                        parameters,
+                    }));
+                    builder.register_handler(tool.name, kontext_dev_handler.clone());
+                }
+                Err(e) => {
+                    tracing::error!(
+                        "Failed to parse Kontext tool schema for {:?}: {e:?}",
+                        tool.name
+                    );
                 }
             }
         }
