@@ -42,7 +42,6 @@ pub(crate) struct InjectedKontextToolSpec {
 
 #[derive(Clone, Debug)]
 struct DisconnectedCapability {
-    id: String,
     name: String,
     connect_url: Option<String>,
 }
@@ -105,7 +104,6 @@ impl KontextDevRuntime {
                 .into_iter()
                 .filter(|integration| !integration.connected)
                 .map(|integration| DisconnectedCapability {
-                    id: integration.id,
                     name: integration.name,
                     connect_url: integration.connect_url.map(|raw_url| {
                         normalize_connect_url(
@@ -569,7 +567,6 @@ mod tests {
     #[test]
     fn should_auto_open_connect_page_when_enabled_and_disconnected_or_elicited() {
         let disconnected = vec![DisconnectedCapability {
-            id: "linear".to_string(),
             name: "Linear".to_string(),
             connect_url: None,
         }];
