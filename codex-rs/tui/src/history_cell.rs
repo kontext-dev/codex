@@ -2447,6 +2447,36 @@ mod tests {
 
     fn render_transcript(cell: &dyn HistoryCell) -> Vec<String> {
         render_lines(&cell.transcript_lines(u16::MAX))
+            .into_iter()
+            .map(sanitize_version_header)
+            .collect()
+    }
+
+    fn sanitize_version_header(line: String) -> String {
+        let Some(version_start) = line
+            .find("OpenAI Codex (v")
+            .map(|idx| idx + "OpenAI Codex (v".len())
+        else {
+            return line;
+        };
+        let Some(version_end_rel) = line[version_start..].find(')') else {
+            return line;
+        };
+        let version_end = version_start + version_end_rel;
+        let mut rebuilt = String::with_capacity(line.len());
+        rebuilt.push_str(&line[..version_start]);
+        rebuilt.push_str("0.0.0");
+        rebuilt.push_str(&line[version_end..]);
+        if rebuilt.len() >= line.len() {
+            return rebuilt;
+        }
+        let padding = " ".repeat(line.len() - rebuilt.len());
+        if let Some(insert_idx) = rebuilt.rfind('│') {
+            rebuilt.insert_str(insert_idx, &padding);
+            return rebuilt;
+        }
+        rebuilt.push_str(&padding);
+        rebuilt
     }
 
     fn image_block(data: &str) -> serde_json::Value {
