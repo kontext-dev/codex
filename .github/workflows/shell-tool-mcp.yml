@@ -67,104 +67,6 @@ jobs:
           echo "npm_tag=${npm_tag}" >> "$GITHUB_OUTPUT"
           echo "should_publish=${should_publish}" >> "$GITHUB_OUTPUT"
 
-  bash-linux:
-    name: Build Bash (Linux) - ${{ matrix.variant }} - ${{ matrix.target }}
-    needs: metadata
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
-    container:
-      image: ${{ matrix.image }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: ubuntu-24.04
-            target: x86_64-unknown-linux-musl
-            variant: ubuntu-24.04
-            image: ubuntu:24.04
-          - runner: ubuntu-24.04
-            target: x86_64-unknown-linux-musl
-            variant: ubuntu-22.04
-            image: ubuntu:22.04
-          - runner: ubuntu-24.04
-            target: x86_64-unknown-linux-musl
-            variant: debian-12
-            image: debian:12
-          - runner: ubuntu-24.04
-            target: x86_64-unknown-linux-musl
-            variant: debian-11
-            image: debian:11
-          - runner: ubuntu-24.04
-            target: x86_64-unknown-linux-musl
-            variant: centos-9
-            image: quay.io/centos/centos:stream9
-          - runner: ubuntu-24.04-arm
-            target: blacksmith-4vcpu-ubuntu-2404-arm
-            variant: ubuntu-24.04
-            image: arm64v8/ubuntu:24.04
-          - runner: ubuntu-24.04-arm
-            target: blacksmith-4vcpu-ubuntu-2404-arm
-            variant: ubuntu-22.04
-            image: arm64v8/ubuntu:22.04
-          - runner: ubuntu-24.04-arm
-            target: blacksmith-4vcpu-ubuntu-2404-arm
-            variant: ubuntu-20.04
-            image: arm64v8/ubuntu:20.04
-          - runner: ubuntu-24.04-arm
-            target: blacksmith-4vcpu-ubuntu-2404-arm
-            variant: debian-12
-            image: arm64v8/debian:12
-          - runner: ubuntu-24.04-arm
-            target: blacksmith-4vcpu-ubuntu-2404-arm
-            variant: debian-11
-            image: arm64v8/debian:11
-          - runner: ubuntu-24.04-arm
-            target: blacksmith-4vcpu-ubuntu-2404-arm
-            variant: centos-9
-            image: quay.io/centos/centos:stream9
-    steps:
-      - name: Install build prerequisites
-        shell: bash
-        run: |
-          set -euo pipefail
-          if command -v apt-get >/dev/null 2>&1; then
-            apt-get update
-            DEBIAN_FRONTEND=noninteractive apt-get install -y git build-essential bison autoconf gettext libncursesw5-dev
-          elif command -v dnf >/dev/null 2>&1; then
-            dnf install -y git gcc gcc-c++ make bison autoconf gettext ncurses-devel
-          elif command -v yum >/dev/null 2>&1; then
-            yum install -y git gcc gcc-c++ make bison autoconf gettext ncurses-devel
-          else
-            echo "Unsupported package manager in container"
-            exit 1
-          fi
-
-      - name: Checkout repository
-        uses: actions/checkout@v6
-
-      - name: Build patched Bash
-        shell: bash
-        run: |
-          set -euo pipefail
-          git clone --depth 1 https://github.com/bolinfest/bash /tmp/bash
-          cd /tmp/bash
-          git fetch --depth 1 origin a8a1c2fac029404d3f42cd39f5a20f24b6e4fe4b
-          git checkout a8a1c2fac029404d3f42cd39f5a20f24b6e4fe4b
-          git apply "${GITHUB_WORKSPACE}/shell-tool-mcp/patches/bash-exec-wrapper.patch"
-          ./configure --without-bash-malloc
-          cores="$(command -v nproc >/dev/null 2>&1 && nproc || getconf _NPROCESSORS_ONLN)"
-          make -j"${cores}"
-
-          dest="${GITHUB_WORKSPACE}/artifacts/vendor/${{ matrix.target }}/bash/${{ matrix.variant }}"
-          mkdir -p "$dest"
-          cp bash "$dest/bash"
-
-      - uses: actions/upload-artifact@v6
-        with:
-          name: shell-tool-mcp-bash-${{ matrix.target }}-${{ matrix.variant }}
-          path: artifacts/**
-          if-no-files-found: error
-
   bash-darwin:
     name: Build Bash (macOS) - ${{ matrix.variant }} - ${{ matrix.target }}
     needs: metadata
@@ -177,9 +79,6 @@ jobs:
           - runner: macos-15-xlarge
             target: aarch64-apple-darwin
             variant: macos-15
-          - runner: macos-14
-            target: aarch64-apple-darwin
-            variant: macos-14
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -207,132 +106,6 @@ jobs:
           path: artifacts/**
           if-no-files-found: error
 
-  zsh-linux:
-    name: Build zsh (Linux) - ${{ matrix.variant }} - ${{ matrix.target }}
-    needs: metadata
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
-    container:
-      image: ${{ matrix.image }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: ubuntu-24.04
-            target: x86_64-unknown-linux-musl
-            variant: ubuntu-24.04
-            image: ubuntu:24.04
-          - runner: ubuntu-24.04
-            target: x86_64-unknown-linux-musl
-            variant: ubuntu-22.04
-            image: ubuntu:22.04
-          - runner: ubuntu-24.04
-            target: x86_64-unknown-linux-musl
-            variant: debian-12
-            image: debian:12
-          - runner: ubuntu-24.04
-            target: x86_64-unknown-linux-musl
-            variant: debian-11
-            image: debian:11
-          - runner: ubuntu-24.04
-            target: x86_64-unknown-linux-musl
-            variant: centos-9
-            image: quay.io/centos/centos:stream9
-          - runner: ubuntu-24.04-arm
-            target: blacksmith-4vcpu-ubuntu-2404-arm
-            variant: ubuntu-24.04
-            image: arm64v8/ubuntu:24.04
-          - runner: ubuntu-24.04-arm
-            target: blacksmith-4vcpu-ubuntu-2404-arm
-            variant: ubuntu-22.04
-            image: arm64v8/ubuntu:22.04
-          - runner: ubuntu-24.04-arm
-            target: blacksmith-4vcpu-ubuntu-2404-arm
-            variant: ubuntu-20.04
-            image: arm64v8/ubuntu:20.04
-          - runner: ubuntu-24.04-arm
-            target: blacksmith-4vcpu-ubuntu-2404-arm
-            variant: debian-12
-            image: arm64v8/debian:12
-          - runner: ubuntu-24.04-arm
-            target: blacksmith-4vcpu-ubuntu-2404-arm
-            variant: debian-11
-            image: arm64v8/debian:11
-          - runner: ubuntu-24.04-arm
-            target: blacksmith-4vcpu-ubuntu-2404-arm
-            variant: centos-9
-            image: quay.io/centos/centos:stream9
-    steps:
-      - name: Install build prerequisites
-        shell: bash
-        run: |
-          set -euo pipefail
-          if command -v apt-get >/dev/null 2>&1; then
-            apt-get update
-            DEBIAN_FRONTEND=noninteractive apt-get install -y git build-essential bison autoconf gettext libncursesw5-dev
-          elif command -v dnf >/dev/null 2>&1; then
-            dnf install -y git gcc gcc-c++ make bison autoconf gettext ncurses-devel
-          elif command -v yum >/dev/null 2>&1; then
-            yum install -y git gcc gcc-c++ make bison autoconf gettext ncurses-devel
-          else
-            echo "Unsupported package manager in container"
-            exit 1
-          fi
-
-      - name: Checkout repository
-        uses: actions/checkout@v6
-
-      - name: Build patched zsh
-        shell: bash
-        run: |
-          set -euo pipefail
-          git clone https://git.code.sf.net/p/zsh/code /tmp/zsh
-          cd /tmp/zsh
-          git checkout 77045ef899e53b9598bebc5a41db93a548a40ca6
-          git apply "${GITHUB_WORKSPACE}/shell-tool-mcp/patches/zsh-exec-wrapper.patch"
-          ./Util/preconfig
-          ./configure
-          cores="$(command -v nproc >/dev/null 2>&1 && nproc || getconf _NPROCESSORS_ONLN)"
-          make -j"${cores}"
-
-          dest="${GITHUB_WORKSPACE}/artifacts/vendor/${{ matrix.target }}/zsh/${{ matrix.variant }}"
-          mkdir -p "$dest"
-          cp Src/zsh "$dest/zsh"
-
-      - name: Smoke test zsh exec wrapper
-        shell: bash
-        run: |
-          set -euo pipefail
-          tmpdir="$(mktemp -d)"
-          cat > "$tmpdir/exec-wrapper" <<'EOF'
-          #!/usr/bin/env bash
-          set -euo pipefail
-          : "${CODEX_WRAPPER_LOG:?missing CODEX_WRAPPER_LOG}"
-          printf '%s\n' "$@" > "$CODEX_WRAPPER_LOG"
-          file="$1"
-          shift
-          if [[ "$#" -eq 0 ]]; then
-            exec "$file"
-          fi
-          arg0="$1"
-          shift
-          exec -a "$arg0" "$file" "$@"
-          EOF
-          chmod +x "$tmpdir/exec-wrapper"
-
-          CODEX_WRAPPER_LOG="$tmpdir/wrapper.log" \
-          EXEC_WRAPPER="$tmpdir/exec-wrapper" \
-          /tmp/zsh/Src/zsh -fc '/bin/echo smoke-zsh' > "$tmpdir/stdout.txt"
-
-          grep -Fx "smoke-zsh" "$tmpdir/stdout.txt"
-          grep -Fx "/bin/echo" "$tmpdir/wrapper.log"
-
-      - uses: actions/upload-artifact@v6
-        with:
-          name: shell-tool-mcp-zsh-${{ matrix.target }}-${{ matrix.variant }}
-          path: artifacts/**
-          if-no-files-found: error
-
   zsh-darwin:
     name: Build zsh (macOS) - ${{ matrix.variant }} - ${{ matrix.target }}
     needs: metadata
@@ -345,9 +118,6 @@ jobs:
           - runner: macos-15-xlarge
             target: aarch64-apple-darwin
             variant: macos-15
-          - runner: macos-14
-            target: aarch64-apple-darwin
-            variant: macos-14
     steps:
       - name: Install build prerequisites
         shell: bash
@@ -415,11 +185,9 @@ jobs:
     name: Package npm module
     needs:
       - metadata
-      - bash-linux
       - bash-darwin
-      - zsh-linux
       - zsh-darwin
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: macos-15-xlarge
     env:
       PACKAGE_VERSION: ${{ needs.metadata.outputs.version }}
     steps:
@@ -514,7 +282,7 @@ jobs:
       - metadata
       - package
     if: ${{ inputs.publish && needs.metadata.outputs.should_publish == 'true' }}
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: macos-15-xlarge
     permissions:
       id-token: write
       contents: read
