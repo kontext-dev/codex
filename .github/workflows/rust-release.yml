@@ -505,6 +505,7 @@ jobs:
           ./scripts/stage_npm_packages.py \
             --release-version "${{ steps.release_name.outputs.name }}" \
             --workflow-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --target aarch64-apple-darwin \
             --package codex \
             --package codex-responses-api-proxy \
             --package codex-sdk
@@ -576,16 +577,9 @@ jobs:
           set -euo pipefail
           version="${{ needs.release.outputs.version }}"
           tag="${{ needs.release.outputs.tag }}"
-          npm_scope="${{ needs.release.outputs.npm_scope }}"
           mkdir -p dist/npm
           patterns=("codex-npm-${version}.tgz")
-          if [[ "${npm_scope}" == "@kontext-dev" ]]; then
-            patterns+=("codex-npm-darwin-arm64-${version}.tgz")
-          else
-            patterns+=("codex-npm-darwin-*-${version}.tgz")
-            patterns+=("codex-npm-linux-*-${version}.tgz")
-            patterns+=("codex-npm-win32-*-${version}.tgz")
-          fi
+          patterns+=("codex-npm-darwin-arm64-${version}.tgz")
           patterns+=("codex-responses-api-proxy-npm-${version}.tgz")
           patterns+=("codex-sdk-npm-${version}.tgz")
           for pattern in "${patterns[@]}"; do

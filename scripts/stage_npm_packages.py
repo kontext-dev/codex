@@ -48,6 +48,16 @@ def parse_args() -> argparse.Namespace:
         help="Optional workflow URL to reuse for native artifacts.",
     )
     parser.add_argument(
+        "--target",
+        dest="targets",
+        action="append",
+        choices=sorted(set(PACKAGE_TARGET_FILTERS.values())),
+        help=(
+            "Limit staged platform packages and native dependency downloads to specific "
+            "target triples. May be repeated."
+        ),
+    )
+    parser.add_argument(
         "--output-dir",
         type=Path,
         default=None,
@@ -68,7 +78,10 @@ def collect_native_components(packages: list[str]) -> set[str]:
     return components
 
 
-def collect_native_targets(packages: list[str]) -> set[str]:
+def collect_native_targets(packages: list[str], explicit_targets: set[str]) -> set[str]:
+    if explicit_targets:
+        return explicit_targets
+
     targets: set[str] = set()
     for package in packages:
         target = PACKAGE_TARGET_FILTERS.get(package)
@@ -77,10 +90,16 @@ def collect_native_targets(packages: list[str]) -> set[str]:
     return targets
 
 
-def expand_packages(packages: list[str]) -> list[str]:
+def expand_packages(packages: list[str], target_filter: set[str]) -> list[str]:
     expanded: list[str] = []
     for package in packages:
         for expanded_package in PACKAGE_EXPANSIONS.get(package, [package]):
+            if (
+                target_filter
+                and expanded_package in CODEX_PLATFORM_PACKAGES
+                and PACKAGE_TARGET_FILTERS.get(expanded_package) not in target_filter
+            ):
+                continue
             if expanded_package in expanded:
                 continue
             expanded.append(expanded_package)
@@ -166,9 +185,10 @@ def main() -> int:
 
     runner_temp = Path(os.environ.get("RUNNER_TEMP", tempfile.gettempdir()))
 
-    packages = expand_packages(list(args.packages))
+    explicit_targets = set(args.targets or [])
+    packages = expand_packages(list(args.packages), explicit_targets)
     native_components = collect_native_components(packages)
-    native_targets = collect_native_targets(packages)
+    native_targets = collect_native_targets(packages, explicit_targets)
 
     vendor_temp_root: Path | None = None
     vendor_src: Path | None = None
