@@ -24,7 +24,6 @@ use crate::default_client::CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR;
 
 const MAX_TOOL_NAME_LENGTH: usize = 64;
 const TOOL_NAME_PREFIX: &str = "kontext__";
-const REQUEST_CAPABILITY_TOOL_NAME: &str = "kontext__request_capability";
 const KONTEXT_CLIENT_ID: &str = "app_6736f70c-1c16-421e-b56f-2ae2c8c59950";
 const KONTEXT_REDIRECT_URI: &str = "http://localhost:3333/callback";
 const KONTEXT_SERVER_URL: &str = "https://api.kontext.dev/mcp";
@@ -43,7 +42,6 @@ pub(crate) struct InjectedKontextToolSpec {
 
 #[derive(Clone, Debug)]
 struct DisconnectedCapability {
-    id: String,
     name: String,
     connect_url: Option<String>,
 }
@@ -106,7 +104,6 @@ impl KontextDevRuntime {
                 .into_iter()
                 .filter(|integration| !integration.connected)
                 .map(|integration| DisconnectedCapability {
-                    id: integration.id,
                     name: integration.name,
                     connect_url: integration.connect_url.map(|raw_url| {
                         normalize_connect_url(
@@ -128,8 +125,6 @@ impl KontextDevRuntime {
                 Vec::new()
             }
         };
-
-        tool_specs.push(request_capability_tool_spec(&disconnected_capabilities));
 
         tool_specs.sort_by(|a, b| a.name.cmp(&b.name));
 
@@ -154,10 +149,6 @@ impl KontextDevRuntime {
         model_tool_name: &str,
         args: Map<String, Value>,
     ) -> Result<String> {
-        if model_tool_name == REQUEST_CAPABILITY_TOOL_NAME {
-            return self.execute_request_capability(args).await;
-        }
-
         // Keep tool routing fresh on every execution so newly connected
         // integrations and newly discovered tools are immediately available.
         if let Err(err) = self.list_tool_specs().await {
@@ -290,102 +281,6 @@ impl KontextDevRuntime {
         }
     }
 
-    async fn execute_request_capability(&self, args: Map<String, Value>) -> Result<String> {
-        let requested = args
-            .get("capability_name")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .trim()
-            .to_string();
-
-        let disconnected = {
-            let state = self.state.read().await;
-            state.disconnected_capabilities.clone()
-        };
-
-        if requested.is_empty() {
-            return match self.connect_page_url().await {
-                Ok(connect_url) => {
-                    if disconnected.is_empty() {
-                        Ok(format!(
-                            "All Kontext integrations are currently connected. Open this URL to manage integrations: {connect_url}"
-                        ))
-                    } else {
-                        let available = disconnected
-                            .iter()
-                            .map(|capability| capability.name.as_str())
-                            .collect::<Vec<_>>()
-                            .join(", ");
-                        Ok(format!(
-                            "Disconnected integrations: {available}. Open this URL to connect/manage integrations: {connect_url}"
-                        ))
-                    }
-                }
-                Err(err) => {
-                    if disconnected.is_empty() {
-                        Ok(format!(
-                            "All Kontext integrations are currently connected, but generating a manage URL failed: {err}"
-                        ))
-                    } else {
-                        let available = disconnected
-                            .iter()
-                            .map(|capability| capability.name.as_str())
-                            .collect::<Vec<_>>()
-                            .join(", ");
-                        Ok(format!(
-                            "Disconnected integrations: {available}. Generating a connect/manage URL failed: {err}"
-                        ))
-                    }
-                }
-            };
-        }
-
-        if disconnected.is_empty() {
-            return match self.connect_page_url().await {
-                Ok(connect_url) => Ok(format!(
-                    "All Kontext integrations are currently connected. Open this URL to manage integrations: {connect_url}"
-                )),
-                Err(err) => Ok(format!(
-                    "All Kontext integrations are currently connected, but generating a manage URL failed: {err}"
-                )),
-            };
-        }
-
-        let requested_lower = requested.to_ascii_lowercase();
-        if let Some(capability) = disconnected.iter().find(|capability| {
-            capability.name.to_ascii_lowercase() == requested_lower
-                || capability.id.to_ascii_lowercase() == requested_lower
-        }) {
-            if let Some(connect_url) = capability.connect_url.as_deref() {
-                return Ok(format!(
-                    "{} requires authorization. Connect it here: {connect_url}",
-                    capability.name
-                ));
-            }
-
-            return match self.connect_page_url().await {
-                Ok(connect_url) => Ok(format!(
-                    "{} requires authorization. Open this URL to connect/manage integrations: {connect_url}",
-                    capability.name
-                )),
-                Err(err) => Ok(format!(
-                    "{} requires authorization, but generating a connect URL failed: {err}",
-                    capability.name
-                )),
-            };
-        }
-
-        let available = disconnected
-            .iter()
-            .map(|capability| capability.name.as_str())
-            .collect::<Vec<_>>()
-            .join(", ");
-
-        Ok(format!(
-            "Capability `{requested}` is not disconnected or not recognized. Disconnected capabilities: {available}."
-        ))
-    }
-
     async fn reconnect_client(&self) -> Result<()> {
         self.client.disconnect().await;
         self.client
@@ -510,39 +405,6 @@ fn map_kontext_tool(
             input_schema,
         },
     ))
-}
-
-fn request_capability_tool_spec(
-    disconnected: &[DisconnectedCapability],
-) -> InjectedKontextToolSpec {
-    let names = disconnected
-        .iter()
-        .map(|capability| capability.name.as_str())
-        .collect::<Vec<_>>()
-        .join(", ");
-
-    let description = if names.is_empty() {
-        "Generate a fresh Kontext integration management URL. Use `capability_name` to request a specific integration when needed.".to_string()
-    } else {
-        format!(
-            "Request authorization for a disconnected Kontext integration. Disconnected integrations: {names}."
-        )
-    };
-
-    InjectedKontextToolSpec {
-        name: REQUEST_CAPABILITY_TOOL_NAME.to_string(),
-        description,
-        input_schema: json!({
-            "type": "object",
-            "properties": {
-                "capability_name": {
-                    "type": "string",
-                    "description": "Integration name to connect, for example `Linear`"
-                }
-            },
-            "required": []
-        }),
-    }
 }
 
 #[derive(Debug)]
@@ -705,7 +567,6 @@ mod tests {
     #[test]
     fn should_auto_open_connect_page_when_enabled_and_disconnected_or_elicited() {
         let disconnected = vec![DisconnectedCapability {
-            id: "linear".to_string(),
             name: "Linear".to_string(),
             connect_url: None,
         }];
