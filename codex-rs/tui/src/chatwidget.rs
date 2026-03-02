@@ -1171,7 +1171,7 @@ impl ChatWidget {
             cwds: Vec::new(),
             force_reload: true,
         });
-        if self.should_prefetch_connectors() {
+        if self.connectors_enabled() {
             self.prefetch_connectors();
         }
         if let Some(user_message) = self.initial_user_message.take() {
@@ -4848,43 +4848,6 @@ impl ChatWidget {
         });
     }
 
-    fn status_line_kontext_status(&self) -> Option<String> {
-        let ConnectorsCacheState::Ready(snapshot) = &self.connectors_cache else {
-            return None;
-        };
-
-        let mut connectors = snapshot
-            .connectors
-            .iter()
-            .filter(|connector| connector.is_enabled)
-            .collect::<Vec<_>>();
-        if connectors.is_empty() {
-            return None;
-        }
-
-        connectors.sort_by(|left, right| left.name.cmp(&right.name));
-        let hidden_count = connectors.len().saturating_sub(3);
-        let mut parts = connectors
-            .iter()
-            .take(3)
-            .map(|connector| {
-                let label = connectors::connector_display_label(connector);
-                let status = if connector.is_accessible {
-                    "✓"
-                } else {
-                    "✗"
-                };
-                format!("{label} {status}")
-            })
-            .collect::<Vec<_>>();
-
-        if hidden_count > 0 {
-            parts.push(format!("+{hidden_count}"));
-        }
-
-        Some(parts.join(" "))
-    }
-
     /// Resolves a display string for one configured status-line item.
     ///
     /// Returning `None` means "omit this item for now", not "configuration error". Callers rely on
@@ -4953,7 +4916,6 @@ impl ChatWidget {
                 format_tokens_compact(self.status_line_total_usage().output_tokens)
             )),
             StatusLineItem::SessionId => self.thread_id.map(|id| id.to_string()),
-            StatusLineItem::KontextStatus => self.status_line_kontext_status(),
         }
     }
 
@@ -5046,7 +5008,7 @@ impl ChatWidget {
     }
 
     fn prefetch_connectors_with_options(&mut self, force_refetch: bool) {
-        if !self.should_prefetch_connectors() {
+        if !self.connectors_enabled() {
             return;
         }
         if self.connectors_prefetch_in_flight {
@@ -7142,16 +7104,6 @@ impl ChatWidget {
         self.config.features.enabled(Feature::Apps)
     }
 
-    fn should_prefetch_connectors(&self) -> bool {
-        self.connectors_enabled() || self.status_line_has_kontext_item()
-    }
-
-    fn status_line_has_kontext_item(&self) -> bool {
-        self.status_line_items_with_invalids()
-            .0
-            .contains(&StatusLineItem::KontextStatus)
-    }
-
     fn connectors_for_mentions(&self) -> Option<&[connectors::AppInfo]> {
         if !self.connectors_enabled() {
             return None;
@@ -7708,8 +7660,6 @@ impl ChatWidget {
             }
         }
 
-        self.refresh_status_line();
-
         if trigger_pending_force_refetch {
             self.prefetch_connectors_with_options(true);
         }
@@ -7736,7 +7686,6 @@ impl ChatWidget {
         self.refresh_connectors_popup_if_open(&snapshot.connectors);
         self.connectors_cache = ConnectorsCacheState::Ready(snapshot.clone());
         self.bottom_pane.set_connectors_snapshot(Some(snapshot));
-        self.refresh_status_line();
     }
 
     pub(crate) fn open_review_popup(&mut self) {

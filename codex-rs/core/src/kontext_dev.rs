@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use anyhow::anyhow;
-use codex_app_server_protocol::AppInfo;
 use kontext_dev_sdk::KontextClientConfig;
 use kontext_dev_sdk::KontextDevError;
 use kontext_dev_sdk::create_kontext_orchestrator;
@@ -291,95 +290,6 @@ impl KontextDevRuntime {
     }
 }
 
-pub(crate) async fn list_kontext_integrations_as_connectors() -> Result<Vec<AppInfo>> {
-    if !env!("CARGO_PKG_VERSION").contains("-kontext.") {
-        return Ok(Vec::new());
-    }
-
-    let settings = baked_kontext_dev_settings();
-    let client = create_kontext_orchestrator(KontextClientConfig {
-        client_id: settings.client_id.clone(),
-        redirect_uri: settings.redirect_uri.clone(),
-        url: None,
-        server_url: Some(settings.server.clone()),
-        client_secret: settings.client_secret.clone(),
-        scope: Some(settings.scope.clone()),
-        resource: Some(settings.resource.clone()),
-        integration_ui_url: settings.integration_ui_url.clone(),
-        integration_return_to: settings.integration_return_to.clone(),
-        auth_timeout_seconds: Some(settings.auth_timeout_seconds),
-        token_cache_path: settings.token_cache_path.clone(),
-    });
-
-    match client.connect().await {
-        Ok(()) => {}
-        Err(err) if is_url_elicitation_required_error(&err) => {
-            warn!(
-                "Kontext connect reported URL elicitation requirement while loading integration status; continuing with connect guidance."
-            );
-        }
-        Err(err) => return Err(anyhow!("Kontext authentication failed: {err}")),
-    }
-
-    let connect_page_url = client.get_connect_page_url().await.ok().map(|connect| {
-        normalize_connect_url(
-            connect.connect_url.as_str(),
-            settings.integration_ui_url.as_deref(),
-        )
-    });
-
-    let integrations = match client.integrations_list().await {
-        Ok(integrations) => integrations,
-        Err(err) if is_url_elicitation_required_error(&err) => {
-            warn!(
-                "Kontext integration status requires URL elicitation. Returning disconnected placeholders."
-            );
-            Vec::new()
-        }
-        Err(err) => return Err(anyhow!("failed to list Kontext integrations: {err}")),
-    };
-
-    client.disconnect().await;
-
-    let mut connectors = integrations
-        .into_iter()
-        .map(|integration| {
-            let name = integration.name;
-            let id = kontext_integration_id(name.as_str());
-            let install_url = integration
-                .connect_url
-                .map(|raw_url| {
-                    normalize_connect_url(raw_url.as_str(), settings.integration_ui_url.as_deref())
-                })
-                .or_else(|| connect_page_url.clone());
-            AppInfo {
-                id,
-                name,
-                description: None,
-                logo_url: None,
-                logo_url_dark: None,
-                distribution_channel: None,
-                branding: None,
-                app_metadata: None,
-                labels: None,
-                install_url,
-                is_accessible: integration.connected,
-                is_enabled: true,
-            }
-        })
-        .collect::<Vec<_>>();
-
-    connectors.sort_by(|left, right| {
-        right
-            .is_accessible
-            .cmp(&left.is_accessible)
-            .then_with(|| left.name.cmp(&right.name))
-            .then_with(|| left.id.cmp(&right.id))
-    });
-
-    Ok(connectors)
-}
-
 pub(crate) async fn initialize_kontext_dev_runtime(
     _config: &Config,
 ) -> Result<Option<Arc<KontextDevRuntime>>> {
@@ -582,24 +492,6 @@ fn should_skip_kontext_runtime_for_originator(originator_override: Option<&str>)
     originator_override.is_some_and(|originator| originator.starts_with("codex_sdk_"))
 }
 
-fn kontext_integration_id(name: &str) -> String {
-    let mut normalized = String::with_capacity(name.len());
-    for character in name.chars() {
-        if character.is_ascii_alphanumeric() {
-            normalized.push(character.to_ascii_lowercase());
-        } else {
-            normalized.push('-');
-        }
-    }
-
-    let normalized = normalized.trim_matches('-');
-    if normalized.is_empty() {
-        "kontext-integration".to_string()
-    } else {
-        format!("kontext-{normalized}")
-    }
-}
-
 fn unique_tool_name(raw: &str, seen_names: &mut HashSet<String>) -> String {
     let mut candidate = sanitize_responses_api_tool_name(raw);
     if candidate.len() > MAX_TOOL_NAME_LENGTH {
@@ -799,14 +691,5 @@ mod tests {
             "codex-kontext-cli"
         )));
         assert!(!should_skip_kontext_runtime_for_originator(None));
-    }
-
-    #[test]
-    fn kontext_integration_id_sanitizes_integration_name() {
-        assert_eq!(
-            kontext_integration_id("GitHub Copilot"),
-            "kontext-github-copilot"
-        );
-        assert_eq!(kontext_integration_id("###"), "kontext-integration");
     }
 }
