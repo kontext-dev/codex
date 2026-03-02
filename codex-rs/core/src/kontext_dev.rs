@@ -92,8 +92,8 @@ impl KontextDevRuntime {
         let mut tool_specs = Vec::new();
         let mut tool_id_by_name = HashMap::new();
 
-        for tool in tools {
-            let (name, spec) = map_kontext_tool(tool, &mut seen_names)?;
+        for tool in tools.as_slice() {
+            let (name, spec) = map_kontext_tool(tool.clone(), &mut seen_names)?;
             tool_id_by_name.insert(name.clone(), spec.id);
             tool_specs.push(InjectedKontextToolSpec {
                 name,
