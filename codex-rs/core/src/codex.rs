@@ -2957,7 +2957,7 @@ impl Session {
         &self,
         turn_context: &TurnContext,
     ) -> Vec<ResponseItem> {
-        let mut developer_sections = Vec::<String>::with_capacity(8);
+        let mut developer_sections = Vec::<String>::with_capacity(9);
         let mut contextual_user_sections = Vec::<String>::with_capacity(2);
         let shell = self.user_shell();
         let (reference_context_item, previous_turn_settings, collaboration_mode, base_instructions) = {
@@ -3003,6 +3003,11 @@ impl Session {
             DeveloperInstructions::from_collaboration_mode(&collaboration_mode)
         {
             developer_sections.push(collab_instructions.into_text());
+        }
+        if let Some(kontext_runtime) = self.services.kontext_dev_runtime.as_ref()
+            && let Some(kontext_prompt) = kontext_runtime.build_system_prompt().await
+        {
+            developer_sections.push(kontext_prompt);
         }
         if let Some(realtime_update) = crate::context_manager::updates::build_initial_realtime_item(
             reference_context_item.as_ref(),

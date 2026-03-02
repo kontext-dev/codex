@@ -18,6 +18,7 @@ use tokio::sync::RwLock;
 use tracing::info;
 use tracing::warn;
 use url::Url;
+use uuid::Uuid;
 
 use crate::config::Config;
 use crate::default_client::CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR;
@@ -32,6 +33,7 @@ const KONTEXT_SCOPE: &str = "";
 const KONTEXT_SERVER_NAME: &str = "kontext-dev";
 const KONTEXT_AUTH_TIMEOUT_SECONDS: i64 = 300;
 const KONTEXT_INTEGRATION_UI_URL: &str = "https://app.kontext.dev";
+const REQUEST_CAPABILITY_TOOL_NAME: &str = "kontext__REQUEST_CAPABILITY";
 
 #[derive(Clone, Debug)]
 pub(crate) struct InjectedKontextToolSpec {
@@ -49,6 +51,7 @@ struct DisconnectedCapability {
 #[derive(Clone, Debug, Default)]
 struct ToolState {
     tool_id_by_name: HashMap<String, String>,
+    connected_capabilities: Vec<String>,
     disconnected_capabilities: Vec<DisconnectedCapability>,
     needs_connect_page: bool,
 }
@@ -99,30 +102,47 @@ impl KontextDevRuntime {
             });
         }
 
-        let disconnected_capabilities = match self.client.integrations_list().await {
-            Ok(integrations) => integrations
-                .into_iter()
-                .filter(|integration| !integration.connected)
-                .map(|integration| DisconnectedCapability {
-                    name: integration.name,
-                    connect_url: integration.connect_url.map(|raw_url| {
-                        normalize_connect_url(
-                            raw_url.as_str(),
-                            self.settings.integration_ui_url.as_deref(),
-                        )
-                    }),
-                })
-                .collect::<Vec<_>>(),
+        let (connected_capabilities, disconnected_capabilities) = match self
+            .client
+            .integrations_list()
+            .await
+        {
+            Ok(integrations) => {
+                let mut connected_capabilities = Vec::new();
+                let mut disconnected_capabilities = Vec::new();
+
+                for integration in integrations {
+                    if integration.connected {
+                        connected_capabilities.push(integration.name);
+                        continue;
+                    }
+
+                    disconnected_capabilities.push(DisconnectedCapability {
+                        name: integration.name,
+                        connect_url: integration.connect_url.map(|raw_url| {
+                            normalize_connect_url(
+                                raw_url.as_str(),
+                                self.settings.integration_ui_url.as_deref(),
+                            )
+                        }),
+                    });
+                }
+
+                connected_capabilities.sort();
+                disconnected_capabilities.sort_by(|a, b| a.name.cmp(&b.name));
+
+                (connected_capabilities, disconnected_capabilities)
+            }
             Err(err) if is_url_elicitation_required_error(&err) => {
                 warn!(
                     "Kontext integrations require URL elicitation before listing status. Continuing startup and showing connect guidance."
                 );
                 needs_connect_page = true;
-                Vec::new()
+                (Vec::new(), Vec::new())
             }
             Err(err) => {
                 warn!("Unable to list Kontext integrations: {err}");
-                Vec::new()
+                (Vec::new(), Vec::new())
             }
         };
 
@@ -130,6 +150,7 @@ impl KontextDevRuntime {
 
         let mut state = self.state.write().await;
         state.tool_id_by_name = tool_id_by_name;
+        state.connected_capabilities = connected_capabilities;
         state.disconnected_capabilities = disconnected_capabilities;
         state.needs_connect_page = needs_connect_page;
 
@@ -216,6 +237,11 @@ impl KontextDevRuntime {
         };
 
         Ok(result.content)
+    }
+
+    pub(crate) async fn build_system_prompt(&self) -> Option<String> {
+        let state = self.state.read().await;
+        build_kontext_system_prompt_from_state(&state)
     }
 
     pub(crate) async fn maybe_show_connect_guidance(&self) {
@@ -316,8 +342,10 @@ pub(crate) async fn initialize_kontext_dev_runtime(
     }
 
     let settings = baked_kontext_dev_settings();
+    let client_session_id = Uuid::new_v4().to_string();
 
     let client = create_kontext_orchestrator(KontextClientConfig {
+        client_session_id,
         client_id: settings.client_id.clone(),
         redirect_uri: settings.redirect_uri.clone(),
         url: None,
@@ -492,6 +520,47 @@ fn should_skip_kontext_runtime_for_originator(originator_override: Option<&str>)
     originator_override.is_some_and(|originator| originator.starts_with("codex_sdk_"))
 }
 
+fn build_kontext_system_prompt_from_state(state: &ToolState) -> Option<String> {
+    let has_tools = !state.tool_id_by_name.is_empty();
+    let has_integrations =
+        !state.connected_capabilities.is_empty() || !state.disconnected_capabilities.is_empty();
+    if !has_tools && !has_integrations {
+        return None;
+    }
+
+    let mut sections = vec![
+        "Kontext integration tools are available in this session. Tools prefixed with `kontext__` run against the user's connected external services with the user's permissions.".to_string(),
+    ];
+
+    if !state.connected_capabilities.is_empty() {
+        sections.push(format!(
+            "Connected integrations: {}.",
+            state.connected_capabilities.join(", ")
+        ));
+    }
+
+    if !state.disconnected_capabilities.is_empty() {
+        let disconnected_names = state
+            .disconnected_capabilities
+            .iter()
+            .map(|capability| capability.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        sections.push(format!("Not connected yet: {disconnected_names}."));
+    }
+
+    if state
+        .tool_id_by_name
+        .contains_key(REQUEST_CAPABILITY_TOOL_NAME)
+    {
+        sections.push(
+            "When the user asks to connect, reconnect, manage, or check integrations, call `kontext__REQUEST_CAPABILITY` to generate the link. Always call the tool for a fresh URL and never reuse a previously returned URL.".to_string(),
+        );
+    }
+
+    Some(sections.join("\n\n"))
+}
+
 fn unique_tool_name(raw: &str, seen_names: &mut HashSet<String>) -> String {
     let mut candidate = sanitize_responses_api_tool_name(raw);
     if candidate.len() > MAX_TOOL_NAME_LENGTH {
@@ -542,6 +611,7 @@ fn sha1_hex(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pretty_assertions::assert_eq;
 
     #[test]
     fn unique_tool_name_sanitizes_and_dedupes() {
@@ -691,5 +761,36 @@ mod tests {
             "codex-kontext-cli"
         )));
         assert!(!should_skip_kontext_runtime_for_originator(None));
+    }
+
+    #[test]
+    fn build_system_prompt_returns_none_without_tools_or_integrations() {
+        let state = ToolState::default();
+        assert_eq!(build_kontext_system_prompt_from_state(&state), None);
+    }
+
+    #[test]
+    fn build_system_prompt_includes_integration_status_and_fresh_link_rule() {
+        let mut tool_id_by_name = HashMap::new();
+        tool_id_by_name.insert(
+            REQUEST_CAPABILITY_TOOL_NAME.to_string(),
+            "REQUEST_CAPABILITY".to_string(),
+        );
+        let state = ToolState {
+            tool_id_by_name,
+            connected_capabilities: vec!["GitHub".to_string(), "Linear".to_string()],
+            disconnected_capabilities: vec![DisconnectedCapability {
+                name: "Slack".to_string(),
+                connect_url: None,
+            }],
+            needs_connect_page: false,
+        };
+
+        let prompt = build_kontext_system_prompt_from_state(&state)
+            .expect("prompt should be present with integration context");
+        assert!(prompt.contains("Connected integrations: GitHub, Linear."));
+        assert!(prompt.contains("Not connected yet: Slack."));
+        assert!(prompt.contains("Always call the tool for a fresh URL"));
+        assert!(prompt.contains("never reuse a previously returned URL"));
     }
 }
