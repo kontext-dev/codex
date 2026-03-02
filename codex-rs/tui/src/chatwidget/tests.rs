@@ -8223,6 +8223,37 @@ async fn status_line_kontext_status_omits_when_unavailable() {
 }
 
 #[tokio::test]
+async fn session_configured_prefetches_kontext_status_when_apps_are_disabled() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    chat.config.features.disable(Feature::Apps);
+    chat.config.tui_status_line = Some(vec!["kontext-status".to_string()]);
+
+    let configured = codex_protocol::protocol::SessionConfiguredEvent {
+        session_id: ThreadId::new(),
+        forked_from_id: None,
+        thread_name: None,
+        model: "gpt-5.3-codex".to_string(),
+        model_provider_id: "openai".to_string(),
+        approval_policy: AskForApproval::Never,
+        sandbox_policy: SandboxPolicy::new_danger_full_access(),
+        cwd: std::env::current_dir().expect("cwd"),
+        reasoning_effort: None,
+        history_log_id: 0,
+        history_entry_count: 0,
+        initial_messages: None,
+        network_proxy: None,
+        rollout_path: None,
+    };
+
+    chat.handle_codex_event(Event {
+        id: "session-configured".to_string(),
+        msg: EventMsg::SessionConfigured(configured),
+    });
+
+    assert!(chat.connectors_prefetch_in_flight);
+}
+
+#[tokio::test]
 async fn status_line_branch_refreshes_after_turn_complete() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
     chat.config.tui_status_line = Some(vec!["git-branch".to_string()]);

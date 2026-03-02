@@ -24,6 +24,7 @@ use crate::config::types::AppsConfigToml;
 use crate::default_client::is_first_party_chat_originator;
 use crate::default_client::originator;
 use crate::features::Feature;
+use crate::kontext_dev::list_kontext_integrations_as_connectors;
 use crate::mcp::CODEX_APPS_MCP_SERVER_NAME;
 use crate::mcp::auth::compute_auth_statuses;
 use crate::mcp::with_codex_apps_mcp;
@@ -87,6 +88,9 @@ pub async fn list_cached_accessible_connectors_from_mcp_tools(
     config: &Config,
 ) -> Option<Vec<AppInfo>> {
     if !config.features.enabled(Feature::Apps) {
+        if env!("CARGO_PKG_VERSION").contains("-kontext.") {
+            return None;
+        }
         return Some(Vec::new());
     }
 
@@ -112,6 +116,13 @@ pub async fn list_accessible_connectors_from_mcp_tools_with_options_and_status(
     force_refetch: bool,
 ) -> anyhow::Result<AccessibleConnectorsStatus> {
     if !config.features.enabled(Feature::Apps) {
+        if env!("CARGO_PKG_VERSION").contains("-kontext.") {
+            let connectors = list_kontext_integrations_as_connectors().await?;
+            return Ok(AccessibleConnectorsStatus {
+                connectors: filter_disallowed_connectors(connectors),
+                codex_apps_ready: true,
+            });
+        }
         return Ok(AccessibleConnectorsStatus {
             connectors: Vec::new(),
             codex_apps_ready: true,

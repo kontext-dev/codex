@@ -1171,7 +1171,7 @@ impl ChatWidget {
             cwds: Vec::new(),
             force_reload: true,
         });
-        if self.connectors_enabled() {
+        if self.should_prefetch_connectors() {
             self.prefetch_connectors();
         }
         if let Some(user_message) = self.initial_user_message.take() {
@@ -5046,7 +5046,7 @@ impl ChatWidget {
     }
 
     fn prefetch_connectors_with_options(&mut self, force_refetch: bool) {
-        if !self.connectors_enabled() {
+        if !self.should_prefetch_connectors() {
             return;
         }
         if self.connectors_prefetch_in_flight {
@@ -7142,6 +7142,16 @@ impl ChatWidget {
         self.config.features.enabled(Feature::Apps)
     }
 
+    fn should_prefetch_connectors(&self) -> bool {
+        self.connectors_enabled() || self.status_line_has_kontext_item()
+    }
+
+    fn status_line_has_kontext_item(&self) -> bool {
+        self.status_line_items_with_invalids()
+            .0
+            .contains(&StatusLineItem::KontextStatus)
+    }
+
     fn connectors_for_mentions(&self) -> Option<&[connectors::AppInfo]> {
         if !self.connectors_enabled() {
             return None;
@@ -7698,6 +7708,8 @@ impl ChatWidget {
             }
         }
 
+        self.refresh_status_line();
+
         if trigger_pending_force_refetch {
             self.prefetch_connectors_with_options(true);
         }
@@ -7724,6 +7736,7 @@ impl ChatWidget {
         self.refresh_connectors_popup_if_open(&snapshot.connectors);
         self.connectors_cache = ConnectorsCacheState::Ready(snapshot.clone());
         self.bottom_pane.set_connectors_snapshot(Some(snapshot));
+        self.refresh_status_line();
     }
 
     pub(crate) fn open_review_popup(&mut self) {
