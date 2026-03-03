@@ -39,7 +39,22 @@ On first run:
 npm i -g @kontext-dev/codex@latest
 ```
 
-## 4. Verify
+## 4. Automatic update checks
+
+On startup, Codex checks if a newer `@kontext-dev/codex` version is available.
+When an update is found, the prompt offers:
+
+1. Update now
+2. Skip
+3. Skip until next version
+
+To disable startup update checks, set this in `~/.codex/config.toml`:
+
+```toml
+check_for_update_on_startup = false
+```
+
+## 5. Verify
 
 ```bash
 codex-kontext --version
