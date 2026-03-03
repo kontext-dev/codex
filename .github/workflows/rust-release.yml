@@ -201,7 +201,20 @@ jobs:
       - name: Cargo build
         shell: bash
         run: |
-          cargo build --target ${{ matrix.target }} --release --timings --bin codex --bin codex-responses-api-proxy
+          set -euo pipefail
+
+          cli_bin="codex"
+          if ! cargo metadata --no-deps --format-version=1 \
+            | jq -e '.packages[].targets[] | select(.kind[] == "bin" and .name == "codex")' >/dev/null; then
+            cli_bin="codex-kontext"
+          fi
+
+          cargo build --target ${{ matrix.target }} --release --timings --bin "${cli_bin}" --bin codex-responses-api-proxy
+
+          # Downstream packaging and signing expect the CLI binary at `.../release/codex`.
+          if [[ "${cli_bin}" != "codex" ]]; then
+            cp "target/${{ matrix.target }}/release/${cli_bin}" "target/${{ matrix.target }}/release/codex"
+          fi
 
       - name: Upload Cargo timings
         uses: actions/upload-artifact@v6
