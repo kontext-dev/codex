@@ -55,8 +55,13 @@ Supported actions:
 Example create:
 `{"action":"create","args":{"name":"Quarterly Update"}}`
 
+Example create with custom slide size:
+`{"action":"create","args":{"name":"Quarterly Update","slide_size":{"width":960,"height":540}}}`
+
 Example edit:
 `{"artifact_id":"presentation_x","action":"add_text_shape","args":{"slide_index":0,"text":"Revenue up 24%","position":{"left":48,"top":72,"width":260,"height":80}}}`
+
+Table creation also accepts optional `column_widths` and `row_heights` arrays in points when you need explicit table sizing instead of even splits.
 
 Example export:
 `{"artifact_id":"presentation_x","action":"export_pptx","args":{"path":"artifacts/q2-update.pptx"}}`
@@ -90,7 +95,9 @@ Image placeholders can be prompt-only. `add_image` accepts `prompt` without `pat
 
 Remote images are supported. `add_image` and `replace_image` accept `uri` in addition to local `path` and `data_url`.
 
-Image edits can target inspect/resolve anchors like `im/element_3`, and `update_shape_style` now accepts image `fit`, `crop`, and `lock_aspect_ratio` updates.
+Image edits can target inspect/resolve anchors like `im/element_3`, and `update_shape_style` now accepts image `fit`, `crop`, `rotation`, `flip_horizontal`, `flip_vertical`, and `lock_aspect_ratio` updates.
+
+`add_image` and `replace_image` also accept optional `rotation`, `flip_horizontal`, and `flip_vertical` fields for image transforms.
 
 `update_shape_style.position` accepts partial updates, so you can move or resize an element without resending the full rect.
 
