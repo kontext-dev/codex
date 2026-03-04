@@ -9,6 +9,7 @@ use kontext_dev_sdk::KontextDevError;
 use kontext_dev_sdk::build_kontext_prompt_guidance;
 use kontext_dev_sdk::create_kontext_orchestrator;
 use kontext_dev_sdk::mcp::KontextTool;
+use kontext_dev_sdk::mcp::RuntimeIntegrationConnectType;
 use kontext_dev_sdk::orchestrator::KontextOrchestrator;
 use serde_json::Map;
 use serde_json::Value;
@@ -46,6 +47,7 @@ pub(crate) struct InjectedKontextToolSpec {
 struct DisconnectedCapability {
     name: String,
     connect_url: Option<String>,
+    connect_type: Option<RuntimeIntegrationConnectType>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -116,6 +118,24 @@ impl KontextDevRuntime {
                 Vec::new()
             }
         };
+        let runtime_integrations = match self.client.mcp().list_integrations().await {
+            Ok(integrations) => integrations,
+            Err(err) if is_url_elicitation_required_error(&err) => {
+                warn!(
+                    "Kontext runtime integrations require URL elicitation before listing status. Continuing startup and showing connect guidance."
+                );
+                needs_connect_page = true;
+                Vec::new()
+            }
+            Err(err) => {
+                warn!("Unable to list Kontext runtime integrations: {err}");
+                Vec::new()
+            }
+        };
+        let connect_type_by_id = runtime_integrations
+            .into_iter()
+            .map(|integration| (integration.id, integration.connect_type))
+            .collect::<HashMap<_, _>>();
 
         let mut disconnected_capabilities = Vec::new();
         for integration in integrations.as_slice() {
@@ -131,6 +151,7 @@ impl KontextDevRuntime {
                         self.settings.integration_ui_url.as_deref(),
                     )
                 }),
+                connect_type: connect_type_by_id.get(&integration.id).cloned(),
             });
         }
 
@@ -260,11 +281,20 @@ impl KontextDevRuntime {
             disconnected.as_slice(),
             needs_connect_page,
         ) {
+            let has_user_token_disconnected = disconnected.iter().any(|capability| {
+                capability.connect_type == Some(RuntimeIntegrationConnectType::UserToken)
+            });
             match self.connect_page_url().await {
                 Ok(connect_url) => {
-                    info!(
-                        "Kontext integrations are disconnected. Open this URL to connect: {connect_url}"
-                    );
+                    if has_user_token_disconnected {
+                        info!(
+                            "Kontext integrations are disconnected and at least one requires a per-user token/API key. Open this URL to connect: {connect_url}"
+                        );
+                    } else {
+                        info!(
+                            "Kontext integrations are disconnected. Open this URL to connect: {connect_url}"
+                        );
+                    }
                     if let Err(err) = webbrowser::open(&connect_url) {
                         warn!(
                             "Failed to open Kontext connect URL in browser (showing URL instead): {err}"
@@ -281,20 +311,30 @@ impl KontextDevRuntime {
         }
 
         if let Some(first) = disconnected.first() {
+            let connect_requirement = match first.connect_type.as_ref() {
+                Some(RuntimeIntegrationConnectType::Oauth) => "requires OAuth authorization.",
+                Some(RuntimeIntegrationConnectType::UserToken) => {
+                    "requires a per-user token/API key."
+                }
+                Some(RuntimeIntegrationConnectType::Credentials) => {
+                    "requires internal credentials."
+                }
+                Some(RuntimeIntegrationConnectType::None) | None => "is disconnected.",
+            };
             if let Some(connect_url) = first.connect_url.as_deref() {
                 warn!(
-                    "Kontext integration `{}` is disconnected. Open this URL to connect: {connect_url}",
-                    first.name
+                    "Kontext integration `{}` {connect_requirement} Open this URL to connect: {connect_url}",
+                    first.name,
                 );
             } else {
                 match self.connect_page_url().await {
                     Ok(connect_url) => warn!(
-                        "Kontext integration `{}` is disconnected. Open this URL to connect/manage integrations: {connect_url}",
-                        first.name
+                        "Kontext integration `{}` {connect_requirement} Open this URL to connect/manage integrations: {connect_url}",
+                        first.name,
                     ),
                     Err(err) => warn!(
-                        "Kontext integration `{}` is disconnected and generating a connect URL failed: {err}",
-                        first.name
+                        "Kontext integration `{}` {connect_requirement} Generating a connect URL failed: {err}",
+                        first.name,
                     ),
                 }
             }
@@ -573,6 +613,7 @@ fn sha1_hex(value: &str) -> String {
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+    use serde::Deserialize;
 
     #[test]
     fn unique_tool_name_sanitizes_and_dedupes() {
@@ -600,6 +641,7 @@ mod tests {
         let disconnected = vec![DisconnectedCapability {
             name: "Linear".to_string(),
             connect_url: None,
+            connect_type: None,
         }];
 
         assert!(should_auto_open_connect_page(
@@ -747,5 +789,55 @@ mod tests {
             prompt,
             "Always call `REQUEST_CAPABILITY` for fresh integration links."
         );
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct RuntimeIntegrationsPayload {
+        items: Vec<kontext_dev_sdk::mcp::RuntimeIntegrationRecord>,
+    }
+
+    #[test]
+    fn runtime_integrations_payload_accepts_user_token_connect_type() {
+        let payload = serde_json::from_value::<RuntimeIntegrationsPayload>(json!({
+            "items": [{
+                "id": "github",
+                "name": "GitHub",
+                "url": "https://mcp.kontext.dev/github",
+                "category": "gateway_remote_mcp",
+                "connectType": "user_token",
+                "connection": {
+                    "connected": false,
+                    "status": "disconnected"
+                }
+            }]
+        }))
+        .expect("user_token should deserialize as a valid connect type");
+
+        assert_eq!(payload.items.len(), 1);
+        assert_eq!(
+            payload.items[0].connect_type,
+            RuntimeIntegrationConnectType::UserToken
+        );
+    }
+
+    #[test]
+    fn runtime_integrations_payload_rejects_unknown_connect_type() {
+        let err = serde_json::from_value::<RuntimeIntegrationsPayload>(json!({
+            "items": [{
+                "id": "github",
+                "name": "GitHub",
+                "url": "https://mcp.kontext.dev/github",
+                "category": "gateway_remote_mcp",
+                "connectType": "api_key",
+                "connection": {
+                    "connected": false,
+                    "status": "disconnected"
+                }
+            }]
+        }))
+        .expect_err("unknown connect type should fail payload parsing");
+
+        assert!(err.to_string().contains("unknown variant"));
     }
 }
