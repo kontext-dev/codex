@@ -5448,9 +5448,9 @@ dependencies = [
 
 [[package]]
 name = "kontext-dev-sdk"
-version = "0.1.4"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6e12135cfbce0eec97e0dcd4f7260bde91719f9334b2a1ac469349d98a54cd04"
+checksum = "e00dc5a53668bd2b1a7c6155925ee42ec7d9b8400647d3b76addc20b88300e5f"
 dependencies = [
  "base64 0.22.1",
  "dirs",
@@ -5471,9 +5471,9 @@ dependencies = [
 
 [[package]]
 name = "kontext-dev-sdk-core"
-version = "0.1.4"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "35a339ba9aee72bac72ea1facbc60f2b5ddda616e5fa1d3a2a1e0e1b0dc83dd8"
+checksum = "bdb2298d4b6743803df3acf384db64dd9d2090400b9ca2186c55be6bc3bb0981"
 dependencies = [
  "serde",
  "serde_json",

@@ -8,6 +8,10 @@ license.workspace = true
 name = "codex-kontext"
 path = "src/main.rs"
 
+[[bin]]
+name = "codex"
+path = "src/main.rs"
+
 [lib]
 name = "codex_cli"
 path = "src/lib.rs"
