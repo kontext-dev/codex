@@ -32,12 +32,20 @@ jobs:
 
       - name: Stage npm package
         id: stage_npm_package
+        if: ${{ github.repository_owner == 'openai' && github.ref_name != 'kontext-dev' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # Use a rust-release version that includes all native binaries.
-          CODEX_VERSION=0.74.0
+          CODEX_VERSION=$(python3 - <<'PY'
+          import pathlib
+          import tomllib
+
+          cargo_toml = pathlib.Path("codex-rs/Cargo.toml").read_text()
+          data = tomllib.loads(cargo_toml)
+          print(data["workspace"]["package"]["version"])
+          PY
+          )
           OUTPUT_DIR="${RUNNER_TEMP}"
           python3 ./scripts/stage_npm_packages.py \
             --release-version "$CODEX_VERSION" \
@@ -47,6 +55,7 @@ jobs:
           echo "pack_output=$PACK_OUTPUT" >> "$GITHUB_OUTPUT"
 
       - name: Upload staged npm package artifact
+        if: ${{ github.repository_owner == 'openai' && github.ref_name != 'kontext-dev' }}
         uses: actions/upload-artifact@v6
         with:
           name: codex-npm-staging
