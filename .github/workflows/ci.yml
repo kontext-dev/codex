@@ -2,7 +2,7 @@ name: ci
 
 on:
   pull_request: {}
-  push: { branches: [main, kontext-dev] }
+  push: { branches: [kontext-dev] }
 
 jobs:
   build-test:
