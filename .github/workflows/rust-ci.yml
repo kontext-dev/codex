@@ -1,9 +1,6 @@
 name: rust-ci
 on:
   pull_request: {}
-  push:
-    branches:
-      - kontext-dev
   workflow_dispatch:
 
 # CI builds in debug (dev) for faster signal.
