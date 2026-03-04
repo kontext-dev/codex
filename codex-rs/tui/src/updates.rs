@@ -1,12 +1,11 @@
 #![cfg(not(debug_assertions))]
 
 use crate::update_action;
-use crate::update_action::UpdateAction;
 use chrono::DateTime;
 use chrono::Duration;
 use chrono::Utc;
 use codex_core::config::Config;
-use codex_core::default_client::create_client;
+use semver::Version;
 use serde::Deserialize;
 use serde::Serialize;
 use std::path::Path;
@@ -16,6 +15,9 @@ use crate::version::CODEX_CLI_VERSION;
 
 pub fn get_upgrade_version(config: &Config) -> Option<String> {
     if !config.check_for_update_on_startup {
+        return None;
+    }
+    if update_action::get_update_action().is_none() {
         return None;
     }
 
@@ -55,19 +57,7 @@ struct VersionInfo {
 }
 
 const VERSION_FILENAME: &str = "version.json";
-// We use the latest version from the cask if installation is via homebrew - homebrew does not immediately pick up the latest release and can lag behind.
-const HOMEBREW_CASK_API_URL: &str = "https://formulae.brew.sh/api/cask/codex.json";
-const LATEST_RELEASE_URL: &str = "https://api.github.com/repos/openai/codex/releases/latest";
-
-#[derive(Deserialize, Debug, Clone)]
-struct ReleaseInfo {
-    tag_name: String,
-}
-
-#[derive(Deserialize, Debug, Clone)]
-struct HomebrewCaskInfo {
-    version: String,
-}
+const NPM_PACKAGE_FOR_UPDATES: &str = "@kontext-dev/codex";
 
 fn version_filepath(config: &Config) -> PathBuf {
     config.codex_home.join(VERSION_FILENAME)
@@ -79,30 +69,18 @@ fn read_version_info(version_file: &Path) -> anyhow::Result<VersionInfo> {
 }
 
 async fn check_for_update(version_file: &Path) -> anyhow::Result<()> {
-    let latest_version = match update_action::get_update_action() {
-        Some(UpdateAction::BrewUpgrade) => {
-            let HomebrewCaskInfo { version } = create_client()
-                .get(HOMEBREW_CASK_API_URL)
-                .send()
-                .await?
-                .error_for_status()?
-                .json::<HomebrewCaskInfo>()
-                .await?;
-            version
-        }
-        _ => {
-            let ReleaseInfo {
-                tag_name: latest_tag_name,
-            } = create_client()
-                .get(LATEST_RELEASE_URL)
-                .send()
-                .await?
-                .error_for_status()?
-                .json::<ReleaseInfo>()
-                .await?;
-            extract_version_from_latest_tag(&latest_tag_name)?
-        }
-    };
+    let output = tokio::process::Command::new("npm")
+        .args(["view", NPM_PACKAGE_FOR_UPDATES, "version", "--json"])
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        anyhow::bail!("Failed to query npm for latest {NPM_PACKAGE_FOR_UPDATES} version: {stderr}");
+    }
+
+    let stdout = std::str::from_utf8(&output.stdout)?;
+    let latest_version = parse_npm_view_version_output(stdout)?;
 
     // Preserve any previously dismissed version if present.
     let prev_info = read_version_info(version_file).ok();
@@ -127,11 +105,14 @@ fn is_newer(latest: &str, current: &str) -> Option<bool> {
     }
 }
 
-fn extract_version_from_latest_tag(latest_tag_name: &str) -> anyhow::Result<String> {
-    latest_tag_name
-        .strip_prefix("rust-v")
-        .map(str::to_owned)
-        .ok_or_else(|| anyhow::anyhow!("Failed to parse latest tag name '{latest_tag_name}'"))
+fn parse_npm_view_version_output(stdout: &str) -> anyhow::Result<String> {
+    let version = serde_json::from_str::<String>(stdout.trim())?;
+    let normalized = version.trim();
+    if normalized.is_empty() {
+        anyhow::bail!("npm returned an empty version for {NPM_PACKAGE_FOR_UPDATES}");
+    }
+
+    Ok(normalized.to_string())
 }
 
 /// Returns the latest version to show in a popup, if it should be shown.
@@ -169,12 +150,8 @@ pub async fn dismiss_version(config: &Config, version: &str) -> anyhow::Result<(
     Ok(())
 }
 
-fn parse_version(v: &str) -> Option<(u64, u64, u64)> {
-    let mut iter = v.trim().split('.');
-    let maj = iter.next()?.parse::<u64>().ok()?;
-    let min = iter.next()?.parse::<u64>().ok()?;
-    let pat = iter.next()?.parse::<u64>().ok()?;
-    Some((maj, min, pat))
+fn parse_version(v: &str) -> Option<Version> {
+    Version::parse(v.trim()).ok()
 }
 
 #[cfg(test)]
@@ -182,50 +159,62 @@ mod tests {
     use super::*;
 
     #[test]
-    fn extract_version_from_brew_api_json() {
-        //
-        // https://formulae.brew.sh/api/cask/codex.json
-        let cask_json = r#"{
-            "token": "codex",
-            "full_token": "codex",
-            "tap": "homebrew/cask",
-            "version": "0.96.0",
-        }"#;
-        let HomebrewCaskInfo { version } = serde_json::from_str::<HomebrewCaskInfo>(cask_json)
-            .expect("failed to parse version from cask json");
-        assert_eq!(version, "0.96.0");
-    }
-
-    #[test]
-    fn extracts_version_from_latest_tag() {
+    fn parses_npm_view_json_string_output() {
         assert_eq!(
-            extract_version_from_latest_tag("rust-v1.5.0").expect("failed to parse version"),
-            "1.5.0"
+            parse_npm_view_version_output("\"0.108.0-kontext.1\"\n")
+                .expect("failed to parse npm version output"),
+            "0.108.0-kontext.1"
         );
     }
 
     #[test]
-    fn latest_tag_without_prefix_is_invalid() {
-        assert!(extract_version_from_latest_tag("v1.5.0").is_err());
+    fn parses_npm_view_output_and_trims_inner_whitespace() {
+        assert_eq!(
+            parse_npm_view_version_output("\"  0.108.0-kontext.2  \"")
+                .expect("failed to parse npm version output"),
+            "0.108.0-kontext.2"
+        );
     }
 
     #[test]
-    fn prerelease_version_is_not_considered_newer() {
-        assert_eq!(is_newer("0.11.0-beta.1", "0.11.0"), None);
-        assert_eq!(is_newer("1.0.0-rc.1", "1.0.0"), None);
+    fn rejects_non_string_npm_view_output() {
+        assert!(parse_npm_view_version_output("{\"version\":\"0.108.0\"}").is_err());
     }
 
     #[test]
-    fn plain_semver_comparisons_work() {
-        assert_eq!(is_newer("0.11.1", "0.11.0"), Some(true));
-        assert_eq!(is_newer("0.11.0", "0.11.1"), Some(false));
-        assert_eq!(is_newer("1.0.0", "0.9.9"), Some(true));
-        assert_eq!(is_newer("0.9.9", "1.0.0"), Some(false));
+    fn semver_comparisons_work_for_kontext_versions() {
+        assert_eq!(
+            is_newer("0.108.0-kontext.2", "0.108.0-kontext.1"),
+            Some(true)
+        );
+        assert_eq!(
+            is_newer("0.108.0-kontext.1", "0.108.0-kontext.2"),
+            Some(false)
+        );
+        assert_eq!(
+            is_newer("0.109.0-kontext.1", "0.108.9-kontext.99"),
+            Some(true)
+        );
+        assert_eq!(is_newer("0.108.0", "0.108.0-kontext.9"), Some(true));
+    }
+
+    #[test]
+    fn invalid_versions_return_none_for_comparison() {
+        assert_eq!(is_newer("0.108.0-kontext.1", "invalid"), None);
+        assert_eq!(is_newer("invalid", "0.108.0-kontext.1"), None);
     }
 
     #[test]
     fn whitespace_is_ignored() {
-        assert_eq!(parse_version(" 1.2.3 \n"), Some((1, 2, 3)));
-        assert_eq!(is_newer(" 1.2.3 ", "1.2.2"), Some(true));
+        assert_eq!(
+            parse_version(" 0.108.0-kontext.3 \n")
+                .expect("expected semver version")
+                .to_string(),
+            "0.108.0-kontext.3"
+        );
+        assert_eq!(
+            is_newer(" 0.108.0-kontext.3 ", "0.108.0-kontext.2"),
+            Some(true)
+        );
     }
 }
