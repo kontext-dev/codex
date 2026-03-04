@@ -576,97 +576,6 @@ fn create_view_image_tool() -> ToolSpec {
     })
 }
 
-fn create_presentation_artifact_tool() -> ToolSpec {
-    let action_step_schema = JsonSchema::Object {
-        properties: BTreeMap::from([
-            (
-                "action".to_string(),
-                JsonSchema::String {
-                    description: Some("Action name to run for this step.".to_string()),
-                },
-            ),
-            (
-                "args".to_string(),
-                JsonSchema::Object {
-                    properties: BTreeMap::new(),
-                    required: None,
-                    additional_properties: Some(true.into()),
-                },
-            ),
-        ]),
-        required: Some(vec!["action".to_string(), "args".to_string()]),
-        additional_properties: Some(false.into()),
-    };
-    let properties = BTreeMap::from([
-        (
-            "artifact_id".to_string(),
-            JsonSchema::String {
-                description: Some(
-                    "Artifact id returned by an earlier presentation_artifact call.".to_string(),
-                ),
-            },
-        ),
-        (
-            "actions".to_string(),
-            JsonSchema::Array {
-                items: Box::new(action_step_schema),
-                description: Some(
-                    "Array of `(action, args)` steps to execute sequentially.".to_string(),
-                ),
-            },
-        ),
-    ]);
-
-    ToolSpec::Function(ResponsesApiTool {
-        name: "presentation_artifact".to_string(),
-        description: "Create or edit a presentation artifact for the current thread.".to_string(),
-        strict: false,
-        parameters: JsonSchema::Object {
-            properties,
-            required: Some(vec!["actions".to_string()]),
-            additional_properties: Some(false.into()),
-        },
-    })
-}
-
-fn create_spreadsheet_artifact_tool() -> ToolSpec {
-    let properties = BTreeMap::from([
-        (
-            "artifact_id".to_string(),
-            JsonSchema::String {
-                description: Some(
-                    "Artifact id returned by an earlier spreadsheet_artifact call.".to_string(),
-                ),
-            },
-        ),
-        (
-            "action".to_string(),
-            JsonSchema::String {
-                description: Some("Action name to run for this request.".to_string()),
-            },
-        ),
-        (
-            "args".to_string(),
-            JsonSchema::Object {
-                properties: BTreeMap::new(),
-                required: None,
-                additional_properties: Some(true.into()),
-            },
-        ),
-    ]);
-
-    ToolSpec::Function(ResponsesApiTool {
-        name: "spreadsheet_artifact".to_string(),
-        description: "Create or edit a spreadsheet artifact for the current thread.".to_string(),
-        strict: false,
-        parameters: JsonSchema::Object {
-            properties,
-            required: Some(vec!["action".to_string(), "args".to_string()]),
-            additional_properties: Some(false.into()),
-        },
-    })
-}
-
 fn create_collab_input_items_schema() -> JsonSchema {
     let properties = BTreeMap::from([
         (
@@ -1462,6 +1371,33 @@ JS_SOURCE: /(?:\s*)(?:[^\s{\"`]|`[^`]|``[^`])[\s\S]*/
     })
 }
 
+fn create_artifacts_tool() -> ToolSpec {
+    const ARTIFACTS_FREEFORM_GRAMMAR: &str = r#"
+start: pragma_source | plain_source
+
+pragma_source: PRAGMA_LINE NEWLINE js_source
+plain_source: PLAIN_JS_SOURCE
+
+js_source: JS_SOURCE
+
+PRAGMA_LINE: /[ \t]*\/\/ codex-artifacts:[^\r\n]*/ | /[ \t]*\/\/ codex-artifact-tool:[^\r\n]*/
+NEWLINE: /\r?\n/
+PLAIN_JS_SOURCE: /(?:\s*)(?:[^\s{\"`]|`[^`]|``[^`])[\s\S]*/
+JS_SOURCE: /(?:\s*)(?:[^\s{\"`]|`[^`]|``[^`])[\s\S]*/
+"#;
+
+    ToolSpec::Freeform(FreeformTool {
+        name: "artifacts".to_string(),
+        description: "Runs raw JavaScript against the preinstalled Codex @oai/artifact-tool runtime for creating presentations or spreadsheets. This is plain JavaScript executed by Node with top-level await, not TypeScript: do not use type annotations, `interface`, `type`, or `import type`. Author code the same way you would for `import { Presentation, Workbook, PresentationFile, SpreadsheetFile, FileBlob, ... } from \"@oai/artifact-tool\"`, but omit that import line because the package surface is already preloaded. Named exports are available directly on `globalThis`, and the full module is available as `globalThis.artifactTool` (also aliased as `globalThis.artifacts` and `globalThis.codexArtifacts`). Node built-ins such as `node:fs/promises` may still be imported when needed for saving preview bytes. This is a freeform tool: send raw JavaScript source text, optionally with a first-line pragma like `// codex-artifacts: timeout_ms=15000` or `// codex-artifact-tool: timeout_ms=15000`; do not send JSON/quotes/markdown fences."
+            .to_string(),
+        format: FreeformToolFormat {
+            r#type: "grammar".to_string(),
+            syntax: "lark".to_string(),
+            definition: ARTIFACTS_FREEFORM_GRAMMAR.to_string(),
+        },
+    })
+}
+
 fn create_js_repl_reset_tool() -> ToolSpec {
     ToolSpec::Function(ResponsesApiTool {
         name: "js_repl_reset".to_string(),
@@ -1794,6 +1730,7 @@ pub(crate) fn build_specs_with_kontext(
     kontext_tools: &[InjectedKontextToolSpec],
 ) -> ToolRegistryBuilder {
     use crate::tools::handlers::ApplyPatchHandler;
+    use crate::tools::handlers::ArtifactsHandler;
     use crate::tools::handlers::DynamicToolHandler;
     use crate::tools::handlers::GrepFilesHandler;
     use crate::tools::handlers::JsReplHandler;
@@ -1804,13 +1741,11 @@ pub(crate) fn build_specs_with_kontext(
     use crate::tools::handlers::McpResourceHandler;
     use crate::tools::handlers::MultiAgentHandler;
     use crate::tools::handlers::PlanHandler;
-    use crate::tools::handlers::PresentationArtifactHandler;
     use crate::tools::handlers::ReadFileHandler;
     use crate::tools::handlers::RequestUserInputHandler;
     use crate::tools::handlers::SearchToolBm25Handler;
     use crate::tools::handlers::ShellCommandHandler;
     use crate::tools::handlers::ShellHandler;
-    use crate::tools::handlers::SpreadsheetArtifactHandler;
     use crate::tools::handlers::TestSyncHandler;
     use crate::tools::handlers::UnifiedExecHandler;
     use crate::tools::handlers::ViewImageHandler;
@@ -1834,8 +1769,7 @@ pub(crate) fn build_specs_with_kontext(
     let js_repl_handler = Arc::new(JsReplHandler);
     let js_repl_reset_handler = Arc::new(JsReplResetHandler);
     let kontext_dev_handler = Arc::new(KontextDevHandler);
-    let presentation_artifact_handler = Arc::new(PresentationArtifactHandler);
-    let spreadsheet_artifact_handler = Arc::new(SpreadsheetArtifactHandler);
+    let artifacts_handler = Arc::new(ArtifactsHandler);
     let request_permission_enabled = config.request_permission_enabled;
 
     match &config.shell_type {
@@ -1980,10 +1914,8 @@ pub(crate) fn build_specs_with_kontext(
     builder.register_handler("view_image", view_image_handler);
 
     if config.artifact_tools {
-        builder.push_spec(create_presentation_artifact_tool());
-        builder.push_spec(create_spreadsheet_artifact_tool());
-        builder.register_handler("presentation_artifact", presentation_artifact_handler);
-        builder.register_handler("spreadsheet_artifact", spreadsheet_artifact_handler);
+        builder.push_spec(create_artifacts_tool());
+        builder.register_handler("artifacts", artifacts_handler);
     }
 
     if config.collab_tools {
@@ -2341,7 +2273,7 @@ mod tests {
             session_source: SessionSource::Cli,
         });
         let (tools, _) = build_specs(&tools_config, None, None, &[]).build();
-        assert_contains_tool_names(&tools, &["presentation_artifact", "spreadsheet_artifact"]);
+        assert_contains_tool_names(&tools, &["artifacts"]);
     }
 
     #[test]
