@@ -78,17 +78,9 @@ impl KontextDevRuntime {
         }
 
         let mut needs_connect_page = false;
-        let tools = match self.client.tools_list().await {
-            Ok(tools) => tools,
-            Err(err) if is_url_elicitation_required_error(&err) => {
-                warn!(
-                    "Kontext gateway requires integration connect URL elicitation before tool listing. Continuing startup and showing connect guidance."
-                );
-                needs_connect_page = true;
-                Vec::new()
-            }
-            Err(err) => return Err(anyhow!("failed to list Kontext tools: {err}")),
-        };
+        let tools = self
+            .list_tools_with_stale_session_recovery(&mut needs_connect_page)
+            .await?;
 
         let mut seen_names = HashSet::new();
         let mut tool_specs = Vec::new();
@@ -352,6 +344,76 @@ impl KontextDevRuntime {
             .await
             .map_err(|err| anyhow!("failed to reconnect Kontext session: {err}"))
     }
+
+    async fn list_tools_with_stale_session_recovery(
+        &self,
+        needs_connect_page: &mut bool,
+    ) -> Result<Vec<KontextTool>> {
+        match self.client.tools_list().await {
+            Ok(tools) => Ok(tools),
+            Err(err) if is_url_elicitation_required_error(&err) => {
+                warn!(
+                    "Kontext gateway requires integration connect URL elicitation before tool listing. Continuing startup and showing connect guidance."
+                );
+                *needs_connect_page = true;
+                Ok(Vec::new())
+            }
+            Err(err) if is_stale_session_error(&err) => {
+                warn!(
+                    kontext_failure_kind = "stale_session",
+                    stale_session_recovered = false,
+                    "Kontext tool listing hit a stale session; reconnecting and retrying once: {err}"
+                );
+
+                if let Err(reconnect_err) = self.reconnect_client().await {
+                    warn!(
+                        kontext_failure_kind = "stale_session",
+                        stale_session_recovered = false,
+                        "Kontext stale-session recovery reconnect failed: {reconnect_err}"
+                    );
+                    return Err(anyhow!(
+                        "session invalidated by server restart; retrying did not succeed: {reconnect_err}"
+                    ));
+                }
+
+                match self.client.tools_list().await {
+                    Ok(tools) => {
+                        info!(
+                            kontext_failure_kind = "stale_session",
+                            stale_session_recovered = true,
+                            "Recovered Kontext tool listing after stale session reset"
+                        );
+                        Ok(tools)
+                    }
+                    Err(retry_err) if is_url_elicitation_required_error(&retry_err) => {
+                        warn!(
+                            "Kontext gateway requires integration connect URL elicitation before tool listing. Continuing startup and showing connect guidance."
+                        );
+                        *needs_connect_page = true;
+                        Ok(Vec::new())
+                    }
+                    Err(retry_err) => {
+                        warn!(
+                            kontext_failure_kind = classify_kontext_failure_kind(&retry_err),
+                            stale_session_recovered = false,
+                            "Kontext stale-session recovery retry failed: {retry_err}"
+                        );
+                        Err(anyhow!(
+                            "session invalidated by server restart; retrying did not succeed: {retry_err}"
+                        ))
+                    }
+                }
+            }
+            Err(err) => {
+                warn!(
+                    kontext_failure_kind = classify_kontext_failure_kind(&err),
+                    stale_session_recovered = false,
+                    "Kontext tool listing failed: {err}"
+                );
+                Err(anyhow!("failed to list Kontext tools: {err}"))
+            }
+        }
+    }
 }
 
 pub(crate) async fn initialize_kontext_dev_runtime(
@@ -532,6 +594,55 @@ fn is_url_elicitation_required_error(err: &KontextDevError) -> bool {
     }
 }
 
+fn is_stale_session_message(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    message.contains("no valid session id")
+        || message.contains("no valid session-id")
+        || message.contains("invalid session")
+        || (message.contains("session") && message.contains("not found"))
+}
+
+fn is_stale_session_error(err: &KontextDevError) -> bool {
+    match err {
+        KontextDevError::ConnectSession { message }
+        | KontextDevError::IntegrationOAuthInit { message }
+        | KontextDevError::TokenRequest { message, .. }
+        | KontextDevError::TokenExchange { message, .. } => is_stale_session_message(message),
+        _ => false,
+    }
+}
+
+fn is_kontext_auth_error(err: &KontextDevError) -> bool {
+    match err {
+        KontextDevError::OAuthCallbackTimeout { .. }
+        | KontextDevError::OAuthCallbackCancelled
+        | KontextDevError::MissingAuthorizationCode
+        | KontextDevError::OAuthCallbackError { .. }
+        | KontextDevError::InvalidOAuthState
+        | KontextDevError::TokenRequest { .. }
+        | KontextDevError::TokenExchange { .. } => true,
+        KontextDevError::ConnectSession { message }
+        | KontextDevError::IntegrationOAuthInit { message } => {
+            let message = message.to_ascii_lowercase();
+            message.contains("unauthorized")
+                || message.contains("forbidden")
+                || message.contains("denied")
+                || message.contains("credentials_required")
+        }
+        _ => false,
+    }
+}
+
+fn classify_kontext_failure_kind(err: &KontextDevError) -> &'static str {
+    if is_stale_session_error(err) {
+        return "stale_session";
+    }
+    if is_kontext_auth_error(err) {
+        return "auth";
+    }
+    "other"
+}
+
 fn should_retry_tool_execution(err: &KontextDevError) -> bool {
     if is_url_elicitation_required_error(err) {
         return true;
@@ -547,7 +658,7 @@ fn should_retry_tool_execution(err: &KontextDevError) -> bool {
                 || message.contains("forbidden")
                 || message.contains("denied")
                 || message.contains("credentials_required")
-                || message.contains("invalid session")
+                || is_stale_session_message(message.as_str())
                 || message.contains("not connected")
         }
         _ => false,
@@ -698,12 +809,41 @@ mod tests {
     }
 
     #[test]
-    fn should_retry_tool_execution_for_auth_and_session_errors() {
+    fn stale_session_error_detection_includes_session_not_found() {
+        let stale_message = "Request rejected: Session 5a2c48f2 not found";
+        let non_stale_message = "MCP request failed: input schema invalid";
+
+        assert!(is_stale_session_message(stale_message));
+        assert!(!is_stale_session_message(non_stale_message));
+    }
+
+    #[test]
+    fn classify_kontext_failure_kind_distinguishes_auth_and_stale() {
+        let stale = KontextDevError::ConnectSession {
+            message: "Request rejected: Session abc not found".to_string(),
+        };
+        let auth = KontextDevError::ConnectSession {
+            message: "unauthorized: token expired".to_string(),
+        };
+        let other = KontextDevError::ConnectSession {
+            message: "upstream timeout".to_string(),
+        };
+
+        assert_eq!(classify_kontext_failure_kind(&stale), "stale_session");
+        assert_eq!(classify_kontext_failure_kind(&auth), "auth");
+        assert_eq!(classify_kontext_failure_kind(&other), "other");
+    }
+
+    #[test]
+    fn should_retry_tool_execution_for_auth_and_stale_session_errors() {
         let denied = KontextDevError::ConnectSession {
             message: "unauthorized: tool invocation denied".to_string(),
         };
         let invalid_session = KontextDevError::ConnectSession {
             message: "MCP request failed: invalid session".to_string(),
+        };
+        let session_not_found = KontextDevError::ConnectSession {
+            message: "Request rejected: Session 5a2c48f2 not found".to_string(),
         };
         let non_retryable = KontextDevError::ConnectSession {
             message: "MCP request failed: input schema invalid".to_string(),
@@ -711,6 +851,7 @@ mod tests {
 
         assert!(should_retry_tool_execution(&denied));
         assert!(should_retry_tool_execution(&invalid_session));
+        assert!(should_retry_tool_execution(&session_not_found));
         assert!(!should_retry_tool_execution(&non_retryable));
     }
 

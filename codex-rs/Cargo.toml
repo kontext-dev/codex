@@ -70,7 +70,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.108.0-kontext.6"
+version = "0.108.0-kontext.7"
 # Track the edition for all workspace crates in one place. Individual
 # crates can still override this value, but keeping it here means new
 # crates created with `cargo new -w ...` automatically inherit the 2024
@@ -98,7 +98,7 @@ codex-client = { path = "codex-client" }
 codex-cloud-requirements = { path = "cloud-requirements" }
 codex-config = { path = "config" }
 codex-core = { path = "core" }
-kontext-dev-sdk = { version = "0.2.0" }
+kontext-dev-sdk = { version = "0.2.1" }
 codex-exec = { path = "exec" }
 codex-execpolicy = { path = "execpolicy" }
 codex-experimental-api-macros = { path = "codex-experimental-api-macros" }
