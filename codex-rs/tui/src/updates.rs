@@ -5,6 +5,7 @@ use chrono::DateTime;
 use chrono::Duration;
 use chrono::Utc;
 use codex_core::config::Config;
+use semver::Identifier;
 use semver::Version;
 use serde::Deserialize;
 use serde::Serialize;
@@ -22,12 +23,9 @@ pub fn get_upgrade_version(config: &Config) -> Option<String> {
     }
 
     let version_file = version_filepath(config);
-    let info = read_version_info(&version_file).ok();
+    let info = read_valid_version_info(&version_file);
 
-    if match &info {
-        None => true,
-        Some(info) => info.last_checked_at < Utc::now() - Duration::hours(20),
-    } {
+    if should_refresh(info.as_ref()) {
         // Refresh the cached latest version in the background so TUI startup
         // isn’t blocked by a network call. The UI reads the previously cached
         // value (if any) for this run; the next run shows the banner if needed.
@@ -58,6 +56,7 @@ struct VersionInfo {
 
 const VERSION_FILENAME: &str = "version.json";
 const NPM_PACKAGE_FOR_UPDATES: &str = "@kontext-dev/codex";
+const UPDATE_CHECK_INTERVAL: Duration = Duration::hours(6);
 
 fn version_filepath(config: &Config) -> PathBuf {
     config.codex_home.join(VERSION_FILENAME)
@@ -81,9 +80,14 @@ async fn check_for_update(version_file: &Path) -> anyhow::Result<()> {
 
     let stdout = std::str::from_utf8(&output.stdout)?;
     let latest_version = parse_npm_view_version_output(stdout)?;
+    if !is_compatible_update_target(&latest_version, CODEX_CLI_VERSION) {
+        anyhow::bail!(
+            "npm returned incompatible update target {latest_version} for current version {CODEX_CLI_VERSION}"
+        );
+    }
 
     // Preserve any previously dismissed version if present.
-    let prev_info = read_version_info(version_file).ok();
+    let prev_info = read_valid_version_info(version_file);
     let info = VersionInfo {
         latest_version,
         last_checked_at: Utc::now(),
@@ -115,17 +119,97 @@ fn parse_npm_view_version_output(stdout: &str) -> anyhow::Result<String> {
     Ok(normalized.to_string())
 }
 
+fn read_valid_version_info(version_file: &Path) -> Option<VersionInfo> {
+    let info = read_version_info(version_file).ok()?;
+    if is_compatible_update_target(&info.latest_version, CODEX_CLI_VERSION) {
+        Some(info)
+    } else {
+        tracing::warn!(
+            cached_latest_version = info.latest_version,
+            current_version = CODEX_CLI_VERSION,
+            "Ignoring cached update version from a different release channel"
+        );
+        None
+    }
+}
+
+fn should_refresh(info: Option<&VersionInfo>) -> bool {
+    match info {
+        None => true,
+        Some(info) => info.last_checked_at < Utc::now() - UPDATE_CHECK_INTERVAL,
+    }
+}
+
+fn is_compatible_update_target(latest: &str, current: &str) -> bool {
+    let Some(latest) = parse_version(latest) else {
+        return false;
+    };
+    let Some(current) = parse_version(current) else {
+        return false;
+    };
+
+    let current_channel = current.pre.iter().find_map(|identifier| {
+        if let Identifier::AlphaNumeric(value) = identifier {
+            Some(value.as_str())
+        } else {
+            None
+        }
+    });
+    let latest_channel = latest.pre.iter().find_map(|identifier| {
+        if let Identifier::AlphaNumeric(value) = identifier {
+            Some(value.as_str())
+        } else {
+            None
+        }
+    });
+
+    match current_channel {
+        Some(channel) => latest_channel == Some(channel),
+        None => true,
+    }
+}
+
 /// Returns the latest version to show in a popup, if it should be shown.
 /// This respects the user's dismissal choice for the current latest version.
-pub fn get_upgrade_version_for_popup(config: &Config) -> Option<String> {
+pub async fn get_upgrade_version_for_popup(config: &Config) -> Option<String> {
     if !config.check_for_update_on_startup {
+        return None;
+    }
+    if update_action::get_update_action().is_none() {
         return None;
     }
 
     let version_file = version_filepath(config);
-    let latest = get_upgrade_version(config)?;
+    let mut info = read_valid_version_info(&version_file);
+    if should_refresh(info.as_ref()) {
+        let cached_upgrade = info
+            .as_ref()
+            .is_some_and(|info| is_newer(&info.latest_version, CODEX_CLI_VERSION).unwrap_or(false));
+        if cached_upgrade {
+            let version_file_for_task = version_file.clone();
+            tokio::spawn(async move {
+                check_for_update(&version_file_for_task)
+                    .await
+                    .inspect_err(|e| tracing::error!("Failed to update version: {e}"))
+            });
+        } else {
+            if let Err(err) = check_for_update(&version_file).await {
+                tracing::error!("Failed to update version: {err}");
+            }
+            info = read_valid_version_info(&version_file);
+        }
+    }
+
+    let latest = info.as_ref().and_then(|info| {
+        if is_newer(&info.latest_version, CODEX_CLI_VERSION).unwrap_or(false) {
+            Some(info.latest_version.clone())
+        } else {
+            None
+        }
+    })?;
+
     // If the user dismissed this exact version previously, do not show the popup.
-    if let Ok(info) = read_version_info(&version_file)
+    if let Some(info) = info
         && info.dismissed_version.as_deref() == Some(latest.as_str())
     {
         return None;
@@ -216,5 +300,15 @@ mod tests {
             is_newer(" 0.108.0-kontext.3 ", "0.108.0-kontext.2"),
             Some(true)
         );
+    }
+
+    #[test]
+    fn update_target_compatibility_enforces_release_channel() {
+        assert!(is_compatible_update_target(
+            "0.108.0-kontext.9",
+            "0.108.0-kontext.8"
+        ));
+        assert!(!is_compatible_update_target("0.110.0", "0.108.0-kontext.8"));
+        assert!(is_compatible_update_target("0.110.0", "0.109.0"));
     }
 }
