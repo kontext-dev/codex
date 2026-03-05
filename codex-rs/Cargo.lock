@@ -1989,7 +1989,6 @@ dependencies = [
  "sentry",
  "tracing",
  "tracing-subscriber",
- "url",
 ]
 
 [[package]]
