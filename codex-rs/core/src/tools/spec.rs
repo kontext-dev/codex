@@ -45,10 +45,17 @@ pub enum ShellCommandBackendConfig {
     ZshFork,
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum UnifiedExecBackendConfig {
+    Direct,
+    ZshFork,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct ToolsConfig {
     pub shell_type: ConfigShellToolType,
     shell_command_backend: ShellCommandBackendConfig,
+    pub unified_exec_backend: UnifiedExecBackendConfig,
     pub allow_login_shell: bool,
     pub apply_patch_tool_type: Option<ApplyPatchToolType>,
     pub web_search_mode: Option<WebSearchMode>,
@@ -103,6 +110,12 @@ impl ToolsConfig {
             } else {
                 ShellCommandBackendConfig::Classic
             };
+        let unified_exec_backend =
+            if features.enabled(Feature::ShellTool) && features.enabled(Feature::ShellZshFork) {
+                UnifiedExecBackendConfig::ZshFork
+            } else {
+                UnifiedExecBackendConfig::Direct
+            };
 
         let shell_type = if !features.enabled(Feature::ShellTool) {
             ConfigShellToolType::Disabled
@@ -141,6 +154,7 @@ impl ToolsConfig {
         Self {
             shell_type,
             shell_command_backend,
+            unified_exec_backend,
             allow_login_shell: true,
             apply_patch_tool_type,
             web_search_mode: *web_search_mode,
@@ -2856,6 +2870,10 @@ mod tests {
         assert_eq!(
             tools_config.shell_command_backend,
             ShellCommandBackendConfig::ZshFork
+        );
+        assert_eq!(
+            tools_config.unified_exec_backend,
+            UnifiedExecBackendConfig::ZshFork
         );
     }
 
