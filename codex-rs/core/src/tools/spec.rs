@@ -8,6 +8,7 @@ use crate::features::Features;
 use crate::kontext_dev::InjectedKontextToolSpec;
 use crate::mcp_connection_manager::ToolInfo;
 use crate::models_manager::collaboration_mode_presets::CollaborationModesConfig;
+use crate::tools::handlers::PINNED_ARTIFACT_RUNTIME_VERSION;
 use crate::tools::handlers::PLAN_TOOL;
 use crate::tools::handlers::SEARCH_TOOL_BM25_DEFAULT_LIMIT;
 use crate::tools::handlers::SEARCH_TOOL_BM25_TOOL_NAME;
@@ -35,6 +36,7 @@ use serde_json::Value as JsonValue;
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::path::Path;
 
 const SEARCH_TOOL_BM25_DESCRIPTION_TEMPLATE: &str =
     include_str!("../../templates/search_tool/tool_description.md");
@@ -76,6 +78,7 @@ pub(crate) struct ToolsConfig {
 }
 
 pub(crate) struct ToolsConfigParams<'a> {
+    pub(crate) codex_home: &'a Path,
     pub(crate) model_info: &'a ModelInfo,
     pub(crate) features: &'a Features,
     pub(crate) web_search_mode: Option<WebSearchMode>,
@@ -85,6 +88,7 @@ pub(crate) struct ToolsConfigParams<'a> {
 impl ToolsConfig {
     pub fn new(params: &ToolsConfigParams) -> Self {
         let ToolsConfigParams {
+            codex_home,
             model_info,
             features,
             web_search_mode,
@@ -99,7 +103,11 @@ impl ToolsConfig {
         let include_default_mode_request_user_input =
             include_request_user_input && features.enabled(Feature::DefaultModeRequestUserInput);
         let include_search_tool = features.enabled(Feature::Apps);
-        let include_artifact_tools = features.enabled(Feature::Artifact);
+        let include_artifact_tools = features.enabled(Feature::Artifact)
+            && codex_artifacts::is_js_runtime_available(
+                codex_home,
+                PINNED_ARTIFACT_RUNTIME_VERSION,
+            );
         let include_image_gen_tool =
             features.enabled(Feature::ImageGeneration) && supports_image_generation(model_info);
         let include_agent_jobs = include_collab_tools && features.enabled(Feature::Sqlite);
@@ -1406,7 +1414,7 @@ JS_SOURCE: /(?:\s*)(?:[^\s{\"`]|`[^`]|``[^`])[\s\S]*/
 
     ToolSpec::Freeform(FreeformTool {
         name: "artifacts".to_string(),
-        description: "Runs raw JavaScript against the preinstalled Codex @oai/artifact-tool runtime for creating presentations or spreadsheets. This is plain JavaScript executed by Node with top-level await, not TypeScript: do not use type annotations, `interface`, `type`, or `import type`. Author code the same way you would for `import { Presentation, Workbook, PresentationFile, SpreadsheetFile, FileBlob, ... } from \"@oai/artifact-tool\"`, but omit that import line because the package surface is already preloaded. Named exports are available directly on `globalThis`, and the full module is available as `globalThis.artifactTool` (also aliased as `globalThis.artifacts` and `globalThis.codexArtifacts`). Node built-ins such as `node:fs/promises` may still be imported when needed for saving preview bytes. This is a freeform tool: send raw JavaScript source text, optionally with a first-line pragma like `// codex-artifacts: timeout_ms=15000` or `// codex-artifact-tool: timeout_ms=15000`; do not send JSON/quotes/markdown fences."
+        description: "Runs raw JavaScript against the preinstalled Codex @oai/artifact-tool runtime for creating presentations or spreadsheets. This is plain JavaScript executed by a local Node-compatible runtime with top-level await, not TypeScript: do not use type annotations, `interface`, `type`, or `import type`. Author code the same way you would for `import { Presentation, Workbook, PresentationFile, SpreadsheetFile, FileBlob, ... } from \"@oai/artifact-tool\"`, but omit that import line because the package surface is already preloaded. Named exports are available directly on `globalThis`, and the full module is available as `globalThis.artifactTool` (also aliased as `globalThis.artifacts` and `globalThis.codexArtifacts`). Node built-ins such as `node:fs/promises` may still be imported when needed for saving preview bytes. This is a freeform tool: send raw JavaScript source text, optionally with a first-line pragma like `// codex-artifacts: timeout_ms=15000` or `// codex-artifact-tool: timeout_ms=15000`; do not send JSON/quotes/markdown fences."
             .to_string(),
         format: FreeformToolFormat {
             r#type: "grammar".to_string(),
@@ -2206,6 +2214,7 @@ mod tests {
         let mut features = Features::with_defaults();
         features.enable(Feature::UnifiedExec);
         let config = ToolsConfig::new(&ToolsConfigParams {
+            codex_home: Path::new("."),
             model_info: &model_info,
             features: &features,
             web_search_mode: Some(WebSearchMode::Live),
@@ -2269,6 +2278,7 @@ mod tests {
         let mut features = Features::with_defaults();
         features.enable(Feature::Collab);
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
+            codex_home: &config.codex_home,
             model_info: &model_info,
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
@@ -2289,12 +2299,53 @@ mod tests {
 
     #[test]
     fn test_build_specs_artifact_tool_enabled() {
-        let config = test_config();
+        let mut config = test_config();
+        let runtime_root = tempfile::TempDir::new().expect("create temp codex home");
+        let platform = codex_artifacts::ArtifactRuntimePlatform::detect_current()
+            .expect("detect artifact platform");
+        let install_dir = runtime_root
+            .path()
+            .join("packages")
+            .join("artifacts")
+            .join(PINNED_ARTIFACT_RUNTIME_VERSION)
+            .join(platform.as_str());
+        std::fs::create_dir_all(install_dir.join("node/bin")).expect("create runtime dir");
+        std::fs::create_dir_all(install_dir.join("artifact-tool/dist"))
+            .expect("create build entrypoint dir");
+        std::fs::create_dir_all(install_dir.join("granola-render/dist"))
+            .expect("create render entrypoint dir");
+        std::fs::write(
+            install_dir.join("manifest.json"),
+            serde_json::json!({
+                "schema_version": 1,
+                "runtime_version": PINNED_ARTIFACT_RUNTIME_VERSION,
+                "node": { "relative_path": "node/bin/node" },
+                "entrypoints": {
+                    "build_js": { "relative_path": "artifact-tool/dist/artifact_tool.mjs" },
+                    "render_cli": { "relative_path": "granola-render/dist/render_cli.mjs" }
+                }
+            })
+            .to_string(),
+        )
+        .expect("write manifest");
+        std::fs::write(install_dir.join("node/bin/node"), "#!/bin/sh\n").expect("write node");
+        std::fs::write(
+            install_dir.join("artifact-tool/dist/artifact_tool.mjs"),
+            "export const ok = true;\n",
+        )
+        .expect("write build entrypoint");
+        std::fs::write(
+            install_dir.join("granola-render/dist/render_cli.mjs"),
+            "export const ok = true;\n",
+        )
+        .expect("write render entrypoint");
+        config.codex_home = runtime_root.path().to_path_buf();
         let model_info =
             ModelsManager::construct_model_info_offline_for_tests("gpt-5-codex", &config);
         let mut features = Features::with_defaults();
         features.enable(Feature::Artifact);
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
+            codex_home: &config.codex_home,
             model_info: &model_info,
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
@@ -2313,6 +2364,7 @@ mod tests {
         features.enable(Feature::Collab);
         features.enable(Feature::Sqlite);
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
+            codex_home: &config.codex_home,
             model_info: &model_info,
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
@@ -2343,6 +2395,7 @@ mod tests {
             ModelsManager::construct_model_info_offline_for_tests("gpt-5-codex", &config);
         let mut features = Features::with_defaults();
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
+            codex_home: &config.codex_home,
             model_info: &model_info,
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
@@ -2357,6 +2410,7 @@ mod tests {
 
         features.enable(Feature::DefaultModeRequestUserInput);
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
+            codex_home: &config.codex_home,
             model_info: &model_info,
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
@@ -2380,6 +2434,7 @@ mod tests {
         let mut features = Features::with_defaults();
         features.disable(Feature::MemoryTool);
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
+            codex_home: &config.codex_home,
             model_info: &model_info,
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
@@ -2400,6 +2455,7 @@ mod tests {
         let features = Features::with_defaults();
 
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
+            codex_home: &config.codex_home,
             model_info: &model_info,
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
@@ -2426,6 +2482,7 @@ mod tests {
         features.enable(Feature::JsRepl);
 
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
+            codex_home: &config.codex_home,
             model_info: &model_info,
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
@@ -2448,6 +2505,7 @@ mod tests {
         image_generation_features.enable(Feature::ImageGeneration);
 
         let default_tools_config = ToolsConfig::new(&ToolsConfigParams {
+            codex_home: &config.codex_home,
             model_info: &supported_model_info,
             features: &default_features,
             web_search_mode: Some(WebSearchMode::Cached),
@@ -2462,6 +2520,7 @@ mod tests {
         );
 
         let supported_tools_config = ToolsConfig::new(&ToolsConfigParams {
+            codex_home: &config.codex_home,
             model_info: &supported_model_info,
             features: &image_generation_features,
             web_search_mode: Some(WebSearchMode::Cached),
@@ -2471,6 +2530,7 @@ mod tests {
         assert_contains_tool_names(&supported_tools, &["image_generation"]);
 
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
+            codex_home: &config.codex_home,
             model_info: &unsupported_model_info,
             features: &image_generation_features,
             web_search_mode: Some(WebSearchMode::Cached),
@@ -2506,8 +2566,10 @@ mod tests {
         web_search_mode: Option<WebSearchMode>,
         expected_tools: &[&str],
     ) {
+        let config = test_config();
         let model_info = model_info_from_models_json(model_slug);
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
+            codex_home: &config.codex_home,
             model_info: &model_info,
             features,
             web_search_mode,
@@ -2542,6 +2604,7 @@ mod tests {
         let features = Features::with_defaults();
 
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
+            codex_home: &config.codex_home,
             model_info: &model_info,
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
@@ -2567,6 +2630,7 @@ mod tests {
         let features = Features::with_defaults();
 
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
+            codex_home: &config.codex_home,
             model_info: &model_info,
             features: &features,
             web_search_mode: Some(WebSearchMode::Live),
@@ -2593,6 +2657,7 @@ mod tests {
         let features = Features::with_defaults();
 
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
+            codex_home: &config.codex_home,
             model_info: &model_info,
             features: &features,
             web_search_mode: Some(WebSearchMode::Live),
@@ -2622,6 +2687,7 @@ mod tests {
             ModelsManager::construct_model_info_offline_for_tests("gpt-5-codex", &config);
         let features = Features::with_defaults();
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
+            codex_home: &config.codex_home,
             model_info: &model_info,
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
@@ -2645,6 +2711,7 @@ mod tests {
             ModelsManager::construct_model_info_offline_for_tests("gpt-5-codex", &config);
         let features = Features::with_defaults();
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
+            codex_home: &config.codex_home,
             model_info: &model_info,
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
@@ -2836,6 +2903,7 @@ mod tests {
         let mut features = Features::with_defaults();
         features.enable(Feature::UnifiedExec);
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
+            codex_home: &config.codex_home,
             model_info: &model_info,
             features: &features,
             web_search_mode: Some(WebSearchMode::Live),
@@ -2860,6 +2928,7 @@ mod tests {
         features.enable(Feature::ShellZshFork);
 
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
+            codex_home: &config.codex_home,
             model_info: &model_info,
             features: &features,
             web_search_mode: Some(WebSearchMode::Live),
@@ -2886,6 +2955,7 @@ mod tests {
         let mut features = Features::with_defaults();
         features.enable(Feature::UnifiedExec);
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
+            codex_home: &config.codex_home,
             model_info: &model_info,
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
@@ -2902,6 +2972,7 @@ mod tests {
 
     #[test]
     fn test_test_model_info_includes_sync_tool() {
+        let config = test_config();
         let mut model_info = model_info_from_models_json("gpt-5-codex");
         model_info.experimental_supported_tools = vec![
             "test_sync_tool".to_string(),
@@ -2911,6 +2982,7 @@ mod tests {
         ];
         let features = Features::with_defaults();
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
+            codex_home: &config.codex_home,
             model_info: &model_info,
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
@@ -2943,6 +3015,7 @@ mod tests {
         let mut features = Features::with_defaults();
         features.enable(Feature::UnifiedExec);
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
+            codex_home: &config.codex_home,
             model_info: &model_info,
             features: &features,
             web_search_mode: Some(WebSearchMode::Live),
@@ -3030,6 +3103,7 @@ mod tests {
         let mut features = Features::with_defaults();
         features.enable(Feature::UnifiedExec);
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
+            codex_home: &config.codex_home,
             model_info: &model_info,
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
@@ -3076,6 +3150,7 @@ mod tests {
         let mut features = Features::with_defaults();
         features.enable(Feature::Apps);
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
+            codex_home: &config.codex_home,
             model_info: &model_info,
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
@@ -3144,6 +3219,7 @@ mod tests {
         let mut features = Features::with_defaults();
         features.enable(Feature::UnifiedExec);
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
+            codex_home: &config.codex_home,
             model_info: &model_info,
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
@@ -3199,6 +3275,7 @@ mod tests {
         let mut features = Features::with_defaults();
         features.enable(Feature::UnifiedExec);
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
+            codex_home: &config.codex_home,
             model_info: &model_info,
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
@@ -3251,6 +3328,7 @@ mod tests {
         features.enable(Feature::UnifiedExec);
         features.enable(Feature::ApplyPatchFreeform);
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
+            codex_home: &config.codex_home,
             model_info: &model_info,
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
@@ -3305,6 +3383,7 @@ mod tests {
         let mut features = Features::with_defaults();
         features.enable(Feature::UnifiedExec);
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
+            codex_home: &config.codex_home,
             model_info: &model_info,
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
@@ -3438,6 +3517,7 @@ Examples of valid command strings:
         let mut features = Features::with_defaults();
         features.enable(Feature::UnifiedExec);
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
+            codex_home: &config.codex_home,
             model_info: &model_info,
             features: &features,
             web_search_mode: Some(WebSearchMode::Cached),
