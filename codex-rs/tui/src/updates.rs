@@ -5,7 +5,6 @@ use chrono::DateTime;
 use chrono::Duration;
 use chrono::Utc;
 use codex_core::config::Config;
-use semver::Identifier;
 use semver::Version;
 use serde::Deserialize;
 use serde::Serialize;
@@ -148,24 +147,13 @@ fn is_compatible_update_target(latest: &str, current: &str) -> bool {
         return false;
     };
 
-    let current_channel = current.pre.iter().find_map(|identifier| {
-        if let Identifier::AlphaNumeric(value) = identifier {
-            Some(value.as_str())
-        } else {
-            None
-        }
-    });
-    let latest_channel = latest.pre.iter().find_map(|identifier| {
-        if let Identifier::AlphaNumeric(value) = identifier {
-            Some(value.as_str())
-        } else {
-            None
-        }
-    });
+    let current_channel = current.pre.as_str().split('.').next().unwrap_or_default();
+    let latest_channel = latest.pre.as_str().split('.').next().unwrap_or_default();
 
-    match current_channel {
-        Some(channel) => latest_channel == Some(channel),
-        None => true,
+    if current_channel.is_empty() {
+        true
+    } else {
+        latest_channel == current_channel
     }
 }
 
