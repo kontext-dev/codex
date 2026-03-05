@@ -2,8 +2,7 @@
 
 `@kontext-dev/codex` is the Kontext-maintained Codex CLI fork.
 
-This package installs the `codex-kontext` binary so it can coexist with
-`@openai/codex` on the same machine.
+This package installs the `codex-kontext` binary to avoid global bin collisions.
 
 ## 1. Install
 
@@ -91,7 +90,6 @@ Versions follow `<upstream_version>-kontext.<N>`, for example `0.105.0-kontext.3
 
 ## Docs
 
-- [Codex Documentation](https://developers.openai.com/codex/)
 - [Installing and Building](https://github.com/kontext-dev/codex/blob/kontext-dev/INSTALL.md)
 - [Contributing](https://github.com/kontext-dev/codex/blob/kontext-dev/CONTRIBUTING.md)
 
