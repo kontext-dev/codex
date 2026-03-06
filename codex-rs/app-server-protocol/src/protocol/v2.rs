@@ -629,7 +629,6 @@ pub struct NetworkRequirements {
     pub socks_port: Option<u16>,
     pub allow_upstream_proxy: Option<bool>,
     pub dangerously_allow_non_loopback_proxy: Option<bool>,
-    pub dangerously_allow_non_loopback_admin: Option<bool>,
     pub dangerously_allow_all_unix_sockets: Option<bool>,
     pub allowed_domains: Option<Vec<String>>,
     pub denied_domains: Option<Vec<String>>,
@@ -4547,6 +4546,46 @@ mod tests {
             err.to_string()
                 .contains("AbsolutePathBuf deserialized without a base path"),
             "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn command_execution_request_approval_accepts_macos_automation_bundle_ids_object() {
+        let params = serde_json::from_value::<CommandExecutionRequestApprovalParams>(json!({
+            "threadId": "thr_123",
+            "turnId": "turn_123",
+            "itemId": "call_123",
+            "command": "cat file",
+            "cwd": "/tmp",
+            "commandActions": null,
+            "reason": null,
+            "networkApprovalContext": null,
+            "additionalPermissions": {
+                "network": null,
+                "fileSystem": null,
+                "macos": {
+                    "preferences": "read_only",
+                    "automations": {
+                        "bundle_ids": ["com.apple.Notes"]
+                    },
+                    "accessibility": false,
+                    "calendar": false
+                }
+            },
+            "proposedExecpolicyAmendment": null,
+            "proposedNetworkPolicyAmendments": null,
+            "availableDecisions": null
+        }))
+        .expect("bundle_ids object should deserialize");
+
+        assert_eq!(
+            params
+                .additional_permissions
+                .and_then(|permissions| permissions.macos)
+                .map(|macos| macos.automations),
+            Some(CoreMacOsAutomationPermission::BundleIds(vec![
+                "com.apple.Notes".to_string(),
+            ]))
         );
     }
 
