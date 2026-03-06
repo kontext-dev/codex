@@ -254,7 +254,7 @@ fn create_approval_parameters(request_permission_enabled: bool) -> BTreeMap<Stri
             JsonSchema::String {
                 description: Some(
                     if request_permission_enabled {
-                        "Sandbox permissions for the command. Use \"with_additional_permissions\" to request additional sandboxed filesystem access (preferred), or \"require_escalated\" to request running without sandbox restrictions; defaults to \"use_default\"."
+                        "Sandbox permissions for the command. Use \"with_additional_permissions\" to request additional sandboxed filesystem, network, or macOS permissions (preferred), or \"require_escalated\" to request running without sandbox restrictions; defaults to \"use_default\"."
                     } else {
                         "Sandbox permissions for the command. Set to \"require_escalated\" to request running without sandbox restrictions; defaults to \"use_default\"."
                     }
@@ -292,36 +292,100 @@ fn create_approval_parameters(request_permission_enabled: bool) -> BTreeMap<Stri
         properties.insert(
             "additional_permissions".to_string(),
             JsonSchema::Object {
-                properties: BTreeMap::from([(
-                    "file_system".to_string(),
-                    JsonSchema::Object {
-                        properties: BTreeMap::from([
-                            (
-                                "read".to_string(),
-                                JsonSchema::Array {
-                                    items: Box::new(JsonSchema::String { description: None }),
+                properties: BTreeMap::from([
+                    (
+                        "network".to_string(),
+                        JsonSchema::Object {
+                            properties: BTreeMap::from([(
+                                "enabled".to_string(),
+                                JsonSchema::Boolean {
                                     description: Some(
-                                        "Additional filesystem paths to grant read access for this command."
+                                        "Set to true to enable network access for this command."
                                             .to_string(),
                                     ),
                                 },
-                            ),
-                            (
-                                "write".to_string(),
-                                JsonSchema::Array {
-                                    items: Box::new(JsonSchema::String { description: None }),
-                                    description: Some(
-                                        "Additional filesystem paths to grant write access for this command."
-                                            .to_string(),
-                                    ),
-                                },
-                            ),
-                        ]),
-                        required: None,
-                        additional_properties: Some(false.into()),
-                    },
-                )]),
-                required: Some(vec!["file_system".to_string()]),
+                            )]),
+                            required: None,
+                            additional_properties: Some(false.into()),
+                        },
+                    ),
+                    (
+                        "file_system".to_string(),
+                        JsonSchema::Object {
+                            properties: BTreeMap::from([
+                                (
+                                    "read".to_string(),
+                                    JsonSchema::Array {
+                                        items: Box::new(JsonSchema::String { description: None }),
+                                        description: Some(
+                                            "Additional filesystem paths to grant read access for this command."
+                                                .to_string(),
+                                        ),
+                                    },
+                                ),
+                                (
+                                    "write".to_string(),
+                                    JsonSchema::Array {
+                                        items: Box::new(JsonSchema::String { description: None }),
+                                        description: Some(
+                                            "Additional filesystem paths to grant write access for this command."
+                                                .to_string(),
+                                        ),
+                                    },
+                                ),
+                            ]),
+                            required: None,
+                            additional_properties: Some(false.into()),
+                        },
+                    ),
+                    (
+                        "macos".to_string(),
+                        JsonSchema::Object {
+                            properties: BTreeMap::from([
+                                (
+                                    "preferences".to_string(),
+                                    JsonSchema::String {
+                                        description: Some(
+                                            "Additional macOS preferences access for this command. Supported values: \"readonly\" or \"readwrite\"."
+                                                .to_string(),
+                                        ),
+                                    },
+                                ),
+                                (
+                                    "automations".to_string(),
+                                    JsonSchema::Array {
+                                        items: Box::new(JsonSchema::String { description: None }),
+                                        description: Some(
+                                            "Additional macOS automation targets for this command as bundle IDs, or use true in clients that support boolean union payloads."
+                                                .to_string(),
+                                        ),
+                                    },
+                                ),
+                                (
+                                    "accessibility".to_string(),
+                                    JsonSchema::Boolean {
+                                        description: Some(
+                                            "Set to true to allow macOS accessibility APIs for this command."
+                                                .to_string(),
+                                        ),
+                                    },
+                                ),
+                                (
+                                    "calendar".to_string(),
+                                    JsonSchema::Boolean {
+                                        description: Some(
+                                            "Set to true to allow macOS Calendar access for this command."
+                                                .to_string(),
+                                        ),
+                                    },
+                                ),
+                            ]),
+                            required: None,
+                            additional_properties: Some(false.into()),
+                        },
+                    ),
+                ]),
+                required: None,
                 additional_properties: Some(false.into()),
             },
         );
@@ -3116,6 +3180,7 @@ mod tests {
                         ),
                         connector_id: Some("calendar".to_string()),
                         connector_name: Some("Calendar".to_string()),
+                        plugin_display_names: Vec::new(),
                     },
                 ),
                 (
@@ -3126,6 +3191,7 @@ mod tests {
                         tool: mcp_tool("echo", "Echo", serde_json::json!({"type": "object"})),
                         connector_id: None,
                         connector_name: None,
+                        plugin_display_names: Vec::new(),
                     },
                 ),
             ])),
@@ -3404,6 +3470,18 @@ Examples of valid command strings:
             panic!("expected sandbox_permissions description");
         };
         assert!(description.contains("with_additional_permissions"));
+        assert!(description.contains("macOS permissions"));
+
+        let Some(JsonSchema::Object {
+            properties: additional_properties,
+            ..
+        }) = properties.get("additional_permissions")
+        else {
+            panic!("expected additional_permissions schema");
+        };
+        assert!(additional_properties.contains_key("network"));
+        assert!(additional_properties.contains_key("file_system"));
+        assert!(additional_properties.contains_key("macos"));
     }
 
     #[test]
