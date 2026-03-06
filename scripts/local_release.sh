@@ -32,6 +32,7 @@ tag="rust-v${version}"
 dist_dir="$repo_root/dist/local-release"
 npm_dir="$dist_dir/npm"
 vendor_root="$(mktemp -d "${TMPDIR:-/tmp}/codex-local-vendor.XXXXXX")"
+vendor_src="$vendor_root/vendor"
 cleanup() {
   rm -rf "$vendor_root"
 }
@@ -50,9 +51,9 @@ cli_bin="$(
   cargo build --target "$target" --release --bin "$cli_bin" --bin codex-responses-api-proxy
 )
 
-mkdir -p "$vendor_root/$target/codex" "$vendor_root/$target/codex-responses-api-proxy"
-cp "codex-rs/target/$target/release/$cli_bin" "$vendor_root/$target/codex/codex"
-cp "codex-rs/target/$target/release/codex-responses-api-proxy" "$vendor_root/$target/codex-responses-api-proxy/codex-responses-api-proxy"
+mkdir -p "$vendor_src/$target/codex" "$vendor_src/$target/codex-responses-api-proxy"
+cp "codex-rs/target/$target/release/$cli_bin" "$vendor_src/$target/codex/codex"
+cp "codex-rs/target/$target/release/codex-responses-api-proxy" "$vendor_src/$target/codex-responses-api-proxy/codex-responses-api-proxy"
 python3 codex-cli/scripts/install_native_deps.py --component rg --target "$target" "$vendor_root"
 
 rm -rf "$dist_dir"
@@ -71,7 +72,7 @@ CODEX_NPM_SCOPE="$npm_scope" python3 scripts/stage_npm_packages.py \
   --package codex \
   --package codex-responses-api-proxy \
   --package codex-sdk \
-  --vendor-src "$vendor_root" \
+  --vendor-src "$vendor_src" \
   --output-dir "$npm_dir"
 
 if ! git rev-parse --verify --quiet "$tag" >/dev/null; then
