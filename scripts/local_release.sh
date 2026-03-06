@@ -80,11 +80,18 @@ if ! git rev-parse --verify --quiet "$tag" >/dev/null; then
 fi
 git push origin "$tag"
 
+release_assets=()
+for asset in "$dist_dir"/* "$npm_dir"/*; do
+  if [[ -f "$asset" ]]; then
+    release_assets+=("$asset")
+  fi
+done
+
 if [[ "$skip_gh_release" != "1" ]]; then
   if gh release view "$tag" >/dev/null 2>&1; then
-    gh release upload "$tag" "$dist_dir"/* "$npm_dir"/* --clobber
+    gh release upload "$tag" "${release_assets[@]}" --clobber
   else
-    gh release create "$tag" "$dist_dir"/* "$npm_dir"/* --verify-tag --title "$version" --notes "Local release $version"
+    gh release create "$tag" "${release_assets[@]}" --verify-tag --title "$version" --notes "Local release $version"
   fi
 fi
 
