@@ -194,24 +194,25 @@ def main() -> int:
         "rg",
     ]
     selected_targets = args.targets or list(BINARY_TARGETS)
+    binary_components = [BINARY_COMPONENTS[name] for name in components if name in BINARY_COMPONENTS]
+    if binary_components:
+        workflow_url = (args.workflow_url or DEFAULT_WORKFLOW_URL).strip()
+        if not workflow_url:
+            workflow_url = DEFAULT_WORKFLOW_URL
 
-    workflow_url = (args.workflow_url or DEFAULT_WORKFLOW_URL).strip()
-    if not workflow_url:
-        workflow_url = DEFAULT_WORKFLOW_URL
+        workflow_repo, workflow_id = _parse_workflow_reference(workflow_url)
+        print(f"Downloading native artifacts from workflow {workflow_id} in {workflow_repo}...")
 
-    workflow_repo, workflow_id = _parse_workflow_reference(workflow_url)
-    print(f"Downloading native artifacts from workflow {workflow_id} in {workflow_repo}...")
-
-    with _gha_group(f"Download native artifacts from workflow {workflow_id} in {workflow_repo}"):
-        with tempfile.TemporaryDirectory(prefix="codex-native-artifacts-") as artifacts_dir_str:
-            artifacts_dir = Path(artifacts_dir_str)
-            _download_artifacts(workflow_repo, workflow_id, artifacts_dir)
-            install_binary_components(
-                artifacts_dir,
-                vendor_dir,
-                [BINARY_COMPONENTS[name] for name in components if name in BINARY_COMPONENTS],
-                selected_targets,
-            )
+        with _gha_group(f"Download native artifacts from workflow {workflow_id} in {workflow_repo}"):
+            with tempfile.TemporaryDirectory(prefix="codex-native-artifacts-") as artifacts_dir_str:
+                artifacts_dir = Path(artifacts_dir_str)
+                _download_artifacts(workflow_repo, workflow_id, artifacts_dir)
+                install_binary_components(
+                    artifacts_dir,
+                    vendor_dir,
+                    binary_components,
+                    selected_targets,
+                )
 
     if "rg" in components:
         with _gha_group("Fetch ripgrep binaries"):

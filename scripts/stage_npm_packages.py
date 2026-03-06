@@ -48,6 +48,11 @@ def parse_args() -> argparse.Namespace:
         help="Optional workflow URL to reuse for native artifacts.",
     )
     parser.add_argument(
+        "--vendor-src",
+        type=Path,
+        help="Optional local vendor directory containing prebuilt native binaries.",
+    )
+    parser.add_argument(
         "--target",
         dest="targets",
         action="append",
@@ -197,7 +202,11 @@ def main() -> int:
     final_messages = []
 
     try:
-        if native_components:
+        if args.vendor_src is not None:
+            vendor_src = args.vendor_src.resolve()
+            if not vendor_src.exists():
+                raise RuntimeError(f"Vendor source directory not found: {vendor_src}")
+        elif native_components:
             workflow_url, resolved_head_sha = resolve_workflow_url(
                 args.release_version, args.workflow_url
             )
