@@ -402,7 +402,7 @@ checksum = "5f0e0fee31ef5ed1ba1316088939cea399010ed7731dba877ed44aeb407a75ea"
 
 [[package]]
 name = "app_test_support"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1370,7 +1370,7 @@ checksum = "e9b18233253483ce2f65329a24072ec414db782531bdbb7d0bbc4bd2ce6b7e21"
 
 [[package]]
 name = "codex-ansi-escape"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "ansi-to-tui",
  "ratatui",
@@ -1379,7 +1379,7 @@ dependencies = [
 
 [[package]]
 name = "codex-api"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "anyhow",
  "assert_matches",
@@ -1409,7 +1409,7 @@ dependencies = [
 
 [[package]]
 name = "codex-app-server"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "anyhow",
  "app_test_support",
@@ -1459,7 +1459,7 @@ dependencies = [
 
 [[package]]
 name = "codex-app-server-protocol"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "anyhow",
  "clap",
@@ -1486,7 +1486,7 @@ dependencies = [
 
 [[package]]
 name = "codex-app-server-test-client"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "anyhow",
  "clap",
@@ -1507,7 +1507,7 @@ dependencies = [
 
 [[package]]
 name = "codex-apply-patch"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -1523,7 +1523,7 @@ dependencies = [
 
 [[package]]
 name = "codex-arg0"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "anyhow",
  "codex-apply-patch",
@@ -1537,7 +1537,7 @@ dependencies = [
 
 [[package]]
 name = "codex-artifacts"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "codex-package-manager",
  "pretty_assertions",
@@ -1556,7 +1556,7 @@ dependencies = [
 
 [[package]]
 name = "codex-async-utils"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "async-trait",
  "pretty_assertions",
@@ -1566,7 +1566,7 @@ dependencies = [
 
 [[package]]
 name = "codex-backend-client"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "anyhow",
  "codex-backend-openapi-models",
@@ -1580,7 +1580,7 @@ dependencies = [
 
 [[package]]
 name = "codex-backend-openapi-models"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "serde",
  "serde_json",
@@ -1589,7 +1589,7 @@ dependencies = [
 
 [[package]]
 name = "codex-chatgpt"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "anyhow",
  "clap",
@@ -1607,7 +1607,7 @@ dependencies = [
 
 [[package]]
 name = "codex-cli"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -1651,7 +1651,7 @@ dependencies = [
 
 [[package]]
 name = "codex-client"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1674,7 +1674,7 @@ dependencies = [
 
 [[package]]
 name = "codex-cloud-requirements"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -1697,7 +1697,7 @@ dependencies = [
 
 [[package]]
 name = "codex-cloud-tasks"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1726,7 +1726,7 @@ dependencies = [
 
 [[package]]
 name = "codex-cloud-tasks-client"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1741,7 +1741,7 @@ dependencies = [
 
 [[package]]
 name = "codex-config"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "anyhow",
  "codex-app-server-protocol",
@@ -1764,7 +1764,7 @@ dependencies = [
 
 [[package]]
 name = "codex-core"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1881,7 +1881,7 @@ dependencies = [
 
 [[package]]
 name = "codex-debug-client"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "anyhow",
  "clap",
@@ -1893,7 +1893,7 @@ dependencies = [
 
 [[package]]
 name = "codex-exec"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -1935,7 +1935,7 @@ dependencies = [
 
 [[package]]
 name = "codex-execpolicy"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "anyhow",
  "clap",
@@ -1952,7 +1952,7 @@ dependencies = [
 
 [[package]]
 name = "codex-execpolicy-legacy"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "allocative",
  "anyhow",
@@ -1972,7 +1972,7 @@ dependencies = [
 
 [[package]]
 name = "codex-experimental-api-macros"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1981,7 +1981,7 @@ dependencies = [
 
 [[package]]
 name = "codex-feedback"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "anyhow",
  "codex-protocol",
@@ -1993,7 +1993,7 @@ dependencies = [
 
 [[package]]
 name = "codex-file-search"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "anyhow",
  "clap",
@@ -2009,7 +2009,7 @@ dependencies = [
 
 [[package]]
 name = "codex-git"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "assert_matches",
  "once_cell",
@@ -2025,7 +2025,7 @@ dependencies = [
 
 [[package]]
 name = "codex-hooks"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2040,7 +2040,7 @@ dependencies = [
 
 [[package]]
 name = "codex-keyring-store"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "keyring",
  "tracing",
@@ -2048,7 +2048,7 @@ dependencies = [
 
 [[package]]
 name = "codex-linux-sandbox"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "cc",
  "clap",
@@ -2069,7 +2069,7 @@ dependencies = [
 
 [[package]]
 name = "codex-lmstudio"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "codex-core",
  "reqwest",
@@ -2082,7 +2082,7 @@ dependencies = [
 
 [[package]]
 name = "codex-login"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2106,7 +2106,7 @@ dependencies = [
 
 [[package]]
 name = "codex-mcp-server"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "anyhow",
  "codex-arg0",
@@ -2133,7 +2133,7 @@ dependencies = [
 
 [[package]]
 name = "codex-network-proxy"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2164,7 +2164,7 @@ dependencies = [
 
 [[package]]
 name = "codex-ollama"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "assert_matches",
  "async-stream",
@@ -2182,7 +2182,7 @@ dependencies = [
 
 [[package]]
 name = "codex-otel"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "chrono",
  "codex-api",
@@ -2213,7 +2213,7 @@ dependencies = [
 
 [[package]]
 name = "codex-package-manager"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "fd-lock",
  "flate2",
@@ -2233,7 +2233,7 @@ dependencies = [
 
 [[package]]
 name = "codex-process-hardening"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "libc",
  "pretty_assertions",
@@ -2241,7 +2241,7 @@ dependencies = [
 
 [[package]]
 name = "codex-protocol"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "anyhow",
  "codex-execpolicy",
@@ -2268,7 +2268,7 @@ dependencies = [
 
 [[package]]
 name = "codex-responses-api-proxy"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "anyhow",
  "clap",
@@ -2284,7 +2284,7 @@ dependencies = [
 
 [[package]]
 name = "codex-rmcp-client"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "anyhow",
  "axum",
@@ -2315,7 +2315,7 @@ dependencies = [
 
 [[package]]
 name = "codex-secrets"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "age",
  "anyhow",
@@ -2335,7 +2335,7 @@ dependencies = [
 
 [[package]]
 name = "codex-shell-command"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2355,7 +2355,7 @@ dependencies = [
 
 [[package]]
 name = "codex-shell-escalation"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2376,7 +2376,7 @@ dependencies = [
 
 [[package]]
 name = "codex-skills"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "codex-utils-absolute-path",
  "include_dir",
@@ -2385,7 +2385,7 @@ dependencies = [
 
 [[package]]
 name = "codex-state"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2407,7 +2407,7 @@ dependencies = [
 
 [[package]]
 name = "codex-stdio-to-uds"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -2419,7 +2419,7 @@ dependencies = [
 
 [[package]]
 name = "codex-test-macros"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2428,7 +2428,7 @@ dependencies = [
 
 [[package]]
 name = "codex-tui"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "anyhow",
  "arboard",
@@ -2518,7 +2518,7 @@ dependencies = [
 
 [[package]]
 name = "codex-utils-absolute-path"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "dirs",
  "path-absolutize",
@@ -2532,14 +2532,14 @@ dependencies = [
 
 [[package]]
 name = "codex-utils-approval-presets"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "codex-protocol",
 ]
 
 [[package]]
 name = "codex-utils-cache"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "lru 0.16.3",
  "sha1",
@@ -2548,7 +2548,7 @@ dependencies = [
 
 [[package]]
 name = "codex-utils-cargo-bin"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "assert_cmd",
  "runfiles",
@@ -2557,7 +2557,7 @@ dependencies = [
 
 [[package]]
 name = "codex-utils-cli"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "clap",
  "codex-protocol",
@@ -2568,15 +2568,15 @@ dependencies = [
 
 [[package]]
 name = "codex-utils-elapsed"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 
 [[package]]
 name = "codex-utils-fuzzy-match"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 
 [[package]]
 name = "codex-utils-home-dir"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "dirs",
  "pretty_assertions",
@@ -2585,7 +2585,7 @@ dependencies = [
 
 [[package]]
 name = "codex-utils-image"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "base64 0.22.1",
  "codex-utils-cache",
@@ -2597,7 +2597,7 @@ dependencies = [
 
 [[package]]
 name = "codex-utils-json-to-toml"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "pretty_assertions",
  "serde_json",
@@ -2606,7 +2606,7 @@ dependencies = [
 
 [[package]]
 name = "codex-utils-oss"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "codex-core",
  "codex-lmstudio",
@@ -2615,7 +2615,7 @@ dependencies = [
 
 [[package]]
 name = "codex-utils-pty"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "anyhow",
  "filedescriptor",
@@ -2631,7 +2631,7 @@ dependencies = [
 
 [[package]]
 name = "codex-utils-readiness"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "assert_matches",
  "async-trait",
@@ -2642,14 +2642,14 @@ dependencies = [
 
 [[package]]
 name = "codex-utils-rustls-provider"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "rustls",
 ]
 
 [[package]]
 name = "codex-utils-sandbox-summary"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "codex-core",
  "codex-protocol",
@@ -2659,7 +2659,7 @@ dependencies = [
 
 [[package]]
 name = "codex-utils-sleep-inhibitor"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "core-foundation 0.9.4",
  "libc",
@@ -2669,14 +2669,14 @@ dependencies = [
 
 [[package]]
 name = "codex-utils-stream-parser"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "pretty_assertions",
 ]
 
 [[package]]
 name = "codex-utils-string"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "pretty_assertions",
  "regex-lite",
@@ -2684,7 +2684,7 @@ dependencies = [
 
 [[package]]
 name = "codex-windows-sandbox"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2887,7 +2887,7 @@ checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 
 [[package]]
 name = "core_test_support"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -5672,7 +5672,7 @@ checksum = "b3eede3bdf92f3b4f9dc04072a9ce5ab557d5ec9038773bf9ffcd5588b3cc05b"
 
 [[package]]
 name = "mcp_test_support"
-version = "0.108.0-kontext.9"
+version = "0.108.0-kontext.10"
 dependencies = [
  "anyhow",
  "codex-core",
