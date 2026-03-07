@@ -33,11 +33,63 @@ dist_dir="$repo_root/dist/local-release"
 npm_dir="$dist_dir/npm"
 vendor_root="$(mktemp -d "${TMPDIR:-/tmp}/codex-local-vendor.XXXXXX")"
 vendor_src="$vendor_root/vendor"
+
+bump_workspace_version_if_needed() {
+  local current_version
+  current_version="$(
+    python3 - <<'PY'
+import pathlib
+import re
+
+text = pathlib.Path("codex-rs/Cargo.toml").read_text()
+match = re.search(r'(?ms)^\[workspace\.package\]\nversion = "([^"]+)"', text)
+if match is None:
+    raise SystemExit("Failed to find [workspace.package] version in codex-rs/Cargo.toml")
+print(match.group(1))
+PY
+  )"
+
+  if [[ "$current_version" == "$version" ]]; then
+    return
+  fi
+
+  CURRENT_VERSION="$current_version" RELEASE_VERSION="$version" python3 - <<'PY'
+import os
+import pathlib
+import re
+
+current_version = os.environ["CURRENT_VERSION"]
+release_version = os.environ["RELEASE_VERSION"]
+
+cargo_toml = pathlib.Path("codex-rs/Cargo.toml")
+cargo_toml_text = cargo_toml.read_text()
+updated_toml_text, replacements = re.subn(
+    r'(?m)(^\[workspace\.package\]\nversion = ")[^"]+(")',
+    rf'\g<1>{release_version}\2',
+    cargo_toml_text,
+    count=1,
+)
+if replacements != 1:
+    raise SystemExit("Failed to update codex-rs/Cargo.toml workspace version.")
+cargo_toml.write_text(updated_toml_text)
+
+cargo_lock = pathlib.Path("codex-rs/Cargo.lock")
+cargo_lock_text = cargo_lock.read_text()
+if current_version not in cargo_lock_text:
+    raise SystemExit(f"Current version {current_version} not found in codex-rs/Cargo.lock.")
+cargo_lock.write_text(cargo_lock_text.replace(current_version, release_version))
+PY
+
+  git add codex-rs/Cargo.toml codex-rs/Cargo.lock
+  git commit -m "chore: bump version to $version" -- codex-rs/Cargo.toml codex-rs/Cargo.lock
+}
+
 cleanup() {
   rm -rf "$vendor_root"
 }
 trap cleanup EXIT
 
+bump_workspace_version_if_needed
 ./scripts/local_ci.sh
 
 cli_bin="$(
@@ -86,6 +138,11 @@ for asset in "$dist_dir"/* "$npm_dir"/*; do
     release_assets+=("$asset")
   fi
 done
+
+current_branch="$(git rev-parse --abbrev-ref HEAD)"
+if [[ "$current_branch" != "HEAD" ]]; then
+  git push origin "$current_branch"
+fi
 
 if [[ "$skip_gh_release" != "1" ]]; then
   if gh release view "$tag" >/dev/null 2>&1; then
