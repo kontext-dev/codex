@@ -194,20 +194,18 @@ if [[ "$should_publish" == "true" && "$skip_npm_publish" != "1" ]]; then
     filename="$(basename "$tarball")"
     publish_tag=""
 
-    case "$filename" in
-      codex-npm-*-"${version}".tgz)
-        platform="${filename#codex-npm-}"
-        platform="${platform%-${version}.tgz}"
-        publish_tag="${prefix}${platform}"
-        ;;
-      codex-npm-"${version}".tgz|codex-responses-api-proxy-npm-"${version}.tgz|codex-sdk-npm-"${version}.tgz)
-        publish_tag="$npm_tag"
-        ;;
-      *)
-        echo "Unexpected npm tarball: $filename" >&2
-        exit 1
-        ;;
-    esac
+    if [[ "$filename" == codex-npm-*-"${version}".tgz ]]; then
+      platform="${filename#codex-npm-}"
+      platform="${platform%-${version}.tgz}"
+      publish_tag="${prefix}${platform}"
+    elif [[ "$filename" == "codex-npm-${version}.tgz" \
+      || "$filename" == "codex-responses-api-proxy-npm-${version}.tgz" \
+      || "$filename" == "codex-sdk-npm-${version}.tgz" ]]; then
+      publish_tag="$npm_tag"
+    else
+      echo "Unexpected npm tarball: $filename" >&2
+      exit 1
+    fi
 
     publish_cmd=(npm publish "$tarball" --registry "$npm_registry")
     if [[ -n "$publish_tag" ]]; then
