@@ -410,9 +410,16 @@ impl Codex {
         )
         .await;
 
-        let exec_policy = ExecPolicyManager::load(&config.config_layer_stack)
-            .await
-            .map_err(|err| CodexErr::Fatal(format!("failed to load rules: {err}")))?;
+        let exec_policy = if crate::guardian::is_guardian_subagent_source(&session_source) {
+            // Guardian review should rely on the built-in shell safety checks,
+            // not on caller-provided exec-policy rules that could shape the
+            // reviewer or silently auto-approve commands.
+            ExecPolicyManager::default()
+        } else {
+            ExecPolicyManager::load(&config.config_layer_stack)
+                .await
+                .map_err(|err| CodexErr::Fatal(format!("failed to load rules: {err}")))?
+        };
 
         let config = Arc::new(config);
         let refresh_strategy = match session_source {
@@ -452,7 +459,7 @@ impl Codex {
             };
             match thread_id {
                 Some(thread_id) => {
-                    let state_db_ctx = state_db::get_state_db(&config, None).await;
+                    let state_db_ctx = state_db::get_state_db(&config).await;
                     state_db::get_dynamic_tools(state_db_ctx.as_deref(), thread_id, "codex_spawn")
                         .await
                 }
@@ -1274,7 +1281,7 @@ impl Session {
             if config.ephemeral {
                 Ok::<_, anyhow::Error>((None, None))
             } else {
-                let state_db_ctx = state_db::init(&config, None).await;
+                let state_db_ctx = state_db::init(&config).await;
                 let rollout_recorder = RolloutRecorder::new(
                     &config,
                     rollout_params,
@@ -2700,8 +2707,9 @@ impl Session {
     /// Emit an exec approval request event and await the user's decision.
     ///
     /// The request is keyed by `call_id` + `approval_id` so matching responses
-    /// are delivered to the correct in-flight turn. If the task is aborted,
-    /// this returns the default `ReviewDecision` (`Denied`).
+    /// are delivered to the correct in-flight turn. If the pending approval is
+    /// cleared before a response arrives, treat it as an abort so interrupted
+    /// turns do not continue on a synthetic denial.
     ///
     /// Note that if `available_decisions` is `None`, then the other fields will
     /// be used to derive the available decisions via
@@ -2775,7 +2783,7 @@ impl Session {
             parsed_cmd,
         });
         self.send_event(turn_context, event).await;
-        rx_approve.await.unwrap_or_default()
+        rx_approve.await.unwrap_or(ReviewDecision::Abort)
     }
 
     pub async fn request_patch_approval(
@@ -3189,6 +3197,7 @@ impl Session {
             DeveloperInstructions::from_policy(
                 turn_context.sandbox_policy.get(),
                 turn_context.approval_policy.value(),
+                turn_context.features.enabled(Feature::GuardianApproval),
                 self.services.exec_policy.current().as_ref(),
                 &turn_context.cwd,
                 turn_context.features.enabled(Feature::RequestPermissions),
@@ -6865,6 +6874,10 @@ async fn try_run_sampling_request(
     .await;
 
     drain_in_flight(&mut in_flight, sess.clone(), turn_context.clone()).await?;
+
+    if cancellation_token.is_cancelled() {
+        return Err(CodexErr::TurnAborted);
+    }
 
     if should_emit_turn_diff {
         let unified_diff = {
