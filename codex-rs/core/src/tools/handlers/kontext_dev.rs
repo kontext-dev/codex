@@ -3,22 +3,26 @@ use serde_json::Map;
 use serde_json::Value;
 
 use crate::function_tool::FunctionCallError;
+use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolInvocation;
-use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
 use crate::tools::registry::ToolHandler;
 use crate::tools::registry::ToolKind;
-use codex_protocol::models::FunctionCallOutputBody;
 
 pub struct KontextDevHandler;
 
 #[async_trait]
 impl ToolHandler for KontextDevHandler {
+    type Output = FunctionToolOutput;
+
     fn kind(&self) -> ToolKind {
         ToolKind::Function
     }
 
-    async fn handle(&self, invocation: ToolInvocation) -> Result<ToolOutput, FunctionCallError> {
+    async fn handle(
+        &self,
+        invocation: ToolInvocation,
+    ) -> Result<FunctionToolOutput, FunctionCallError> {
         let ToolInvocation {
             session,
             tool_name,
@@ -49,10 +53,7 @@ impl ToolHandler for KontextDevHandler {
                 ))
             })?;
 
-        Ok(ToolOutput::Function {
-            body: FunctionCallOutputBody::Text(output),
-            success: Some(true),
-        })
+        Ok(FunctionToolOutput::from_text(output, Some(true)))
     }
 }
 

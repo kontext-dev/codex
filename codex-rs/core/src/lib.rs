@@ -9,6 +9,7 @@ mod analytics_client;
 pub mod api_bridge;
 mod apply_patch;
 mod apps;
+mod arc_monitor;
 pub mod auth;
 mod client;
 mod client_common;
@@ -47,9 +48,11 @@ mod kontext_dev;
 pub mod landlock;
 pub mod mcp;
 mod mcp_connection_manager;
+mod mcp_tool_approval_templates;
 pub mod models_manager;
 mod network_policy_decision;
 pub mod network_proxy_loader;
+mod original_image_detail;
 pub use mcp_connection_manager::MCP_SANDBOX_STATE_CAPABILITY;
 pub use mcp_connection_manager::MCP_SANDBOX_STATE_METHOD;
 pub use mcp_connection_manager::SandboxState;
@@ -99,6 +102,7 @@ pub type NewConversation = NewThread;
 #[deprecated(note = "use CodexThread")]
 pub type CodexConversation = CodexThread;
 // Re-export common auth types for workspace consumers
+pub use analytics_client::AnalyticsEventsClient;
 pub use auth::AuthManager;
 pub use auth::CodexAuth;
 pub mod default_client;
